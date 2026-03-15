@@ -122,7 +122,7 @@ def create_app(
             ]
         )
     app.add_middleware(
-        CORSMiddleware,
+        CORSMiddleware,  # type: ignore[invalid-argument-type]
         allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
