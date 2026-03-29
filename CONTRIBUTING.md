@@ -10,8 +10,11 @@ You'll need Python 3.11+, [uv](https://docs.astral.sh/uv/getting-started/install
 git clone https://github.com/prassanna-ravishankar/repowire.git
 cd repowire
 
-# Install dev dependencies (pytest, ruff, ty, httpx-ws)
+# Install dev dependencies (pytest, ruff, ty)
 uv sync --extra dev
+
+# Install additional dependency for websocket tests
+uv pip install httpx-ws
 
 # Install repowire globally — hooks run from the installed package, not source
 uv tool install --force --reinstall .
