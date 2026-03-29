@@ -26,7 +26,7 @@ cd repowire/channel && bun install
 
 Before pushing anything, make sure these all pass:
 ```bash
-pytest                        # 222 tests
+pytest                        # run tests
 ruff check repowire/          # lint
 uv run ty check repowire/     # type check
 ```
