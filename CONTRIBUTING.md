@@ -70,7 +70,7 @@ ruff check repowire/ --fix
 | Module | What it does |
 |---|---|
 | `daemon/` | Central routing hub — peer registry, message router, query tracker, HTTP routes |
-| `hooks/` | Default Claude Code transport — session, stop, prompt, notification handlers |
+| `hooks/` | Default agent transport (Claude, Codex, Gemini) — session, stop, prompt, notification handlers |
 | `channel/server.ts` | Experimental MCP stdio transport (requires bun) |
 | `mcp/server.py` | MCP tools: `list_peers`, `ask_peer`, `notify_peer`, etc. |
 | `relay/server.py` | Hosted relay at repowire.io — WS bridge and HTTP tunnel |
