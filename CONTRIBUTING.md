@@ -1,6 +1,10 @@
 # Contributing to Repowire
 
-Thanks for wanting to contribute! Here's everything you need to get up and running.
+Thanks for wanting to contribute! Here's everything you need to get started.
+
+## Getting Started
+
+A good place to start is the [`good first issue`](https://github.com/prassanna-ravishankar/repowire/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) label on GitHub. These are scoped tasks suited for new contributors.
 
 ## Setting Up the Dev Environment
 
@@ -48,9 +52,16 @@ uv tool install --force --reinstall .
 
 If your changes aren't showing up, this is almost always why.
 
+## Code Style
+
+Repowire uses [ruff](https://docs.astral.sh/ruff/) with a line length of 100. The full config is in `pyproject.toml`. You can auto-fix most issues with:
+```bash
+uv run ruff check repowire/ --fix
+```
+
 ## PR Workflow
 
-Fork the repo, create a branch, make your changes, and open a PR against `main`. Try to keep PRs focused on one thing — it makes review faster.
+Fork the repo, create a branch, make your changes, and open a PR against `main`. Try to keep PRs focused on one thing -- it makes review faster.
 ```bash
 git checkout -b your-branch-name
 # make your changes
@@ -59,33 +70,22 @@ git commit -m "short description of what and why"
 git push origin your-branch-name
 ```
 
-## Code Style
-
-Repowire uses [ruff](https://docs.astral.sh/ruff/) with a line length of 100. The full config is in `pyproject.toml`. You can auto-fix most issues with:
-```bash
-uv run ruff check repowire/ --fix
-```
-
 ## Where to Find Things
 
-`CLAUDE.md` has the full architecture overview — worth reading before diving in. Here's a quick map of the main areas:
+`CLAUDE.md` has the full architecture overview -- worth reading before diving in. Here's a quick map of the main areas:
 
 | Module | What it does |
 |---|---|
-| `daemon/` | Central routing hub — peer registry, message router, query tracker, HTTP routes |
-| `hooks/` | Default agent transport (Claude, Codex, Gemini) — session, stop, prompt, notification handlers |
+| `daemon/` | Central routing hub -- peer registry, message router, query tracker, HTTP routes |
+| `hooks/` | Default agent transport (Claude, Codex, Gemini) -- session, stop, prompt, notification handlers |
 | `channel/server.ts` | Experimental MCP stdio transport (requires bun) |
 | `mcp/server.py` | MCP tools: `list_peers`, `ask_peer`, `notify_peer`, etc. |
-| `relay/server.py` | Hosted relay at repowire.io — WS bridge and HTTP tunnel |
+| `relay/server.py` | Hosted relay at repowire.io -- WS bridge and HTTP tunnel |
 | `telegram/bot.py` | Telegram bot peer for mobile mesh control |
 | `slack/bot.py` | Slack bot peer via Socket Mode |
-| `web/` | Next.js dashboard — build with `repowire build-ui` |
+| `web/` | Next.js dashboard -- build with `repowire build-ui` |
 
-One thing worth knowing before you start: repowire follows a **lazy repair** philosophy. Nothing polls. Work is deferred until needed and piggy-backed on incoming requests. So when contributing, avoid adding polling loops, periodic timers, or eager disk writes -- it goes against the grain of how the whole system is designed.
-
-## Getting Started
-
-A good place to start is the [`good first issue`](https://github.com/prassanna-ravishankar/repowire/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) label on GitHub. These are scoped tasks suited for new contributors.
+Repowire follows a **lazy repair** philosophy. Nothing polls. Work is deferred until needed and piggy-backed on incoming requests. Avoid adding polling loops, periodic timers, or eager disk writes -- it goes against the grain of how the system is designed.
 
 ## Questions?
 
