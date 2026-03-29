@@ -17,7 +17,7 @@ cd repowire
 # Install dev dependencies (pytest, ruff, ty, httpx-ws)
 uv sync --extra dev --group dev
 
-# Install repowire globally — hooks run from the installed package, not source
+# Install repowire globally (hooks run from the installed package, not source)
 uv tool install --force --reinstall .
 ```
 
@@ -61,7 +61,7 @@ uv run ruff check repowire/ --fix
 
 ## PR Workflow
 
-Fork the repo, create a branch, make your changes, and open a PR against `main`. Try to keep PRs focused on one thing -- it makes review faster.
+Fork the repo, create a branch, make your changes, and open a PR against `main`. Try to keep PRs focused on one thing.
 ```bash
 git checkout -b your-branch-name
 # make your changes
@@ -72,20 +72,20 @@ git push origin your-branch-name
 
 ## Where to Find Things
 
-`CLAUDE.md` has the full architecture overview -- worth reading before diving in. Here's a quick map of the main areas:
+`CLAUDE.md` has the full architecture overview, worth reading before diving in. Here's a quick map of the main areas:
 
 | Module | What it does |
 |---|---|
-| `daemon/` | Central routing hub -- peer registry, message router, query tracker, HTTP routes |
-| `hooks/` | Default agent transport (Claude, Codex, Gemini) -- session, stop, prompt, notification handlers |
+| `daemon/` | Central routing hub: peer registry, message router, query tracker, HTTP routes |
+| `hooks/` | Default agent transport (Claude, Codex, Gemini): session, stop, prompt, notification handlers |
 | `channel/server.ts` | Experimental MCP stdio transport (requires bun) |
 | `mcp/server.py` | MCP tools: `list_peers`, `ask_peer`, `notify_peer`, etc. |
-| `relay/server.py` | Hosted relay at repowire.io -- WS bridge and HTTP tunnel |
+| `relay/server.py` | Hosted relay at repowire.io (WS bridge + HTTP tunnel) |
 | `telegram/bot.py` | Telegram bot peer for mobile mesh control |
 | `slack/bot.py` | Slack bot peer via Socket Mode |
-| `web/` | Next.js dashboard -- build with `repowire build-ui` |
+| `web/` | Next.js dashboard, build with `repowire build-ui` |
 
-Repowire follows a **lazy repair** philosophy. Nothing polls. Work is deferred until needed and piggy-backed on incoming requests. Avoid adding polling loops, periodic timers, or eager disk writes -- it goes against the grain of how the system is designed.
+Repowire follows a **lazy repair** philosophy. Nothing polls. Work is deferred until needed and piggy-backed on incoming requests. Avoid adding polling loops, periodic timers, or eager disk writes.
 
 ## Questions?
 
