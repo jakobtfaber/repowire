@@ -22,6 +22,12 @@ If you're working on the channel server:
 cd repowire/channel && bun install
 ```
 
+If you're working on the dashboard (`web/`):
+```bash
+cd web && npm install && npm run dev   # dev server
+repowire build-ui                      # production build (served by daemon at /dashboard)
+```
+
 ## Running Tests and Linting
 
 Before pushing anything, make sure these all pass:
