@@ -4,17 +4,14 @@ Thanks for wanting to contribute! Here's everything you need to get up and runni
 
 ## Setting Up the Dev Environment
 
-You'll need Python 3.11+, [uv](https://docs.astral.sh/uv/getting-started/installation/), and [bun](https://bun.sh/) if you're touching the channel server.
+You'll need Python 3.10+, [uv](https://docs.astral.sh/uv/getting-started/installation/), and [bun](https://bun.sh/) if you're touching the channel server.
 ```bash
 # Clone the repo
 git clone https://github.com/prassanna-ravishankar/repowire.git
 cd repowire
 
-# Install dev dependencies (pytest, ruff, ty)
-uv sync --extra dev
-
-# Install additional dependency for websocket tests
-uv pip install httpx-ws
+# Install dev dependencies (pytest, ruff, ty, httpx-ws)
+uv sync --extra dev --group dev
 
 # Install repowire globally — hooks run from the installed package, not source
 uv tool install --force --reinstall .
@@ -29,8 +26,8 @@ cd repowire/channel && bun install
 
 Before pushing anything, make sure these all pass:
 ```bash
-pytest                        # run tests
-ruff check repowire/          # lint
+uv run pytest                  # run tests
+uv run ruff check repowire/   # lint
 uv run ty check repowire/     # type check
 ```
 
@@ -38,7 +35,7 @@ CI runs all three on every PR, so it's easier to catch issues locally first.
 
 ## How Hooks Work
 
-This is the most common gotcha for new contributors: hooks run from the **installed package**, not directly from your source files. So after any code change, you need to reinstall before your changes will actually take effect:
+This is the most common gotcha for new contributors: hooks run from the **installed package**, not your source files. After any code change, reinstall before your changes take effect:
 ```bash
 uv tool install --force --reinstall .
 ```
@@ -47,11 +44,11 @@ If your changes aren't showing up, this is almost always why.
 
 ## PR Workflow
 
-Fork the repo, create a branch, make your changes, and open a PR against `main`. Try to keep PRs focused on one thing — it makes review a lot faster.
+Fork the repo, create a branch, make your changes, and open a PR against `main`. Try to keep PRs focused on one thing — it makes review faster.
 ```bash
 git checkout -b your-branch-name
 # make your changes
-git add .
+git add <files>
 git commit -m "short description of what and why"
 git push origin your-branch-name
 ```
@@ -60,7 +57,7 @@ git push origin your-branch-name
 
 Repowire uses [ruff](https://docs.astral.sh/ruff/) with a line length of 100. The full config is in `pyproject.toml`. You can auto-fix most issues with:
 ```bash
-ruff check repowire/ --fix
+uv run ruff check repowire/ --fix
 ```
 
 ## Where to Find Things
@@ -78,8 +75,12 @@ ruff check repowire/ --fix
 | `slack/bot.py` | Slack bot peer via Socket Mode |
 | `web/` | Next.js dashboard — build with `repowire build-ui` |
 
-One thing worth knowing before you start: repowire follows a **lazy repair** philosophy. Nothing polls. Work is deferred until needed and piggy-backed on incoming requests. So when contributing, avoid adding polling loops, periodic timers, or eager disk writes — it goes against the grain of how the whole system is designed.
+One thing worth knowing before you start: repowire follows a **lazy repair** philosophy. Nothing polls. Work is deferred until needed and piggy-backed on incoming requests. So when contributing, avoid adding polling loops, periodic timers, or eager disk writes -- it goes against the grain of how the whole system is designed.
+
+## Getting Started
+
+A good place to start is the [`good first issue`](https://github.com/prassanna-ravishankar/repowire/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) label on GitHub. These are scoped tasks suited for new contributors.
 
 ## Questions?
 
-Open an issue or start a discussion. Happy to help you get your first PR in.
+Open an issue if you get stuck or need guidance.
