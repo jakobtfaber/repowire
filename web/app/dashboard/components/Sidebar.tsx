@@ -45,7 +45,7 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
       <li key={peer.peer_id}>
         <button
           onClick={() => onSelectPeer(peer)}
-          aria-label={`Select peer ${peerLabel(peer)}`}
+          aria-label={`Select peer ${peerLabel(peer)} (${peer.status})`}
           aria-pressed={isSelected}
           className={cn(
             "w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-left transition-colors",
@@ -56,8 +56,7 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
         >
           <span
             className={cn("w-2 h-2 rounded-full shrink-0", statusDot(peer.status))}
-            aria-label={`Status: ${peer.status}`}
-            role="img"
+            aria-hidden="true"
           />
           <div className="flex flex-col min-w-0 flex-1">
             <span className="text-sm font-medium truncate">{peerLabel(peer)}</span>
@@ -127,7 +126,7 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
                           : "hover:bg-zinc-900 text-zinc-500"
                       )}
                     >
-                      <span className="w-2 h-2 rounded-full shrink-0 bg-zinc-700" aria-label="Status: offline" role="img" />
+                      <span className="w-2 h-2 rounded-full shrink-0 bg-zinc-700" aria-hidden="true" />
                       <span className="text-sm truncate">{peerLabel(peer)}</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800/50 text-zinc-600 font-mono shrink-0">
                         {peer.circle}
