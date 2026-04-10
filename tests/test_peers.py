@@ -85,6 +85,8 @@ class TestToDict:
         assert d["name"] == "dev"  # backward compat alias
         assert d["path"] == "/app"
         assert d["machine"] == "laptop"
+        assert d["tmux_session"] is None
+        assert d["backend"] == AgentType.CLAUDE_CODE
         assert d["description"] == "doing stuff"
         assert d["circle"] == "global"
         assert d["status"] == "offline"
@@ -120,13 +122,12 @@ class TestLegacyFields:
         peer = Peer(name="legacy-peer", path="/app", machine="host")
         assert peer.peer_id == "legacy-legacy-peer"
 
-    def test_peer_id_generated_from_tmux_session_when_no_name(self):
+    def test_peer_id_generated_from_tmux_session_priority(self):
         peer = Peer(
             display_name="x", path="/app", machine="host", tmux_session="dev:main"
         )
-        # peer_id should be provided or auto-generated from tmux_session
-        # In this case display_name is provided so peer_id generated from it
-        assert "x" in peer.peer_id or "dev:main" in peer.peer_id
+        # tmux_session has priority over display_name for legacy peer_id generation
+        assert peer.peer_id == "legacy-dev:main"
 
 
 class TestIsLocal:
