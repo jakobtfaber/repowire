@@ -1067,32 +1067,32 @@ def orchestrator_diff() -> None:
 
     console.print(f"[cyan]Found {len(repowire_owned_changes)} differences:[/]")
     ws = workspace_path()
-    template_root = _template_root()
-    for rel, status in repowire_owned_changes:
-        console.print(f"\n[bold]{rel}[/] — [yellow]{status}[/]")
-        if status == "symlink-broken":
-            console.print("  Run [cyan]repowire orchestrator init --force[/] to recreate.")
-            continue
-        local = ws / rel
-        shipped = template_root / rel
-        if status == "missing":
-            console.print(f"  File absent locally. Shipped at {shipped}")
-            continue
-        # differs — show a short diff
-        local_lines = local.read_text().splitlines(keepends=True)
-        shipped_lines = shipped.read_text().splitlines(keepends=True)
-        diff = list(difflib.unified_diff(
-            local_lines, shipped_lines,
-            fromfile=f"local:{rel}", tofile=f"shipped:{rel}", n=2,
-        ))
-        for line in diff[:30]:
-            console.print(line.rstrip(), highlight=False)
-        if len(diff) > 30:
-            console.print(f"  [dim]... {len(diff) - 30} more lines; diff truncated[/]")
-        console.print(
-            "  [dim]To accept upstream: cp the file from "
-            f"{shipped} → {local}[/]"
-        )
+    with _template_root() as template_root:
+        for rel, status in repowire_owned_changes:
+            console.print(f"\n[bold]{rel}[/] — [yellow]{status}[/]")
+            if status == "symlink-broken":
+                console.print("  Run [cyan]repowire orchestrator init --force[/] to recreate.")
+                continue
+            local = ws / rel
+            shipped = template_root / rel
+            if status == "missing":
+                console.print(f"  File absent locally. Shipped at {shipped}")
+                continue
+            # differs — show a short diff
+            local_lines = local.read_text().splitlines(keepends=True)
+            shipped_lines = shipped.read_text().splitlines(keepends=True)
+            diff = list(difflib.unified_diff(
+                local_lines, shipped_lines,
+                fromfile=f"local:{rel}", tofile=f"shipped:{rel}", n=2,
+            ))
+            for line in diff[:30]:
+                console.print(line.rstrip(), highlight=False)
+            if len(diff) > 30:
+                console.print(f"  [dim]... {len(diff) - 30} more lines; diff truncated[/]")
+            console.print(
+                "  [dim]To accept upstream: cp the file from "
+                f"{shipped} → {local}[/]"
+            )
 
 
 @orchestrator.command(name="start")

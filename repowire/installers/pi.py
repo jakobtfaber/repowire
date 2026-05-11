@@ -23,6 +23,7 @@ from pathlib import Path
 
 PLUGIN_CONTENT = r"""import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -81,7 +82,6 @@ let tmuxPane: string | undefined = undefined;
 // produce a different hash key for symlinked workspace paths.
 function consumeSpawnHint(projectPath: string, backend: string): { circle?: string; role?: string } | null {
   try {
-    const crypto = require("crypto") as typeof import("crypto");
     let resolved: string;
     try {
       resolved = fs.realpathSync(projectPath);

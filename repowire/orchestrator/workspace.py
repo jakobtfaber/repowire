@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
@@ -55,18 +57,19 @@ def workspace_path() -> Path:
     return Config.get_config_dir() / "orchestrator"
 
 
-def _template_root() -> Path:
-    """Return the bundled template root path (shipped as package-data)."""
-    # importlib.resources.files() returns a Traversable; for a packaged
-    # directory this is filesystem-backed when installed as a wheel or
-    # editable install.
-    root = resources.files("repowire.orchestrator") / "template"
-    # In the editable / source-tree case we get a PosixPath-like Traversable
-    # directly; for wheels we'd need as_file() context-managed extraction.
-    # Convert via str() to a real Path for the simple-case (wheels with
-    # force-include unpack to site-packages). If that ever stops working
-    # we'll switch to as_file().
-    return Path(str(root))
+@contextmanager
+def _template_root() -> Iterator[Path]:
+    """Yield the bundled template root as a real filesystem Path.
+
+    Uses importlib.resources.as_file() so the template works whether the
+    package is installed as a wheel (extracted to site-packages), an editable
+    install (source-tree path), or a zip-imported wheel (extracted to a temp
+    directory for the duration of the context). The yielded path is only
+    valid inside the `with` block.
+    """
+    traversable = resources.files("repowire.orchestrator") / "template"
+    with resources.as_file(traversable) as root:
+        yield root
 
 
 def is_installed() -> bool:
@@ -97,12 +100,15 @@ def init_workspace(*, force: bool = False) -> tuple[bool, str]:
         if ws.exists():
             shutil.rmtree(ws)
 
-    template_root = _template_root()
-    if not template_root.is_dir():
-        return False, f"Bundled template not found at {template_root}"
+    with _template_root() as template_root:
+        if not template_root.is_dir():
+            return False, f"Bundled template not found at {template_root}"
 
-    # Copy the template tree
-    shutil.copytree(template_root, ws)
+        # Copy the template tree. dirs_exist_ok=True so an empty
+        # ~/.repowire/orchestrator/ (user-mkdir'd, or leftover scaffolding)
+        # doesn't trip FileExistsError — we only fail-fast when AGENTS.md is
+        # present (atomic-install marker check above).
+        shutil.copytree(template_root, ws, dirs_exist_ok=True)
 
     # Create runtime-native symlinks pointing at AGENTS.md
     source = ws / SOURCE_FILE
@@ -176,21 +182,21 @@ def update_workspace() -> list[tuple[str, str]]:
     Files in ORCHESTRATOR_OWNED_FILES are skipped (never reported as differing).
     """
     ws = workspace_path()
-    template_root = _template_root()
     report: list[tuple[str, str]] = []
 
-    for rel in REPOWIRE_OWNED_FILES:
-        shipped = template_root / rel
-        local = ws / rel
-        if not shipped.exists():
-            continue  # template no longer ships this file
-        if not local.exists():
-            report.append((rel, "missing"))
-            continue
-        if shipped.read_bytes() == local.read_bytes():
-            report.append((rel, "identical"))
-        else:
-            report.append((rel, "differs"))
+    with _template_root() as template_root:
+        for rel in REPOWIRE_OWNED_FILES:
+            shipped = template_root / rel
+            local = ws / rel
+            if not shipped.exists():
+                continue  # template no longer ships this file
+            if not local.exists():
+                report.append((rel, "missing"))
+                continue
+            if shipped.read_bytes() == local.read_bytes():
+                report.append((rel, "identical"))
+            else:
+                report.append((rel, "differs"))
 
     # Symlinks
     source = ws / SOURCE_FILE
