@@ -1,0 +1,23 @@
+# Orchestrator typed config.
+#
+# Copy to `orchestrator.yaml` to activate (the .example is shipped so the
+# template stays read-only; the orchestrator or user creates the live file).
+#
+# All fields optional. CLI flags override these. Missing fields use defaults.
+
+# Preferred runtime for `repowire orchestrator start` when no --runtime flag.
+# Detection order if unset: pi, claude-code, codex, gemini, opencode.
+# runtime: pi
+
+# Circle (logical subnet) the orchestrator joins. Default: "default".
+# circle: default
+
+# Default telegram chat id for routing user-directed updates. Leave unset
+# to fall back to the global TELEGRAM_CHAT_ID from ~/.repowire/config.yaml.
+# telegram_chat_id: ""
+
+# Release cadence preference: "auto" | "bundle" | "ask"
+# release_cadence: bundle
+
+# Two-model critique threshold: "architectural" | "size" | "never"
+# critique_threshold: architectural

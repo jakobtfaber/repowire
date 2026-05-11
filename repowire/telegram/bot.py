@@ -257,6 +257,9 @@ class TelegramPeer:
                         await asyncio.sleep(backoff)
                         continue
                     logger.info("Connected: %s", resp.get("session_id"))
+                    # Best-effort: route user messages to the orchestrator by
+                    # default if one is registered. User can still /select.
+                    await self._seed_default_target_from_orchestrator()
                     async for raw in ws:
                         await self._on_ws(json.loads(raw))
             except asyncio.CancelledError:
@@ -268,6 +271,32 @@ class TelegramPeer:
                 self._ws = None
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+
+    async def _seed_default_target_from_orchestrator(self) -> None:
+        """If an orchestrator peer is registered and no _reply_target is set,
+        seed _reply_target to the orchestrator's display_name so user-typed
+        messages route there by default. User can still /select another peer.
+        """
+        if self._reply_target:
+            return  # respect explicit prior selection
+        try:
+            peers = await self._fetch_online_peers(use_cache=False)
+        except Exception:
+            return
+        orchestrators = [
+            p for p in peers
+            if p.get("role") == "orchestrator"
+            and p.get("status") in ("online", "busy")
+        ]
+        if not orchestrators:
+            return
+        # Prefer the local one if multiple exist (shouldn't happen, but defensive)
+        target = orchestrators[0]
+        name = target.get("name") or target.get("display_name")
+        if not name:
+            return
+        self._reply_target = name
+        logger.info("Default reply target seeded to orchestrator: %s", name)
 
     async def _on_ws(self, msg: dict[str, Any]) -> None:
         t = msg.get("type", "")

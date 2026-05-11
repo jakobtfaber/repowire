@@ -48,16 +48,20 @@ def _hint_path(path: str, backend: str) -> Path:
     return _hints_dir() / f"{_hint_key(path, backend)}.json"
 
 
-def write_hint(path: str, backend: str, circle: str) -> None:
+def write_hint(
+    path: str, backend: str, circle: str, *, role: str | None = None,
+) -> None:
     """Record spawn intent so a peer registering from this path+backend can
-    discover its requested circle.
+    discover its requested circle (and optionally role).
     """
-    payload = {
+    payload: dict = {
         "path": str(Path(path).resolve()),
         "backend": backend,
         "circle": circle,
         "ts": time.time(),
     }
+    if role:
+        payload["role"] = role
     target = _hint_path(path, backend)
     try:
         target.write_text(json.dumps(payload))
@@ -70,6 +74,19 @@ def consume_hint(path: str, backend: str) -> str | None:
 
     Returns the requested circle, or None if no fresh hint exists. Stale
     hints (older than HINT_TTL_SECONDS) are deleted and treated as missing.
+
+    Use consume_hint_full() if the role hint is also needed; this thin
+    wrapper preserves the legacy str-returning contract.
+    """
+    data = consume_hint_full(path, backend)
+    return data["circle"] if data else None
+
+
+def consume_hint_full(path: str, backend: str) -> dict | None:
+    """Read and delete the spawn hint for (path, backend), returning the full payload.
+
+    Returns a dict with at least 'circle' (str), and optionally 'role' (str).
+    None when no fresh hint exists.
     """
     target = _hint_path(path, backend)
     try:
@@ -97,4 +114,9 @@ def consume_hint(path: str, backend: str) -> str | None:
 
     if age > HINT_TTL_SECONDS:
         return None
-    return circle
+
+    out: dict = {"circle": circle}
+    role = data.get("role")
+    if isinstance(role, str) and role:
+        out["role"] = role
+    return out

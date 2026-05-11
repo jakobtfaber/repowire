@@ -244,6 +244,26 @@ def setup(
     # Save config
     config.save()
 
+    # Orchestrator workspace: prompt to scaffold (opt-in, skip if already installed)
+    try:
+        from repowire.orchestrator.workspace import init_workspace, is_installed
+
+        if not is_installed() and interactive:
+            if click.confirm(
+                "Set up the orchestrator workspace at ~/.repowire/orchestrator/?",
+                default=False,
+            ):
+                rendered, msg = init_workspace()
+                if rendered:
+                    console.print(f"[green]✓[/] {msg}")
+                    console.print(
+                        "[dim]  Launch with[/] [cyan]repowire orchestrator start[/]"
+                    )
+                else:
+                    console.print(f"[yellow]![/] {msg}")
+    except Exception as e:
+        console.print(f"[dim]Orchestrator scaffold skipped: {e}[/]")
+
     # Install daemon as system service
     if not no_service:
         from repowire.service.installer import get_platform, install_service
@@ -933,6 +953,256 @@ def gemini_status() -> None:
     else:
         console.print("[yellow]Gemini components not installed.[/]")
         console.print("Run 'repowire gemini install' to set up.")
+
+
+# =============================================================================
+# orchestrator command group - scaffold + launch persistent orchestrator peer
+# =============================================================================
+
+
+@main.group()
+def orchestrator() -> None:
+    """Scaffold + launch the orchestrator workspace + peer."""
+    pass
+
+
+# Runtime preference order for orchestrator. Pi is preferred when installed
+# (it's the orchestrator-shaped runtime). Falls back through the others.
+_ORCHESTRATOR_RUNTIME_PREFERENCE = (
+    "pi",
+    "claude-code",
+    "codex",
+    "gemini",
+    "opencode",
+)
+
+# Spawn command per backend. Codex needs the bypass flag or warmup is eaten
+# by approval prompts.
+_ORCHESTRATOR_RUNTIME_COMMANDS = {
+    "pi": "pi",
+    "claude-code": "claude --dangerously-skip-permissions",
+    "codex": "codex --dangerously-bypass-approvals-and-sandbox",
+    "gemini": "gemini --yolo",
+    "opencode": "opencode",
+}
+
+
+def _detect_runtime_for_orchestrator() -> str | None:
+    """Pick a runtime in preference order. Returns name or None if none found.
+
+    Pi only wins if its repowire extension is installed — otherwise the spawned
+    pi session won't join the mesh and the orchestrator would be orphaned.
+    """
+    import shutil as _shutil
+
+    from repowire.installers.pi import check_extension_installed as _pi_extension_installed
+
+    if (_shutil.which("pi") or (Path.home() / ".pi").exists()) and _pi_extension_installed():
+        return "pi"
+    for name, exe in (
+        ("claude-code", "claude"),
+        ("codex", "codex"),
+        ("gemini", "gemini"),
+        ("opencode", "opencode"),
+    ):
+        if _shutil.which(exe):
+            return name
+    return None
+
+
+def _load_orchestrator_yaml() -> dict:
+    """Load orchestrator.yaml from the workspace if present. Empty dict on miss."""
+    import yaml
+
+    from repowire.orchestrator import workspace_path
+
+    candidate = workspace_path() / "orchestrator.yaml"
+    if not candidate.is_file():
+        return {}
+    try:
+        with candidate.open() as f:
+            data = yaml.safe_load(f) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        console.print(f"[yellow]Warning: could not parse orchestrator.yaml: {e}[/]")
+        return {}
+
+
+@orchestrator.command(name="init")
+@click.option("--force", is_flag=True, help="Re-render workspace, backing up the current one")
+def orchestrator_init(force: bool) -> None:
+    """Scaffold ~/.repowire/orchestrator/ from the bundled template."""
+    from repowire.orchestrator import init_workspace
+
+    rendered, msg = init_workspace(force=force)
+    if rendered:
+        console.print(f"[green]✓[/] {msg}")
+        console.print("[dim]Next:[/] [cyan]repowire orchestrator start[/]")
+    else:
+        console.print(f"[yellow]![/] {msg}")
+
+
+@orchestrator.command(name="diff")
+def orchestrator_diff() -> None:
+    """Diff bundled template vs. workspace for repowire-owned files (read-only).
+
+    Surfaces what changed in the shipped template since you initialized.
+    Apply changes manually with cp, or `repowire orchestrator init --force` to
+    re-render fresh (backs up current workspace first).
+    """
+    import difflib
+
+    from repowire.orchestrator import update_workspace, workspace_path
+    from repowire.orchestrator.workspace import _template_root
+
+    if not (workspace_path() / "AGENTS.md").exists():
+        console.print("[red]Workspace not initialized.[/] Run [cyan]repowire orchestrator init[/].")
+        return
+
+    report = update_workspace()
+    repowire_owned_changes = [(p, s) for p, s in report if s != "identical"]
+    if not repowire_owned_changes:
+        console.print("[green]✓[/] Workspace is up to date with bundled template.")
+        return
+
+    console.print(f"[cyan]Found {len(repowire_owned_changes)} differences:[/]")
+    ws = workspace_path()
+    template_root = _template_root()
+    for rel, status in repowire_owned_changes:
+        console.print(f"\n[bold]{rel}[/] — [yellow]{status}[/]")
+        if status == "symlink-broken":
+            console.print("  Run [cyan]repowire orchestrator init --force[/] to recreate.")
+            continue
+        local = ws / rel
+        shipped = template_root / rel
+        if status == "missing":
+            console.print(f"  File absent locally. Shipped at {shipped}")
+            continue
+        # differs — show a short diff
+        local_lines = local.read_text().splitlines(keepends=True)
+        shipped_lines = shipped.read_text().splitlines(keepends=True)
+        diff = list(difflib.unified_diff(
+            local_lines, shipped_lines,
+            fromfile=f"local:{rel}", tofile=f"shipped:{rel}", n=2,
+        ))
+        for line in diff[:30]:
+            console.print(line.rstrip(), highlight=False)
+        if len(diff) > 30:
+            console.print(f"  [dim]... {len(diff) - 30} more lines; diff truncated[/]")
+        console.print(
+            "  [dim]To accept upstream: cp the file from "
+            f"{shipped} → {local}[/]"
+        )
+
+
+@orchestrator.command(name="start")
+@click.option(
+    "--runtime",
+    type=click.Choice(list(_ORCHESTRATOR_RUNTIME_PREFERENCE)),
+    default=None,
+    help="Override the auto-detected runtime",
+)
+@click.option(
+    "--service",
+    is_flag=True,
+    help="(v2) Install as launchd/systemd service. Currently a placeholder.",
+)
+def orchestrator_start(runtime: str | None, service: bool) -> None:
+    """Spawn the orchestrator peer in its workspace."""
+    import httpx
+
+    from repowire.config.models import AgentType
+    from repowire.orchestrator import (
+        init_workspace,
+        validate_workspace,
+        workspace_path,
+    )
+    from repowire.spawn import SpawnConfig, spawn_peer
+
+    if service:
+        console.print(
+            "[yellow]--service mode is planned for v2; "
+            "falling back to manual tmux launch.[/]"
+        )
+
+    ws = workspace_path()
+
+    # Preflight 1: workspace
+    if not (ws / "AGENTS.md").exists():
+        console.print(
+            "[yellow]Workspace not initialized at "
+            f"{ws}.[/] Running [cyan]orchestrator init[/]..."
+        )
+        rendered, msg = init_workspace()
+        if rendered:
+            console.print(f"[green]✓[/] {msg}")
+        else:
+            console.print(f"[red]✗[/] {msg}")
+            return
+
+    ok, errors = validate_workspace()
+    if not ok:
+        console.print("[red]Workspace validation failed:[/]")
+        for e in errors:
+            console.print(f"  [red]✗[/] {e}")
+        console.print(
+            "Try [cyan]repowire orchestrator init --force[/] to recreate."
+        )
+        return
+
+    # Preflight 2: daemon reachable
+    daemon_url = _get_daemon_url()
+    try:
+        with httpx.Client(timeout=2.0) as client:
+            resp = client.get(f"{daemon_url}/health")
+            resp.raise_for_status()
+    except httpx.ConnectError:
+        console.print(
+            f"[red]✗[/] Daemon not reachable at {daemon_url}. "
+            "Start it with [cyan]repowire serve[/] (or "
+            "[cyan]repowire service install[/] for auto-start)."
+        )
+        return
+    except Exception as e:
+        console.print(f"[red]✗[/] Daemon health check failed: {e}")
+        return
+
+    # Preflight 3: runtime selection
+    yaml_config = _load_orchestrator_yaml()
+    selected_runtime = runtime or yaml_config.get("runtime") or _detect_runtime_for_orchestrator()
+    if not selected_runtime:
+        console.print(
+            "[red]✗[/] No supported runtime found on PATH. "
+            "Install one of: pi, claude, codex, gemini, opencode."
+        )
+        return
+    if selected_runtime not in _ORCHESTRATOR_RUNTIME_COMMANDS:
+        console.print(f"[red]✗[/] Unknown runtime: {selected_runtime}")
+        return
+
+    circle = yaml_config.get("circle") or "default"
+    backend = AgentType(selected_runtime)
+    command = _ORCHESTRATOR_RUNTIME_COMMANDS[selected_runtime]
+
+    console.print(
+        f"[cyan]Spawning orchestrator[/] "
+        f"(runtime={selected_runtime}, circle={circle}, role=orchestrator)..."
+    )
+    try:
+        result = spawn_peer(SpawnConfig(
+            path=str(ws),
+            circle=circle,
+            backend=backend,
+            command=command,
+            role="orchestrator",
+        ))
+    except Exception as e:
+        console.print(f"[red]✗[/] Spawn failed: {e}")
+        return
+
+    console.print(f"[green]✓[/] Orchestrator spawned at [cyan]{result.tmux_session}[/]")
+    console.print(f"  Attach: [cyan]tmux attach -t {circle}[/]")
+    console.print(f"  Dashboard: {daemon_url}/dashboard")
 
 
 @main.group()

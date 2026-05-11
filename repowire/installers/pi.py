@@ -64,12 +64,49 @@ const DAEMON_WS_URL = process.env.REPOWIRE_DAEMON_WS_URL || "ws://127.0.0.1:8377
 const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN || "";
 const QUERY_TIMEOUT_MS = 120_000;
 const MAX_RECONNECT_ATTEMPTS = 50;
+const SPAWN_HINT_TTL_MS = 300_000;
 
 // Module state (process-wide, not per-session).
 let projectPath: string = process.cwd();
 let circle: string = "default";
+let role: string | undefined = undefined;
 let tmuxSession: string | undefined = undefined;
 let tmuxPane: string | undefined = undefined;
+
+// Spawn hint consumer. Matches repowire/spawn_hints.py: hash key is
+// sha256(`${resolved_path}::${backend}`).slice(0,16), file is JSON with
+// {path, backend, circle, role?, ts}. Read once at startup; delete on use.
+// Uses fs.realpathSync to canonicalize symlinks the same way Python's
+// Path.resolve() does — Node's path.resolve() is purely lexical and would
+// produce a different hash key for symlinked workspace paths.
+function consumeSpawnHint(projectPath: string, backend: string): { circle?: string; role?: string } | null {
+  try {
+    const crypto = require("crypto") as typeof import("crypto");
+    let resolved: string;
+    try {
+      resolved = fs.realpathSync(projectPath);
+    } catch {
+      resolved = path.resolve(projectPath);
+    }
+    const raw = `${resolved}::${backend}`;
+    const key = crypto.createHash("sha256").update(raw).digest("hex").slice(0, 16);
+    const hintPath = path.join(os.homedir(), ".cache", "repowire", "spawn-hints", `${key}.json`);
+    if (!fs.existsSync(hintPath)) return null;
+    const data = JSON.parse(fs.readFileSync(hintPath, "utf-8")) as {
+      circle?: unknown; role?: unknown; ts?: unknown;
+    };
+    try { fs.unlinkSync(hintPath); } catch { /* best-effort */ }
+    if (typeof data.ts !== "number") return null;
+    if (Date.now() - data.ts * 1000 > SPAWN_HINT_TTL_MS) return null;
+    const out: { circle?: string; role?: string } = {};
+    if (typeof data.circle === "string" && data.circle) out.circle = data.circle;
+    if (typeof data.role === "string" && data.role) out.role = data.role;
+    return out;
+  } catch (e) {
+    console.debug("[repowire] consumeSpawnHint failed:", e);
+    return null;
+  }
+}
 
 // Per-session registries.
 const peerBySession = new Map<string, PeerConn>();
@@ -150,6 +187,7 @@ function connectPeerWebSocket(conn: PeerConn) {
       backend: "pi",
       path: projectPath,
     };
+    if (role) connectMsg.role = role;
     const cachedPeerId = conn.peerId || loadPeerId(projectPath, conn.sessionId);
     if (cachedPeerId) connectMsg.peer_id = cachedPeerId;
     if (tmuxSession) connectMsg.tmux_session = tmuxSession;
@@ -446,6 +484,15 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     } catch (e) {
       console.warn("[repowire] Failed to derive circle from tmux:", e);
     }
+  }
+
+  // Consume spawn hint: recovers `role` (and `circle` as fallback when tmux
+  // derivation failed) for peers spawned via `spawn_peer` (e.g. orchestrator).
+  // Hint file is one-shot (deleted on read) and TTL-bounded.
+  const hint = consumeSpawnHint(projectPath, "pi");
+  if (hint) {
+    if (hint.role) role = hint.role;
+    if (hint.circle && circle === "default") circle = hint.circle;
   }
 
   // Session lifecycle. Register peer only on startup/new (not on resume/

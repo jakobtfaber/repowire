@@ -26,7 +26,7 @@ from repowire.hooks.utils import (
     ws_hook_lock_path,
     ws_hook_pid_path,
 )
-from repowire.spawn_hints import consume_hint
+from repowire.spawn_hints import consume_hint_full
 
 
 def _register_peer_http(
@@ -36,6 +36,7 @@ def _register_peer_http(
     *,
     pane_id: str | None = None,
     metadata: dict | None = None,
+    role: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Register peer via HTTP POST /peers. Returns (peer_id, display_name)."""
     folder = Path(path).name
@@ -49,6 +50,8 @@ def _register_peer_http(
         payload["pane_id"] = pane_id
     if metadata:
         payload["metadata"] = metadata
+    if role:
+        payload["role"] = role
     result = daemon_post("/peers", payload)
     if result:
         return result.get("peer_id"), result.get("display_name")
@@ -233,11 +236,13 @@ def main(backend: str = "claude-code") -> int:
         # Register peer via HTTP -- daemon assigns peer_id and display_name.
         # Codex strips tmux env from hook subprocesses, so fall back to the
         # spawn hint before defaulting.
+        hint = consume_hint_full(cwd, backend)
         circle = (
             tmux_info["session_name"]
-            or consume_hint(cwd, backend)
+            or (hint["circle"] if hint else None)
             or "default"
         )
+        hint_role = hint.get("role") if hint else None
         metadata = {"project": folder_name}
         peer_id, display_name = _register_peer_http(
             cwd,
@@ -245,6 +250,7 @@ def main(backend: str = "claude-code") -> int:
             backend_type,
             pane_id=pane_id,
             metadata=metadata,
+            role=hint_role,
         )
         if not display_name:
             display_name = folder_name  # fallback if daemon unreachable

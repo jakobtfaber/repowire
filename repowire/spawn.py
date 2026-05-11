@@ -31,6 +31,7 @@ class SpawnConfig:
     backend: AgentType
     command: str = ""  # Full command to run (e.g., "claude --model opus")
     message: str | None = None  # Optional warmup intent passed to post_spawn_warmup
+    role: str | None = None  # Optional peer role (e.g. "orchestrator"); default agent
 
     @property
     def display_name(self) -> str:
@@ -88,8 +89,11 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
         raise ValueError(f"Unknown agent type: {config.backend}")
 
     # Drop a hint so runtimes that strip tmux env (codex) can still discover
-    # the requested circle when their MCP/hook subprocess registers.
-    write_hint(config.path, config.backend.value, config.circle)
+    # the requested circle when their MCP/hook subprocess registers. Role is
+    # included for spawns that need a non-default role (e.g. orchestrator).
+    write_hint(
+        config.path, config.backend.value, config.circle, role=config.role,
+    )
 
     pane.send_keys(cmd, enter=True)
 
