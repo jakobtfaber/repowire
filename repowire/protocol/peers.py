@@ -31,7 +31,8 @@ class PeerStatus(str, Enum):
 class Peer(BaseModel):
     """A peer in the Repowire mesh.
 
-    A peer represents a Claude Code, OpenCode, or Codex session that can send and receive messages.
+    A peer represents a Claude Code, OpenCode, Codex, Gemini, or Pi session
+    that can send and receive messages.
 
     Identity is based on a canonical `peer_id` assigned by the daemon's
     SessionMapper on WebSocket connect: `repow-{circle}-{uuid8}`
@@ -54,7 +55,7 @@ class Peer(BaseModel):
     # Agent type
     backend: AgentType = Field(
         default=AgentType.CLAUDE_CODE,
-        description="Agent type: claude-code, opencode, codex, or gemini"
+        description="Agent type: claude-code, opencode, codex, gemini, or pi"
     )
 
     # circle (logical subnet)

@@ -244,3 +244,33 @@ def test_command_to_backend_includes_pi():
     from repowire.daemon.routes.spawn import _COMMAND_TO_BACKEND
 
     assert _COMMAND_TO_BACKEND.get("pi") == AgentType.PI
+
+
+# -- Parity surface: spawn_peer, kill_peer, mesh primer, ask reminder -------
+
+
+def test_spawn_peer_tool_registered():
+    """spawn_peer mirrors MCP server: POSTs to /spawn with path/command/circle."""
+    assert 'name: "spawn_peer"' in PLUGIN_CONTENT
+    assert '"/spawn"' in PLUGIN_CONTENT
+
+
+def test_kill_peer_tool_registered():
+    """kill_peer POSTs to /kill-peer and reports tmux_killed outcome."""
+    assert 'name: "kill_peer"' in PLUGIN_CONTENT
+    assert '"/kill-peer"' in PLUGIN_CONTENT
+    assert "tmux_killed" in PLUGIN_CONTENT
+
+
+def test_session_start_mesh_primer():
+    """buildMeshContext mirrors hooks/session_handler format_peers_context."""
+    assert "buildMeshContext" in PLUGIN_CONTENT
+    assert "[Repowire Mesh]" in PLUGIN_CONTENT
+    # One-shot guard so reconnects don't re-prime.
+    assert "introduced" in PLUGIN_CONTENT
+
+
+def test_turn_end_polls_open_asks():
+    """turn_end runs pollAndRemindOpenAsks (backstop for unacked asks)."""
+    assert "pollAndRemindOpenAsks" in PLUGIN_CONTENT
+    assert "/asks/pending?peer_id=" in PLUGIN_CONTENT

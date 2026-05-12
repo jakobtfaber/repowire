@@ -105,7 +105,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.send_json(
                 {
                     "type": "error",
-                    "error": "Invalid backend: must be claude-code, opencode, codex, or gemini",
+                    "error": "Invalid backend: must be claude-code, opencode, codex, gemini, or pi",
                 }
             )
             await websocket.close(code=4002, reason="Invalid backend")

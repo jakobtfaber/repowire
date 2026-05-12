@@ -58,6 +58,9 @@ interface PeerConn {
   // Tracks the currently-streaming correlation. message_update deltas and
   // turn_end finalize get routed to this pending query.
   activeTurnCorrelationId: string | null;
+  // True once we have soft-injected the SessionStart mesh primer for this
+  // session. One-shot per PeerConn lifetime so reconnects don't re-prime.
+  introduced: boolean;
 }
 
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL || "http://127.0.0.1:8377";
@@ -271,6 +274,87 @@ async function softInject(text: string): Promise<boolean> {
   }
 }
 
+// Build a SessionStart-style mesh primer matching hooks/session_handler.py
+// format_peers_context. Soft-injected once at session start so pi agents
+// know which peer they are, who else is online, and how to use ask/ack.
+async function buildMeshContext(myPeerName: string): Promise<string | null> {
+  try {
+    const result = await daemon("/peers");
+    const peers = (result.peers || []) as Array<{
+      name?: string; status?: string; path?: string;
+      backend?: string; description?: string; metadata?: { branch?: string };
+    }>;
+    const others = peers.filter((p) => p.name !== myPeerName && p.status === "online");
+
+    const lines: string[] = [];
+    lines.push(
+      "[Repowire Mesh] You are peer \"" + myPeerName + "\". You have access to other coding sessions working on related projects:",
+    );
+    if (others.length === 0) {
+      lines.push("  (no other peers online)");
+    } else {
+      for (const p of others) {
+        const branch = p.metadata?.branch ? " on " + p.metadata.branch : "";
+        const projectName = path.basename(p.path || "") || p.name || "";
+        const agent = p.backend || "claude-code";
+        const desc = p.description ? " - " + p.description : "";
+        lines.push("  - " + (p.name || "") + branch + " (" + projectName + ", " + agent + ")" + desc);
+      }
+    }
+    lines.push("");
+    lines.push(
+      "IMPORTANT: When asked about these projects, ask the peer directly via ask() rather than searching locally. ask() is non-blocking and returns a correlation_id; the peer responds via ack(corr_id) or ack(corr_id, message). Use ask(reply_to=corr_id, ...) to chain a follow-up that closes the prior thread.",
+    );
+    lines.push(
+      "Messages from @dashboard or @telegram are from the human user - treat them like direct instructions. Use notify_peer('telegram', msg) to send updates to the user's phone.",
+    );
+    lines.push(
+      "Inbound asks arrive framed as `@peer [ask #corr_id]: ...` -- you MUST close them with ack(corr_id) (bare seen-no-action) or ack(corr_id, message) (reply). Otherwise repowire will inject a reminder on your next turn. Inbound replies arrive as `[ack #corr_id from @peer] message` -- those are closures, no ack needed.",
+    );
+    lines.push(
+      "Call set_description(\"brief task summary\") early - it becomes your title in the dashboard and peer list.",
+    );
+    lines.push("Peer list may be outdated - use list_peers() to refresh.");
+    return lines.join("\n");
+  } catch (e) {
+    console.debug("[repowire] buildMeshContext failed:", e);
+    return null;
+  }
+}
+
+// Turn-boundary ask-reminder backstop. Equivalent to the Stop hook poll
+// other backends do: fetch /asks/pending for this peer; if any open asks
+// exist, softInject a compact reminder so the agent acks them on the
+// next turn. Open asks reappear every turn_end until acked — no
+// once-only flag, mirrors hooks/ask_lifecycle.py.
+async function pollAndRemindOpenAsks(conn: PeerConn): Promise<void> {
+  if (!conn.peerId) return;
+  try {
+    const url = DAEMON_URL + "/asks/pending?peer_id=" + encodeURIComponent(conn.peerId);
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const res = await fetch(url, { headers });
+    if (!res.ok) return;
+    const result = await res.json() as { asks?: Array<{ correlation_id?: string; from_peer?: string; text?: string }> };
+    const asks = result.asks || [];
+    if (asks.length === 0) return;
+    const lines: string[] = [];
+    lines.push(
+      "[repowire] " + asks.length + " open ask(s). Handle each: ack(corr_id) bare if no reply needed, ack(corr_id, message) to reply.",
+    );
+    for (const a of asks) {
+      const cid = a.correlation_id || "?";
+      const fromPeer = a.from_peer || "?";
+      let body = (a.text || "").trim().replace(/\n/g, " ");
+      if (body.length > 150) body = body.slice(0, 149) + "…";
+      const head = "  - #" + cid + " from @" + fromPeer;
+      lines.push(body ? head + ": " + body : head);
+    }
+    await softInject(lines.join("\n"));
+  } catch (e) {
+    console.debug("[repowire] pollAndRemindOpenAsks failed:", e);
+  }
+}
+
 async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>) {
   const msgType = data.type as string;
 
@@ -281,6 +365,13 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
       savePeerId(projectPath, conn.sessionId, conn.peerId);
     }
     sendStatus(conn, conn.busy ? "busy" : "idle");
+    // SessionStart-equivalent mesh primer: tell the agent who it is, who
+    // else is online, and how ask/ack works. One-shot per PeerConn.
+    if (!conn.introduced) {
+      conn.introduced = true;
+      const primer = await buildMeshContext(conn.peerName);
+      if (primer) await softInject(primer);
+    }
   } else if (msgType === "query") {
     const correlationId = data.correlation_id as string;
     const fromPeer = data.from_peer as string;
@@ -325,6 +416,7 @@ function ensurePeer(sessionId: string, sessionName: string | null) {
     reconnectAttempts: 0,
     closed: false,
     activeTurnCorrelationId: null,
+    introduced: false,
   };
   peerBySession.set(sessionId, conn);
   connectPeerWebSocket(conn);
@@ -562,6 +654,10 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     }
     conn.busy = false;
     sendStatus(conn, "idle");
+    // Turn-boundary ask-reminder backstop: mirror Stop hook behavior for
+    // claude-code/codex/gemini. Open asks reappear every turn_end until
+    // acked. Fire-and-forget; failures are logged but don't block the turn.
+    void pollAndRemindOpenAsks(conn);
   });
 
   // message_update carries an assistantMessageEvent union. text_delta gives
@@ -732,6 +828,62 @@ export default async function repowireExtension(pi: ExtensionAPI) {
       const me = callerPeer(ctx);
       await daemon("/peers/" + encodeURIComponent(me.peerName) + "/description", { description: params.description });
       return { content: [{ type: "text", text: "description updated: " + params.description }], details: undefined };
+    },
+  });
+
+  pi.registerTool({
+    name: "spawn_peer",
+    label: "Repowire: spawn peer",
+    description: "Spawn a new coding session in a different project directory. The command must exactly match an entry in daemon.spawn.allowed_commands in ~/.repowire/config.yaml. If no allowed_commands are configured, spawn is disabled. The spawned agent self-registers into the mesh shortly after start; use list_peers to confirm. Circle maps to tmux session name and cannot be reassigned after spawn. Pass message to seed the spawned agent with first-turn context; required for codex peers to fire SessionStart promptly.",
+    parameters: Type.Object({
+      path: Type.String({ description: "Absolute path to the project directory" }),
+      command: Type.String({ description: "Command to run (must be in allowed_commands)" }),
+      circle: Type.Optional(Type.String({ description: "Circle to spawn into (default: 'default')" })),
+      message: Type.Optional(Type.String({ description: "Optional first-turn prompt for the spawned agent" })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      const body: Record<string, unknown> = {
+        path: params.path,
+        command: params.command,
+        circle: params.circle || "default",
+      };
+      if (params.message !== undefined) body.message = params.message;
+      const result = await daemon("/spawn", body);
+      const name = result.display_name as string;
+      const tmux = result.tmux_session as string;
+      const text = "Spawned " + name + " (tmux: " + tmux + "). Peer will self-register shortly. Use list_peers() to confirm and get peer_id. Address it as '" + name + "' via ask/notify_peer.";
+      return { content: [{ type: "text", text }], details: undefined };
+    },
+  });
+
+  pi.registerTool({
+    name: "kill_peer",
+    label: "Repowire: kill peer",
+    description: "Kill a registered local coding session. The peer is always deregistered from the mesh. The tmux pane behind it is only killed if the daemon spawned the peer via spawn_peer in the current daemon lifetime. Externally attached peers, or peers whose ownership was lost across a daemon restart, are deregistered without touching tmux — verify and follow up with `tmux kill-pane` if the pane survives.",
+    parameters: Type.Object({
+      peer_identifier: Type.String({ description: "Peer ID or display name from list_peers" }),
+      circle: Type.Optional(Type.String({ description: "Optional circle to disambiguate display names" })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const me = callerPeer(ctx);
+      const body: Record<string, unknown> = {
+        peer_identifier: params.peer_identifier,
+        from_peer: me.peerName,
+      };
+      if (params.circle !== undefined) body.circle = params.circle;
+      const result = await daemon("/kill-peer", body);
+      const scoped = params.circle ? " in circle " + params.circle : "";
+      const tmuxKilled = result?.tmux_killed;
+      let tmuxNote: string;
+      if (tmuxKilled === true) {
+        tmuxNote = "tmux pane killed";
+      } else if (tmuxKilled === false) {
+        tmuxNote = "tmux pane kill attempted but failed (verify with `tmux list-panes`)";
+      } else {
+        tmuxNote = "tmux pane kill skipped (daemon ownership not proven — externally attached, or daemon restarted since spawn). Verify with `tmux list-panes` and manually `tmux kill-pane` if needed.";
+      }
+      const text = "Killed peer " + params.peer_identifier + scoped + ": " + tmuxNote;
+      return { content: [{ type: "text", text }], details: undefined };
     },
   });
 
