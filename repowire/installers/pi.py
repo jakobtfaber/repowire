@@ -161,7 +161,14 @@ async function daemon(p: string, body?: object) {
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error("Daemon error: " + res.status);
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = (await res.text()).trim();
+    } catch { /* best-effort */ }
+    const suffix = detail ? ": " + detail : "";
+    throw new Error("Daemon error " + res.status + suffix);
+  }
   return res.json();
 }
 
@@ -255,6 +262,9 @@ function sendError(conn: PeerConn, correlationId: string, error: string) {
 let piApi: ExtensionAPI | null = null;
 let piCtx: ExtensionContext | null = null;
 
+// Active path: inbound asks/notifications/broadcasts from peers. These are
+// genuine mesh traffic and should reach the agent now — when idle, trigger a
+// turn via sendUserMessage; while streaming, queue with deliverAs:"steer".
 async function softInject(text: string): Promise<boolean> {
   if (!piApi) {
     console.warn("[repowire] No pi API available for soft inject");
@@ -270,6 +280,29 @@ async function softInject(text: string): Promise<boolean> {
     return true;
   } catch (e) {
     console.warn("[repowire] Failed to soft-inject:", e);
+    return false;
+  }
+}
+
+// Passive path: reminders and the SessionStart mesh primer. Must NEVER
+// trigger a turn — otherwise pollAndRemindOpenAsks at turn_end would
+// self-trigger the next turn, which would fire turn_end again, looping.
+// pi.sendMessage with deliverAs:"nextTurn" queues the content as context
+// for the next genuinely human-driven turn without interrupting or
+// triggering anything.
+function passiveInject(text: string, customType: string): boolean {
+  if (!piApi) {
+    console.warn("[repowire] No pi API available for passive inject");
+    return false;
+  }
+  try {
+    piApi.sendMessage(
+      { customType, content: text, display: true },
+      { deliverAs: "nextTurn" },
+    );
+    return true;
+  } catch (e) {
+    console.warn("[repowire] Failed to passive-inject:", e);
     return false;
   }
 }
@@ -349,7 +382,7 @@ async function pollAndRemindOpenAsks(conn: PeerConn): Promise<void> {
       const head = "  - #" + cid + " from @" + fromPeer;
       lines.push(body ? head + ": " + body : head);
     }
-    await softInject(lines.join("\n"));
+    passiveInject(lines.join("\n"), "repowire-ask-reminder");
   } catch (e) {
     console.debug("[repowire] pollAndRemindOpenAsks failed:", e);
   }
@@ -366,11 +399,16 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
     }
     sendStatus(conn, conn.busy ? "busy" : "idle");
     // SessionStart-equivalent mesh primer: tell the agent who it is, who
-    // else is online, and how ask/ack works. One-shot per PeerConn.
+    // else is online, and how ask/ack works. Passive delivery (nextTurn)
+    // so the primer rides the next genuine user turn rather than starting
+    // an unsolicited one on connect. One-shot per PeerConn — flip
+    // `introduced` only after passiveInject confirms, so a transient
+    // failure leaves room for a retry on the next `connected` frame.
     if (!conn.introduced) {
-      conn.introduced = true;
       const primer = await buildMeshContext(conn.peerName);
-      if (primer) await softInject(primer);
+      if (primer && passiveInject(primer, "repowire-mesh-primer")) {
+        conn.introduced = true;
+      }
     }
   } else if (msgType === "query") {
     const correlationId = data.correlation_id as string;
@@ -587,18 +625,15 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     if (hint.circle && circle === "default") circle = hint.circle;
   }
 
-  // Session lifecycle. Register peer only on startup/new (not on resume/
-  // reload/fork) to avoid double-registration on session-tree navigation.
-  // Fork creates a new session id we'll see via a later session_start
-  // with reason "new" if it becomes a root session.
-  // session_start fires at boot (reason: "startup"), on resume/reload/fork
-  // navigation, and on /new. SessionStartEvent carries only `reason` and an
-  // optional previousSessionFile — the active session id is on ctx, not the
-  // event. We register a peer only on startup/new.
+  // Session lifecycle. session_start fires at boot (reason: "startup"), on
+  // resume/reload/fork navigation, and on /new. SessionStartEvent carries
+  // only `reason` and an optional previousSessionFile — the active session id
+  // is on ctx, not the event. We register on every reason: extensions get a
+  // fresh runtime on resume/reload/fork, so without re-registering the peer
+  // would never reappear in the mesh. ensurePeer is keyed by sessionId and
+  // is idempotent, so re-firing for the same id is a no-op.
   pi.on("session_start", async (event, ctx) => {
     capture(event, ctx);
-    const reason = (event as { reason?: string }).reason;
-    if (reason !== "startup" && reason !== "new") return;
     try {
       const sessionId = ctx.sessionManager.getSessionId?.();
       if (!sessionId) {

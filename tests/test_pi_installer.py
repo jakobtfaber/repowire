@@ -23,11 +23,14 @@ def test_extension_default_export_is_async_factory():
     assert "ExtensionAPI" in PLUGIN_CONTENT
 
 
-def test_session_start_filters_by_reason():
-    """Peer registration happens only on reason startup or new, not resume/reload/fork."""
-    assert 'reason !== "startup"' in PLUGIN_CONTENT
-    assert 'reason !== "new"' in PLUGIN_CONTENT
+def test_session_start_registers_every_reason():
+    """session_start runs ensurePeer for every reason; ensurePeer is idempotent.
+    Earlier versions filtered out resume/reload/fork, which left rebound
+    sessions invisible to the mesh after extension-runtime swaps."""
     assert "session_start" in PLUGIN_CONTENT
+    # Old guard removed.
+    assert 'reason !== "startup"' not in PLUGIN_CONTENT
+    assert 'reason !== "new"' not in PLUGIN_CONTENT
 
 
 def test_session_shutdown_removes_peer():
@@ -274,3 +277,41 @@ def test_turn_end_polls_open_asks():
     """turn_end runs pollAndRemindOpenAsks (backstop for unacked asks)."""
     assert "pollAndRemindOpenAsks" in PLUGIN_CONTENT
     assert "/asks/pending?peer_id=" in PLUGIN_CONTENT
+
+
+def test_passive_inject_uses_send_message_next_turn():
+    """Passive path (reminders + primer) MUST use pi.sendMessage with
+    deliverAs:"nextTurn" — never sendUserMessage. sendUserMessage when idle
+    always triggers a turn, which would chain into the next turn_end and
+    self-trigger the reminder loop forever."""
+    assert "function passiveInject" in PLUGIN_CONTENT
+    assert "piApi.sendMessage(" in PLUGIN_CONTENT
+    assert 'deliverAs: "nextTurn"' in PLUGIN_CONTENT
+
+
+def test_ask_reminder_uses_passive_inject():
+    """pollAndRemindOpenAsks must passive-inject, not softInject — otherwise
+    every turn_end with an unacked ask would trigger another turn, looping."""
+    assert 'passiveInject(lines.join("\\n"), "repowire-ask-reminder")' in PLUGIN_CONTENT
+
+
+def test_mesh_primer_uses_passive_inject():
+    """SessionStart primer must passive-inject so connecting doesn't kick off
+    an unsolicited turn. Primer rides the next genuine user turn."""
+    assert 'passiveInject(primer, "repowire-mesh-primer")' in PLUGIN_CONTENT
+
+
+def test_introduced_flips_only_after_passive_inject_success():
+    """conn.introduced must only be set after passiveInject confirms — so
+    transient injection failures don't suppress a primer retry on the next
+    connected frame."""
+    # The success check guards the assignment.
+    assert "if (primer && passiveInject(primer," in PLUGIN_CONTENT
+    assert "conn.introduced = true;" in PLUGIN_CONTENT
+
+
+def test_daemon_error_includes_response_body():
+    """daemon() must surface the response body alongside the status code so
+    debugging 4xx/5xx returns from the daemon doesn't require log diving."""
+    assert 'throw new Error("Daemon error " + res.status + suffix)' in PLUGIN_CONTENT
+    assert "await res.text()" in PLUGIN_CONTENT
