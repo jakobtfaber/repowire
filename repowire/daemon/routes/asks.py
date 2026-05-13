@@ -259,19 +259,39 @@ async def mark_reminded(
 
 @router.get("/asks/pending", response_model=PendingAsksResponse)
 async def pending_asks(
-    pane_id: str,
+    pane_id: str | None = None,
+    peer_id: str | None = None,
     _: str | None = Depends(require_auth),
 ) -> PendingAsksResponse:
-    """Return all open asks targeting this pane's peer, newest first."""
+    """Return all open asks targeting this peer, newest first.
+
+    Lookup is by either `pane_id` (tmux-pane-keyed transports: Claude Code,
+    Codex, Gemini Stop hooks) or `peer_id` (transports that own multiple
+    peers per process, like the pi extension which runs N sessions sharing
+    one tmux pane). Exactly one is required.
+    """
+    if not pane_id and not peer_id:
+        raise HTTPException(status_code=400, detail="Must provide pane_id or peer_id")
+    if pane_id and peer_id:
+        raise HTTPException(status_code=400, detail="Provide only one of pane_id or peer_id")
+
     peer_registry = get_peer_registry()
     state = get_app_state()
     ask_tracker = state.ask_tracker
 
-    peer = await peer_registry.get_peer_by_pane(pane_id)
-    if not peer:
-        raise HTTPException(status_code=404, detail=f"No peer for pane: {pane_id}")
+    if pane_id:
+        peer = await peer_registry.get_peer_by_pane(pane_id)
+        if not peer:
+            raise HTTPException(status_code=404, detail=f"No peer for pane: {pane_id}")
+        resolved_peer_id = peer.peer_id
+    else:
+        assert peer_id is not None
+        peer = await peer_registry.get_peer(peer_id)
+        if not peer:
+            raise HTTPException(status_code=404, detail=f"No peer with id: {peer_id}")
+        resolved_peer_id = peer.peer_id
 
-    pending = await ask_tracker.pending_for_peer(peer.peer_id)
+    pending = await ask_tracker.pending_for_peer(resolved_peer_id)
 
     return PendingAsksResponse(
         asks=[

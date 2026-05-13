@@ -293,6 +293,37 @@ class TestPendingAsks:
         r = await client.get("/asks/pending?pane_id=%25nope")
         assert r.status_code == 404
 
+    async def test_lookup_by_peer_id(self, env):
+        """Pi transport polls by peer_id (multiple sessions share a pane)."""
+        client, _, _, _ = env
+        await _register_peer(client, "alice")
+        bob = await _register_peer(client, "bob")
+        r = await client.post("/ask", json={
+            "from_peer": "alice", "to_peer": bob, "text": "ping",
+        })
+        cid = r.json()["correlation_id"]
+
+        r = await client.get(f"/asks/pending?peer_id={bob}")
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["asks"]) == 1
+        assert body["asks"][0]["correlation_id"] == cid
+
+    async def test_requires_pane_or_peer(self, env):
+        client, _, _, _ = env
+        r = await client.get("/asks/pending")
+        assert r.status_code == 400
+
+    async def test_rejects_both_pane_and_peer(self, env):
+        client, _, _, _ = env
+        r = await client.get("/asks/pending?pane_id=%2550&peer_id=foo")
+        assert r.status_code == 400
+
+    async def test_unknown_peer_id(self, env):
+        client, _, _, _ = env
+        r = await client.get("/asks/pending?peer_id=does-not-exist")
+        assert r.status_code == 404
+
 
 class TestDeprecatedNoOps:
     """Compat: legacy transports may still POST these. Should return 200 silently."""
