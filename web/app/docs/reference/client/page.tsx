@@ -119,20 +119,20 @@ if "claude" in info.allowed_commands:
         </p>
         <ul className="mt-2 space-y-2">
           <li>
-            <Mono>DaemonConnectionError</Mono> — the daemon is not reachable (most often: not running).
+            <Mono>DaemonConnectionError</Mono>: the daemon is not reachable (most often, not running).
           </li>
           <li>
-            <Mono>DaemonTimeoutError</Mono> — the daemon accepted the connection but did not respond in time.
+            <Mono>DaemonTimeoutError</Mono>: the daemon accepted the connection but did not respond in time.
           </li>
           <li>
-            <Mono>DaemonHTTPError(status, body)</Mono> — the daemon returned a non-2xx response.
+            <Mono>DaemonHTTPError(status, body)</Mono>: the daemon returned a non-2xx response.
           </li>
         </ul>
       </Section>
 
       <Section title="Stability">
         <p>
-          The client is the public Python surface. We avoid breaking changes on its method signatures and pydantic models within a minor version. Daemon HTTP routes used internally may change; depend on the client rather than the routes.
+          The client is the public Python surface; depend on it rather than the daemon HTTP routes, which may shift between releases. Repowire is pre-1.0, so method signatures and pydantic models may still adjust across minor versions. Additions are preferred over breaks, but explicit breaks will happen when the design wants them.
         </p>
       </Section>
 

@@ -107,7 +107,7 @@ ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")`}
         signature={`kill_peer(peer_identifier: str, circle: str | None = None) -> str`}
       >
         <p>
-          Terminate a peer by name or peer_id. Used by orchestrators to reclaim slots when a session is stuck or done. The daemon will mark the peer offline and reap its tmux pane.
+          Terminate a peer by name or peer_id. Used by orchestrators to reclaim slots when a session is stuck or done. The daemon marks the peer offline reliably and attempts to reap its tmux pane (best-effort; verify with <Mono>tmux list-windows</Mono> and follow up with <Mono>tmux kill-window</Mono> if the pane survives).
         </p>
       </Tool>
 
