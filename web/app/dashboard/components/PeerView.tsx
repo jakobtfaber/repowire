@@ -269,7 +269,6 @@ function ComposeBar({
 
     try {
       let msg = text.trim();
-      const hint = "\n(from @dashboard - reply naturally, dashboard sees your response automatically)";
       if (file) {
         const path = await uploadFile(file);
         if (!path) {
@@ -285,7 +284,7 @@ function ComposeBar({
         body: JSON.stringify({
           from_peer: "dashboard",
           to_peer: peer.name,
-          text: msg + hint,
+          text: msg,
           bypass_circle: true,
         }),
       });

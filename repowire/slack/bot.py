@@ -368,11 +368,12 @@ class SlackPeer:
     async def _notify(self, peer: str, message: str) -> None:
         try:
             r = await self._daemon_http.post(
-                "/notify",
+                "/ask",
                 json={
                     "from_peer": self._display_name,
                     "to_peer": peer,
                     "text": message,
+                    "bypass_circle": True,
                 },
             )
             if r.status_code == 200:

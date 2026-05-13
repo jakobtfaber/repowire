@@ -622,11 +622,12 @@ class TelegramPeer:
     async def _notify(self, peer: str, message: str, message_id: int | None = None) -> None:
         try:
             r = await self._http.post(
-                f"{self._daemon_url}/notify",
+                f"{self._daemon_url}/ask",
                 json={
                     "from_peer": self._display_name,
                     "to_peer": peer,
                     "text": message,
+                    "bypass_circle": True,
                 },
             )
             if r.status_code == 200:

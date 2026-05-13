@@ -670,6 +670,18 @@ class PeerRegistry:
             if self._query_tracker:
                 await self._query_tracker.cancel_queries_to_peer(peer_id)
 
+    def _append_client_hint(self, from_peer: str, text: str) -> str:
+        """Append a client-specific hint to the message text if not already present."""
+        hints = {
+            "dashboard": "(from @dashboard - reply naturally, dashboard sees your response automatically)",
+            "telegram": "(from @telegram - reply naturally, your response is delivered back to my phone)",
+            "slack": "(from @slack - reply naturally, your response is delivered back to Slack)",
+        }
+        hint = hints.get(from_peer)
+        if not hint or hint in text:
+            return text
+        return f"{text}\n{hint}"
+
     async def notify(
         self,
         from_peer: str,
@@ -697,6 +709,8 @@ class PeerRegistry:
             peer_id = peer.peer_id
             peer_name = peer.display_name
             from_peer_id = from_obj.peer_id if from_obj else None
+
+        text = self._append_client_hint(from_peer, text)
 
         self.add_event(
             "notification",
@@ -742,6 +756,8 @@ class PeerRegistry:
             peer_id = peer.peer_id
             peer_name = peer.display_name
             from_peer_id = from_obj.peer_id if from_obj else None
+
+        text = self._append_client_hint(from_peer, text)
 
         self.add_event(
             "ask",
