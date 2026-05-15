@@ -36,7 +36,7 @@ export default function Hero() {
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <Link
-              href="#installation"
+              href="https://docs.repowire.io/quickstart/"
               className="inline-flex items-center justify-center gap-2 rounded bg-primary px-5 py-3 font-mono text-xs font-bold uppercase tracking-[0.12em] text-on-primary transition-[filter,transform] hover:brightness-110 active:scale-[0.98]"
             >
               Get started
