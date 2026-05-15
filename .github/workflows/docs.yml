@@ -29,10 +29,10 @@ jobs:
       - uses: astral-sh/setup-uv@v5
 
       - name: Install docs dependencies
-        run: uv sync --extra docs
+        run: uv sync --no-install-project --extra docs
 
       - name: Build site
-        run: uv run mkdocs build --strict
+        run: uv run --no-project mkdocs build --strict
 
       - name: Upload site artifact
         uses: actions/upload-artifact@v4
