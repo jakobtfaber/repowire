@@ -293,6 +293,7 @@ _LANDING_HTML = """\
   <p id="err" class="error"></p>
   <p class="setup">Run <code>repowire setup --relay</code> to get your key</p>
   <div class="links">
+    <a href="https://docs.repowire.io/">Docs</a>
     <a href="https://github.com/prassanna-ravishankar/repowire">GitHub</a>
     <a href="https://pypi.org/project/repowire/">PyPI</a>
     <a href="https://prassanna.io/blog/repowire/">Blog</a>
