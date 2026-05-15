@@ -4,16 +4,22 @@ on:
   push:
     branches: [main]
     paths:
-      - 'docs/**'
-      - 'mkdocs.yml'
-      - 'pyproject.toml'
-      - '.github/workflows/docs.yml'
+      - "docs/**"
+      - "docs-image/**"
+      - "charts/repowire-docs/**"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/docs.yml"
   pull_request:
     paths:
-      - 'docs/**'
-      - 'mkdocs.yml'
-      - 'pyproject.toml'
-      - '.github/workflows/docs.yml'
+      - "docs/**"
+      - "docs-image/**"
+      - "charts/repowire-docs/**"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/docs.yml"
 
 jobs:
   build:
@@ -34,3 +40,50 @@ jobs:
           name: site
           path: site/
           retention-days: 7
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-docker.pkg.dev --quiet
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docs-image/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            us-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/gcr.io/repowire-docs:${{ github.sha }}
+            us-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/gcr.io/repowire-docs:latest
+          cache-from: type=registry,ref=us-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/gcr.io/repowire-docs:latest
+          cache-to: type=inline
+
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ secrets.GKE_CLUSTER }}
+          location: ${{ secrets.GKE_REGION }}
+
+      - name: Deploy
+        run: |
+          helm upgrade --install repowire-docs charts/repowire-docs \
+            --namespace repowire \
+            --set image.tag=${{ github.sha }} \
+            --wait --timeout 5m
+          kubectl rollout status deployment/repowire-docs -n repowire --timeout=120s
