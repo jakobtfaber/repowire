@@ -19,6 +19,7 @@ from repowire.hooks.utils import (
     clear_pane_runtime_state,
     daemon_get,
     daemon_post,
+    daemon_post_with_status,
     read_pane_runtime_metadata,
     write_pane_runtime_metadata,
     ws_hook_lock_path,
@@ -27,6 +28,34 @@ from repowire.hooks.utils import (
 from repowire.hooks.ws_hook_supervisor import spawn_ws_hook
 from repowire.peer_describe import compute_git_status
 from repowire.spawn_hints import consume_hint_full
+
+
+def _read_ppid_of(pid: int) -> int | None:
+    """Return the parent pid of ``pid``, or None if it can't be determined.
+
+    Used by the pane-hijack guard payload: the hook's ppid is the agent
+    process; the agent's ppid is what tells us whether the agent was itself
+    spawned by another mesh peer (a hijack) or by a plain shell (legitimate).
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        # Best-effort: any failure (subprocess error, missing binary, OS
+        # error, or in tests where subprocess.Popen is mocked) → unknown
+        # parent. The guard treats parent_pid=None as "can't decide" and
+        # lets the claim through, which is the safe default.
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except (ValueError, AttributeError):
+        return None
 
 
 def _register_peer_http(
@@ -38,8 +67,16 @@ def _register_peer_http(
     metadata: dict | None = None,
     role: str | None = None,
     turn_state: str | None = None,
-) -> tuple[str | None, str | None]:
-    """Register peer via HTTP POST /peers. Returns (peer_id, display_name)."""
+    agent_pid: int | None = None,
+    parent_pid: int | None = None,
+) -> tuple[str | None, str | None, bool]:
+    """Register peer via HTTP POST /peers.
+
+    Returns (peer_id, display_name, hijack_rejected). hijack_rejected is True
+    iff the daemon returned 409 because the pane-hijack guard rejected this
+    fresh SessionStart claim (a subprocess agent inheriting its parent's
+    TMUX_PANE). The caller should abort registration cleanly in that case.
+    """
     folder = Path(path).name
     payload: dict = {
         "name": folder,
@@ -55,10 +92,21 @@ def _register_peer_http(
         payload["role"] = role
     if turn_state:
         payload["turn_state"] = turn_state
-    result = daemon_post("/peers", payload)
-    if result:
-        return result.get("peer_id"), result.get("display_name")
-    return None, None
+    if agent_pid is not None:
+        payload["agent_pid"] = agent_pid
+    if parent_pid is not None:
+        payload["parent_pid"] = parent_pid
+    status_code, result = daemon_post_with_status("/peers", payload)
+    if status_code == 409:
+        detail = (result or {}).get("detail", "")
+        print(
+            f"repowire: SessionStart rejected by daemon pane-hijack guard: {detail}",
+            file=sys.stderr,
+        )
+        return None, None, True
+    if status_code is not None and 200 <= status_code < 300 and result:
+        return result.get("peer_id"), result.get("display_name"), False
+    return None, None, False
 
 
 def get_peer_name(cwd: str) -> str:
@@ -194,6 +242,7 @@ def main(backend: str = "claude-code") -> int:
         lock_path = ws_hook_lock_path(pane_id)
         pid_path = ws_hook_pid_path(pane_id)
         prior_peer_id: str | None = None
+        needs_takeover = False
         lock_fd = open(lock_path, "w")  # noqa: SIM115
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -208,31 +257,13 @@ def main(backend: str = "claude-code") -> int:
             if same_live_session:
                 lock_fd.close()
                 return 0
-
             prior_peer_id = old_meta.get("peer_id") or _get_peer_id_for_pane(pane_id)
-            try:
-                old_pid = int(pid_path.read_text().strip())
-                os.kill(old_pid, signal.SIGTERM)
-            except (OSError, ValueError):
-                pass
-            for _ in range(10):
-                try:
-                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError:
-                    time.sleep(0.5)
-            else:
-                try:
-                    old_pid = int(pid_path.read_text().strip())
-                    os.kill(old_pid, signal.SIGKILL)
-                except (OSError, ValueError):
-                    pass
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
-
-        if prior_peer_id:
-            _mark_peer_offline(prior_peer_id)
-
-        clear_pane_runtime_state(pane_id)
+            # Real takeover-or-hijack scenario. Defer the destructive parts
+            # (killing the incumbent ws-hook, marking the prior peer offline,
+            # clearing pane runtime state) until AFTER the daemon accepts our
+            # registration. A rejected hijack (#190) must leave the incumbent
+            # untouched.
+            needs_takeover = True
 
         # Register peer via HTTP -- daemon assigns peer_id and display_name.
         # Codex strips tmux env from hook subprocesses, so fall back to the
@@ -257,7 +288,18 @@ def main(backend: str = "claude-code") -> int:
         git_status = compute_git_status(cwd)
         if git_status is not None:
             metadata["git_status"] = git_status
-        peer_id, display_name = _register_peer_http(
+        # Pid lineage for the pane-hijack guard:
+        #   - agent_pid: the AGENT process that owns this hook == os.getppid().
+        #     The hook process itself dies seconds later, so its own pid is
+        #     useless for after-the-fact identity checks.
+        #   - parent_pid: the AGENT's parent. For a legitimately launched
+        #     agent that's a shell; for a subprocess agent (e.g. gemini
+        #     invoked by a still-running claude), it's the parent agent's
+        #     pid, which will match the existing peer's recorded agent_pid
+        #     and trip the guard.
+        agent_pid_val = os.getppid()
+        parent_pid_val = _read_ppid_of(agent_pid_val)
+        peer_id, display_name, hijack_rejected = _register_peer_http(
             cwd,
             circle,
             backend_type,
@@ -265,9 +307,58 @@ def main(backend: str = "claude-code") -> int:
             metadata=metadata,
             role=hint_role,
             turn_state=initial_turn_state,
+            agent_pid=agent_pid_val,
+            parent_pid=parent_pid_val,
         )
+        if hijack_rejected:
+            # Daemon rejected this pane claim. Don't touch the incumbent's
+            # ws-hook, prior-peer status, or pane runtime metadata — the
+            # rejection must leave the world unchanged (issue #190).
+            lock_fd.close()
+            return 0
+        registration_accepted = peer_id is not None
+        if needs_takeover and not registration_accepted:
+            # Hijack-candidate path: the daemon didn't reject (no 409), but
+            # also didn't confirm acceptance (transport error, 5xx, etc.).
+            # Without a confirmed accept we can't justify tearing down the
+            # incumbent's ws-hook / pane metadata — that would leave a
+            # half-broken pane on every daemon hiccup. Bail cleanly.
+            print(
+                "repowire: registration unconfirmed during pane takeover, "
+                "leaving incumbent in place",
+                file=sys.stderr,
+            )
+            lock_fd.close()
+            return 0
         if not display_name:
             display_name = folder_name  # fallback if daemon unreachable
+
+        # Daemon accepted our claim. NOW perform the destructive takeover
+        # steps: evict the incumbent ws-hook, mark its peer offline, clear
+        # its pane runtime state, then claim the flock for ourselves.
+        if needs_takeover:
+            try:
+                old_pid = int(pid_path.read_text().strip())
+                os.kill(old_pid, signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
+            for _ in range(10):
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    time.sleep(0.5)
+            else:
+                try:
+                    old_pid = int(pid_path.read_text().strip())
+                    os.kill(old_pid, signal.SIGKILL)
+                except (OSError, ValueError):
+                    pass
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+            if prior_peer_id and prior_peer_id != peer_id:
+                _mark_peer_offline(prior_peer_id)
+            clear_pane_runtime_state(pane_id)
 
         write_pane_runtime_metadata(
             pane_id,

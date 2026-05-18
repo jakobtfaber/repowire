@@ -34,6 +34,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class PaneHijackRejectedError(Exception):
+    """Raised by allocate_and_register when a fresh SessionStart claim is
+    rejected because it appears to be a subprocess of the pane's existing
+    agent (parent_pid matches the existing peer's agent_pid).
+    """
+
+
 # ---------------------------------------------------------------------------
 # SessionMapping dataclass (previously in session_mapper.py)
 # ---------------------------------------------------------------------------
@@ -50,6 +57,11 @@ class SessionMapping:
     role: PeerRole = PeerRole.AGENT
     updated_at: str | None = None
     description: str = ""
+    # Pid of the agent process that last owned this peer. Persisted so the
+    # pane-hijack guard (issue #190) survives daemon restart: when the
+    # original peer rehydrates via its ws-hook, we restore this value into
+    # the in-memory Peer and the guard can compare against it.
+    agent_pid: int | None = None
 
     def __post_init__(self) -> None:
         if self.updated_at is None:
@@ -397,6 +409,7 @@ class PeerRegistry:
         backend: AgentType,
         path: str | None = None,
         role: PeerRole = PeerRole.AGENT,
+        agent_pid: int | None = None,
     ) -> str:
         """Find existing mapping or allocate a new session_id. Must hold lock.
 
@@ -410,6 +423,8 @@ class PeerRegistry:
             ):
                 mapping.path = path
                 mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                if agent_pid is not None:
+                    mapping.agent_pid = agent_pid
                 logger.info(f"Reusing session {sid} for {display_name}@{circle}")
                 self._mappings_dirty = True
                 return sid
@@ -428,6 +443,8 @@ class PeerRegistry:
                     and mapping.path == path
                 ):
                     mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                    if agent_pid is not None:
+                        mapping.agent_pid = agent_pid
                     self._mappings_dirty = True
                     logger.info(
                         f"Adopted prior session {sid} for {display_name} "
@@ -443,6 +460,7 @@ class PeerRegistry:
             backend=backend,
             path=path,
             role=role,
+            agent_pid=agent_pid,
         )
         logger.info(f"Created session {session_id} for {display_name}@{circle}")
         self._mappings_dirty = True
@@ -484,6 +502,8 @@ class PeerRegistry:
         role: PeerRole = PeerRole.AGENT,
         peer_id: str | None = None,
         turn_state: TurnState | None = None,
+        agent_pid: int | None = None,
+        parent_pid: int | None = None,
     ) -> tuple[str, str]:
         """Allocate a peer_id and register the peer atomically.
 
@@ -527,13 +547,55 @@ class PeerRegistry:
                         existing.tmux_session = tmux_session
                     if machine != "unknown":
                         existing.machine = machine
+                    if agent_pid is not None:
+                        existing.agent_pid = agent_pid
+                        mapping = self._mappings.get(peer_id)
+                        if mapping is not None and mapping.agent_pid != agent_pid:
+                            mapping.agent_pid = agent_pid
+                            self._mappings_dirty = True
                     logger.info(f"Peer reconnected: {existing.display_name} ({peer_id})")
                     return peer_id, existing.display_name
+
+            # Pane-hijack guard: a fresh SessionStart claim for a pane that
+            # already has a live peer, where the new hook's parent_pid matches
+            # the existing peer's agent_pid, is almost certainly a subprocess
+            # agent (e.g. `gemini --yolo` run from inside a claude-code pane)
+            # inheriting TMUX_PANE from its parent and trying to register on
+            # the parent's pane. Reject — the original peer keeps the pane.
+            if pane_id and parent_pid is not None:
+                tolerance = self.heartbeat_tolerance()
+                now = datetime.now(timezone.utc)
+                for existing in self._peers.values():
+                    if existing.pane_id != pane_id:
+                        continue
+                    if existing.agent_pid is None or existing.agent_pid != parent_pid:
+                        continue
+                    if existing.last_seen is None:
+                        continue
+                    if (now - existing.last_seen).total_seconds() > tolerance:
+                        continue
+                    logger.error(
+                        "Rejecting pane-hijack SessionStart claim: "
+                        "hook_pid=%s parent_pid=%s existing_agent_pid=%s "
+                        "existing_peer_id=%s existing_display_name=%s pane_id=%s",
+                        agent_pid,
+                        parent_pid,
+                        existing.agent_pid,
+                        existing.peer_id,
+                        existing.display_name,
+                        pane_id,
+                    )
+                    raise PaneHijackRejectedError(
+                        f"pane {pane_id} held by {existing.display_name} "
+                        f"({existing.peer_id}); claimant parent_pid={parent_pid} "
+                        f"matches existing agent_pid={existing.agent_pid}"
+                    )
 
             # Fresh registration: daemon owns the name
             assigned_name = self._build_display_name(path or "", circle, backend)
             allocated_id = self._find_or_allocate_mapping(
                 assigned_name, circle, backend, path, role=role,
+                agent_pid=agent_pid,
             )
             if pane_id:
                 self._release_pane(pane_id, allocated_id)
@@ -547,6 +609,13 @@ class PeerRegistry:
             effective_circle = restored.circle if restored else circle
             effective_role = restored.role if restored else role
             restored_description = restored.description if restored else ""
+            # Caller-supplied agent_pid wins (it's the live process); fall
+            # back to whatever the mapping persisted across daemon restart.
+            effective_agent_pid = (
+                agent_pid
+                if agent_pid is not None
+                else (restored.agent_pid if restored else None)
+            )
 
             # --- create and insert Peer ---
             peer = Peer(
@@ -564,6 +633,7 @@ class PeerRegistry:
                 metadata=metadata or {},
                 description=restored_description,
                 turn_state=turn_state,
+                agent_pid=effective_agent_pid,
             )
             self._peers[allocated_id] = peer
             logger.info(f"Peer registered: {assigned_name} ({allocated_id})")
