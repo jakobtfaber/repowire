@@ -184,7 +184,13 @@ async def get_peer(
 ) -> PeerInfo:
     """Get information about a specific peer by peer_id or display_name."""
     peer_registry = get_peer_registry()
-    peer = await peer_registry.get_peer(identifier, circle=circle)
+    try:
+        peer = await peer_registry.get_peer(identifier, circle=circle)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     if peer:
         return _peer_to_info(peer)
 
@@ -303,7 +309,13 @@ async def set_peer_description(
 ) -> OkResponse:
     """Update a peer's task description."""
     peer_registry = get_peer_registry()
-    found = await peer_registry.update_description(name, request.description, circle=circle)
+    try:
+        found = await peer_registry.update_description(name, request.description, circle=circle)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     if not found:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -326,7 +338,13 @@ async def touch_peer_last_seen(
     and other last_seen-keyed checks go stale).
     """
     peer_registry = get_peer_registry()
-    found = await peer_registry.touch_last_seen(name, circle=circle)
+    try:
+        found = await peer_registry.touch_last_seen(name, circle=circle)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     if not found:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
