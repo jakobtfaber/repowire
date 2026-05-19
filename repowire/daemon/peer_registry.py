@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
+from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 
 if TYPE_CHECKING:
@@ -1095,7 +1096,15 @@ class PeerRegistry:
     # ------------------------------------------------------------------
 
     async def update_peer_status(self, identifier: str, status: PeerStatus) -> None:
-        """Update peer status + last_seen. No side effects beyond that."""
+        """Update peer status + last_seen.
+
+        When ``experiments.acp_broker_client`` is on, OFFLINE→ONLINE/BUSY
+        transitions also schedule a background task that redelivers any
+        ACP-stashed pending replies targeting this peer as the asker. The
+        scheduling is gated on the flag so the default flag-off path has
+        zero new behaviour or perf overhead vs. pre-phase-3: no extra task,
+        no extra ask-tracker scan, no extra notify.
+        """
         async with self._lock:
             peer = self._lookup_peer_unlocked(identifier)
             if not peer:
@@ -1109,6 +1118,72 @@ class PeerRegistry:
             peer.status = status
             peer.last_seen = datetime.now(timezone.utc)
             self._emit_status_change(peer, old_status, status)
+            became_live = (
+                old_status == PeerStatus.OFFLINE
+                and status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+            )
+            asker_peer_id = peer.peer_id if became_live else None
+
+        if (
+            asker_peer_id is not None
+            and self._ask_tracker is not None
+            and self._acp_redelivery_enabled()
+        ):
+            asyncio.create_task(
+                self._redeliver_pending_replies(asker_peer_id),
+                name=f"redeliver-{asker_peer_id[:12]}",
+            )
+
+    def _acp_redelivery_enabled(self) -> bool:
+        """Whether the ACP-routed stash/redeliver path is opted in.
+
+        Defensive against future Config refactors: a missing
+        ``experiments`` block or attribute is treated as flag-off, never
+        a crash.
+        """
+        experiments = getattr(self._config, "experiments", None)
+        return bool(getattr(experiments, "acp_broker_client", False))
+
+    async def _redeliver_pending_replies(self, asker_peer_id: str) -> None:
+        """Drain ACP-stashed replies for an asker that just came back online.
+
+        Best-effort: a failure here just leaves the reply stashed for the next
+        reconnect. Successful redelivery closes the ask (ack_with_msg) and
+        clears the stash so the Ask object isn't holding reply text it can
+        never use again.
+        """
+        if self._ask_tracker is None:
+            return
+        try:
+            pending = await self._ask_tracker.take_pending_replies_for_asker(asker_peer_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("redeliver: snapshot failed for %s: %s", asker_peer_id, e)
+            return
+        for ask in pending:
+            reply = ask.pending_reply
+            if reply is None:
+                continue
+            try:
+                await self.notify(
+                    from_peer=ask.to_peer_id,
+                    to_peer=ask.from_peer_id,
+                    text=reply,
+                    bypass_circle=True,
+                )
+            except (ValueError, TransportError) as e:
+                logger.info(
+                    "redeliver: %s still undeliverable to %s: %s",
+                    ask.correlation_id, asker_peer_id, e,
+                )
+                continue
+            await self._ask_tracker.close(ask.correlation_id, reason="ack_with_msg")
+            # Drop the stash from the closed Ask object so we're not
+            # retaining reply text past its useful life.
+            await self._ask_tracker.clear_pending_reply(ask.correlation_id)
+            logger.info(
+                "redeliver: delivered stashed reply for %s to %s",
+                ask.correlation_id, asker_peer_id,
+            )
 
     async def update_peer_turn_state(
         self, identifier: str, turn_state: TurnState | None,
