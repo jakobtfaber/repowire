@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Check, Clock, Copy, Paperclip, RefreshCw, Send, X } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
+import { registerSnapshotProvider, useFrozenThread, useIsPeerProtected } from "../lib/protection";
+import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
 import type { Event, Peer } from "../types";
 import { peerLabel } from "../types";
 import { formatTime, StatusLabel } from "./status";
@@ -45,7 +47,8 @@ export function PeerView({
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<PeerTab>("chat");
-  const thread = useMemo(() => {
+  const protectedNow = useIsPeerProtected(peer.peer_id);
+  const liveThread = useMemo(() => {
     const id = peer.peer_id;
     return events
       .filter((event) => {
@@ -55,9 +58,37 @@ export function PeerView({
       .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   }, [events, peer.peer_id]);
 
+  // While the peer is protected (e.g. unsubmitted compose draft), freeze the
+  // rendered thread so new SSE events don't reorder/clobber it mid-compose.
+  // The snapshot lives in the protection store keyed by peer_id; markProtected
+  // captures it via a provider closure that we register here, so capture
+  // happens on the synchronous input/store-update path (setDraftText), never
+  // from this component's render. The snapshot survives peer switches and is
+  // released by the store when the last protection source for this peer
+  // clears.
+  const frozenFromStore = useFrozenThread<Event>(peer.peer_id);
+  const liveThreadRef = useRef(liveThread);
+  // Layout-effect timing: run before browser paint so that by the time the
+  // user can interact (or any post-commit setDraftText fires), the ref and
+  // provider already reflect the just-committed thread. A passive useEffect
+  // here leaves a window where markProtected could capture a stale thread.
+  useLayoutEffect(() => {
+    liveThreadRef.current = liveThread;
+  }, [liveThread]);
+  useLayoutEffect(() => {
+    // Register a provider closure (over the ref) so markProtected — called
+    // from the synchronous setDraftText path — can capture the latest
+    // liveThread without us writing to the store from this component's
+    // render. Layout-effect ensures the provider is registered before paint
+    // and therefore before any post-commit user input.
+    return registerSnapshotProvider<Event>(peer.peer_id, () => liveThreadRef.current);
+  }, [peer.peer_id]);
+  const thread = protectedNow && frozenFromStore ? frozenFromStore : liveThread;
+
   useEffect(() => {
+    if (protectedNow) return;
     bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [thread.length]);
+  }, [thread.length, protectedNow]);
 
   // Reset to chat when switching peers so the tab choice doesn't leak across selections.
   useEffect(() => {
@@ -332,11 +363,20 @@ function ComposeBar({
   events: Event[];
   onSent?: () => void;
 }) {
-  const [text, setText] = useState("");
+  // Draft text / file live in a per-peer external store, not local state, so
+  // they survive peer switches without leaking across peers via shared
+  // ComposeBar state. The store also flips protection SYNCHRONOUSLY when the
+  // dirty bit changes — closing the "passive effect race" where an SSE event
+  // could arrive after onChange but before a dirty-effect ran.
+  const text = useDraftText(peer.peer_id);
+  const file = useDraftFile(peer.peer_id);
+  const setText = (next: string) => setDraftText(peer.peer_id, next);
+  const setFile = (next: File | null) => setDraftFile(peer.peer_id, next);
+  const isDirty = text.trim().length > 0 || file !== null;
+
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingAsks, setPendingAsks] = useState<PendingAsk[]>([]);
-  const [file, setFile] = useState<File | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -455,8 +495,7 @@ function ComposeBar({
             state: "pending",
           },
         ]);
-        setText("");
-        setFile(null);
+        clearDraft(peer.peer_id);
         onSent?.();
       }
     } catch (e) {
@@ -481,6 +520,16 @@ function ComposeBar({
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-outline">
           ask &rarr; {peerLabel(peer)}
         </span>
+        {isDirty && (
+          <span
+            data-testid="compose-draft-pill"
+            title="Inbound updates paused while draft is unsaved"
+            className="inline-flex items-center gap-1 border border-primary/40 bg-primary/10 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-primary"
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" />
+            draft
+          </span>
+        )}
       </div>
 
       {file && (
@@ -514,12 +563,17 @@ function ComposeBar({
         />
         <textarea
           ref={textareaRef}
+          data-testid="compose-textarea"
+          data-dirty={isDirty ? "true" : "false"}
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
           placeholder={`ask ${peerLabel(peer)} something...`}
           rows={1}
-          className="max-h-32 min-h-10 flex-1 resize-none rounded border border-border-faint bg-surface-container-lowest px-3 py-2.5 font-mono text-base text-on-surface outline-none placeholder:text-outline focus:border-primary focus:ring-1 focus:ring-primary md:text-sm"
+          className={cn(
+            "max-h-32 min-h-10 flex-1 resize-none rounded border bg-surface-container-lowest px-3 py-2.5 font-mono text-base text-on-surface outline-none placeholder:text-outline focus:border-primary focus:ring-1 focus:ring-primary md:text-sm",
+            isDirty ? "border-primary/40" : "border-border-faint"
+          )}
         />
         <button
           onClick={submit}
