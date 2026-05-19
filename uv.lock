@@ -1352,7 +1352,7 @@ wheels = [
 
 [[package]]
 name = "repowire"
-version = "0.13.25"
+version = "0.13.29"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
