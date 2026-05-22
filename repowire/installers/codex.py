@@ -103,24 +103,49 @@ def _enable_hooks_feature() -> None:
     """Enable the hooks feature flag in config.toml.
 
     Codex hooks default to false. We need features.hooks = true for them to fire.
-    Codex 0.129.0 renamed `codex_hooks` to `hooks` (legacy alias kept). If the
-    user's config already has either flag set, leave it alone.
+    Codex 0.129.0 renamed `codex_hooks` to `hooks`. Migrate the legacy key
+    away because current Codex releases warn whenever it is present.
     """
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
 
     if CONFIG_PATH.exists():
         content = CONFIG_PATH.read_text()
-        if "codex_hooks" in content or "hooks =" in content or "hooks=" in content:
-            return  # already set under either name
     else:
         content = ""
 
-    if "[features]" in content:
-        content = content.replace(
-            "[features]", "[features]\nhooks = true", 1
-        )
-    else:
+    lines = content.splitlines()
+    in_features = False
+    saw_features = False
+    features_insert_at: int | None = None
+    has_hooks = False
+    legacy_value: str | None = None
+    out: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_features = stripped == "[features]"
+            if in_features:
+                saw_features = True
+                features_insert_at = len(out) + 1
+            out.append(line)
+            continue
+        if in_features:
+            if stripped.startswith("hooks") and "=" in stripped:
+                has_hooks = True
+            if stripped.startswith("codex_hooks") and "=" in stripped:
+                legacy_value = stripped.split("=", 1)[1].strip() or "true"
+                continue
+        out.append(line)
+
+    if saw_features:
+        if not has_hooks and features_insert_at is not None:
+            out.insert(features_insert_at, f"hooks = {legacy_value or 'true'}")
+        content = "\n".join(out).rstrip() + "\n"
+    elif content:
         content = content.rstrip() + "\n\n[features]\nhooks = true\n"
+    else:
+        content = "[features]\nhooks = true\n"
 
     CONFIG_PATH.write_text(content)
 

@@ -20,7 +20,7 @@ If a runtime is detected but its hooks are marked missing, run `repowire setup` 
 
 ### Codex
 
-1. Confirm `~/.codex/config.toml` contains `[features] hooks = true` (or the legacy `codex_hooks` flag). Without this, hooks don't fire at all.
+1. Confirm `~/.codex/config.toml` contains `[features] hooks = true`. If it still has the deprecated `codex_hooks` key, re-run `repowire setup` to migrate it away; current Codex versions warn when that legacy key is present.
 2. Codex fires `SessionStart` **after** the first user interaction. If your peer never registers, the agent may not have received a first turn — try `notify_peer(peer, "ping")` or send a message manually.
 3. If you used `spawn_peer` without a `message`, the seed turn may have been swallowed. Re-send via `notify_peer`.
 

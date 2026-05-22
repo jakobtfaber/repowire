@@ -206,6 +206,29 @@ def test_install_mcp_injects_into_existing_features_block(tmp_path, monkeypatch)
     assert content.count("[features]") == 1
 
 
+def test_install_mcp_migrates_legacy_codex_hooks_flag(tmp_path, monkeypatch):
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    (home / "config.toml").write_text("[features]\ncodex_hooks = true\n")
+
+    codex_mod.install_mcp()
+    content = (home / "config.toml").read_text()
+    assert "codex_hooks" not in content
+    assert "hooks = true" in content
+
+
+def test_install_mcp_removes_legacy_codex_hooks_when_hooks_exists(tmp_path, monkeypatch):
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    (home / "config.toml").write_text("[features]\ncodex_hooks = true\nhooks = false\n")
+
+    codex_mod.install_mcp()
+    content = (home / "config.toml").read_text()
+    assert "codex_hooks" not in content
+    assert "hooks = false" in content
+    assert "hooks = true" not in content
+
+
 # -- uninstall_mcp ----------------------------------------------------------
 
 

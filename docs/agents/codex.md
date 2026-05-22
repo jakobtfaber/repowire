@@ -26,10 +26,13 @@ Codex hooks default to **off**. Repowire writes:
 hooks = true
 ```
 
-into `config.toml` if neither `hooks` nor the legacy `codex_hooks` key is already set. If you already had either flag, repowire leaves it alone.
+into `config.toml`. If it finds the old `codex_hooks` flag, repowire removes
+that deprecated key and preserves or writes the current `hooks` flag so Codex
+does not emit a startup warning.
 
 !!! note "Naming"
-    Codex 0.129.0 renamed `codex_hooks` to `hooks`. The legacy alias is still accepted by the runtime, so existing user configs continue to work.
+    Codex 0.129.0 renamed `codex_hooks` to `hooks`. Current Codex releases warn
+    when the legacy key is present, so `repowire setup` migrates it away.
 
 ## Late SessionStart
 
