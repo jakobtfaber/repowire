@@ -5,8 +5,11 @@ import json
 
 import pytest
 
+from repowire.config.models import Config
 from repowire.daemon.app import create_test_app
 from repowire.daemon.event_log import EventLog
+from repowire.daemon.state.database import StateDatabase
+from repowire.daemon.state.events import SQLiteEventStore
 
 
 def test_add_event_assigns_id_timestamp_and_marks_dirty(tmp_path):
@@ -100,3 +103,168 @@ async def test_create_test_app_persists_events_on_shutdown(tmp_path):
     data = json.loads((tmp_path / "events.json").read_text())
     assert len(data) == 1
     assert data[0]["type"] == "shutdown"
+
+
+def test_sqlite_event_store_imports_legacy_events_once(tmp_path):
+    legacy_path = tmp_path / "events.json"
+    legacy_path.write_text(json.dumps([
+        {
+            "id": "event-1",
+            "type": "chat_turn",
+            "timestamp": "2026-05-22T09:00:00+00:00",
+            "peer": "alice",
+            "text": "hello",
+        },
+    ]))
+
+    db = StateDatabase(tmp_path / "state.db")
+    try:
+        store = SQLiteEventStore(db, legacy_path=legacy_path)
+        assert store.count() == 1
+        assert store.load_recent(500)[0]["text"] == "hello"
+        row = db.conn.execute(
+            "SELECT row_count, status FROM legacy_imports WHERE source_path = ?",
+            (str(legacy_path),),
+        ).fetchone()
+        assert row["row_count"] == 1
+        assert row["status"] == "ok"
+
+        store.append({
+            "id": "event-2",
+            "type": "notification",
+            "timestamp": "2026-05-22T09:01:00+00:00",
+        })
+        SQLiteEventStore(db, legacy_path=legacy_path)
+        assert store.count() == 2
+    finally:
+        db.close()
+
+
+def test_sqlite_event_store_import_guard_uses_legacy_import_audit(tmp_path):
+    legacy_path = tmp_path / "events.json"
+    legacy_path.write_text(json.dumps([
+        {
+            "id": "legacy-event",
+            "type": "chat_turn",
+            "timestamp": "2026-05-22T09:00:00+00:00",
+        },
+    ]))
+
+    db = StateDatabase(tmp_path / "state.db")
+    try:
+        existing_store = SQLiteEventStore(db)
+        existing_store.append({
+            "id": "sqlite-event",
+            "type": "notification",
+            "timestamp": "2026-05-22T09:01:00+00:00",
+        })
+
+        imported_store = SQLiteEventStore(db, legacy_path=legacy_path)
+        assert imported_store.count() == 2
+        assert {event["id"] for event in imported_store.load_recent(10)} == {
+            "legacy-event",
+            "sqlite-event",
+        }
+        row = db.conn.execute(
+            "SELECT row_count, status FROM legacy_imports WHERE source_path = ?",
+            (str(legacy_path),),
+        ).fetchone()
+        assert row["row_count"] == 1
+        assert row["status"] == "ok"
+    finally:
+        db.close()
+
+
+def test_sqlite_event_store_records_corrupt_legacy_import(tmp_path):
+    legacy_path = tmp_path / "events.json"
+    legacy_path.write_text("{not json")
+
+    db = StateDatabase(tmp_path / "state.db")
+    try:
+        store = SQLiteEventStore(db, legacy_path=legacy_path)
+        assert store.count() == 0
+        row = db.conn.execute(
+            "SELECT row_count, status, error FROM legacy_imports WHERE source_path = ?",
+            (str(legacy_path),),
+        ).fetchone()
+        assert row["row_count"] == 0
+        assert row["status"] == "error"
+        assert row["error"] == "JSONDecodeError"
+    finally:
+        db.close()
+
+
+def test_sqlite_event_store_load_recent_preserves_equal_timestamp_insert_order(tmp_path):
+    db = StateDatabase(tmp_path / "state.db")
+    try:
+        store = SQLiteEventStore(db)
+        timestamp = "2026-05-22T09:00:00+00:00"
+        for event_id in ("event-1", "event-2", "event-3"):
+            store.append({
+                "id": event_id,
+                "type": "chat_turn",
+                "timestamp": timestamp,
+            })
+
+        assert [event["id"] for event in store.load_recent(2)] == ["event-2", "event-3"]
+    finally:
+        db.close()
+
+
+def test_sqlite_event_log_loads_bounded_recent_window_and_updates(tmp_path):
+    legacy_path = tmp_path / "events.json"
+    legacy_path.write_text(json.dumps([
+        {
+            "id": f"event-{i}",
+            "type": "chat_turn",
+            "timestamp": f"2026-05-22T09:0{i}:00+00:00",
+            "text": f"message {i}",
+        }
+        for i in range(4)
+    ]))
+
+    db = StateDatabase(tmp_path / "state.db")
+    try:
+        store = SQLiteEventStore(db, legacy_path=legacy_path)
+        log = EventLog(legacy_path, max_events=2, store=store)
+        assert [event["id"] for event in log.get_events()] == ["event-2", "event-3"]
+        assert log.update_event("event-3", {"status": "done"}) is True
+
+        reloaded = EventLog(legacy_path, max_events=4, store=store)
+        assert reloaded.get_events()[-1]["status"] == "done"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_create_test_app_uses_sqlite_event_log_without_json_write(tmp_path):
+    cfg = Config(experiments={"sqlite_state": True})
+    app = create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
+
+    async with app.router.lifespan_context(app):
+        app.state.event_log.add_event("shutdown", {"text": "persist me"})
+        assert app.state.event_log.dirty is False
+
+    assert not (tmp_path / "events.json").exists()
+    db = StateDatabase(tmp_path / "state.db")
+    try:
+        row = db.conn.execute("SELECT payload_json FROM events").fetchone()
+        assert row is not None
+        assert json.loads(row["payload_json"])["text"] == "persist me"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_event_log_seeds_memory_after_restart(tmp_path):
+    cfg = Config(experiments={"sqlite_state": True})
+    app = create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
+    async with app.router.lifespan_context(app):
+        event_id = app.state.event_log.add_event("restart", {"text": "survive"})
+
+    restarted = create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
+    async with restarted.router.lifespan_context(restarted):
+        events = restarted.state.event_log.get_events()
+        assert len(events) == 1
+        assert events[0]["id"] == event_id
+        assert events[0]["text"] == "survive"

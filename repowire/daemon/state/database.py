@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class StateDatabase:
@@ -127,6 +127,41 @@ class StateDatabase:
             )
             self.conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS events (
+                    event_id TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    peer_id TEXT,
+                    peer_name TEXT,
+                    session_id TEXT,
+                    turn_id TEXT,
+                    payload_json TEXT NOT NULL
+                )
+                """,
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)",
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_events_session_timestamp
+                ON events(session_id, timestamp)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_events_peer_timestamp
+                ON events(peer_id, timestamp)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_events_type_timestamp
+                ON events(type, timestamp)
+                """,
+            )
+            self.conn.execute(
+                """
                 INSERT OR IGNORE INTO schema_migrations(version, description)
                 VALUES (?, ?)
                 """,
@@ -138,6 +173,13 @@ class StateDatabase:
                 VALUES (?, ?)
                 """,
                 (2, "session bindings for runtime provenance metadata"),
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (3, "dashboard event journal"),
             )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from repowire.config.models import Config
+from repowire.daemon.state.events import SQLiteEventStore
 
 logger = logging.getLogger(__name__)
 
@@ -19,15 +20,28 @@ logger = logging.getLogger(__name__)
 class EventLog:
     """Bounded daemon event log with debounced disk persistence."""
 
-    def __init__(self, path: Path | None = None, max_events: int = 500) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+        max_events: int = 500,
+        store: SQLiteEventStore | None = None,
+    ) -> None:
         self.path = path or (Config.get_config_dir() / "events.json")
         self.events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self.dirty = False
         self.subscribers: set[asyncio.Event] = set()
+        self.store = store
         self.load()
 
     def load(self) -> None:
         """Load persisted events from disk."""
+        if self.store is not None:
+            try:
+                self.events.clear()
+                self.events.extend(self.store.load_recent(self.events.maxlen or 500))
+            except Exception:
+                logger.warning("Failed to load events from SQLite state", exc_info=True)
+            return
         try:
             if self.path.exists():
                 data = json.loads(self.path.read_text())
@@ -35,10 +49,13 @@ class EventLog:
                 for event in data[-100:]:
                     self.events.append(event)
         except Exception:
-            logger.warning("Failed to load events from %s", self.path)
+            logger.warning("Failed to load events from %s", self.path, exc_info=True)
 
     def save(self) -> None:
         """Persist events to disk when dirty."""
+        if self.store is not None:
+            self.dirty = False
+            return
         if not self.dirty:
             return
         try:
@@ -51,15 +68,20 @@ class EventLog:
     def add_event(self, event_type: str, data: dict[str, Any]) -> str:
         """Add an event to the history. Returns event ID."""
         event_id = str(uuid4())
-        self.events.append(
-            {
-                "id": event_id,
-                "type": event_type,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                **data,
-            }
-        )
-        self.dirty = True
+        event = {
+            "id": event_id,
+            "type": event_type,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **data,
+        }
+        self.events.append(event)
+        if self.store is None:
+            self.dirty = True
+        else:
+            try:
+                self.store.append(event)
+            except Exception:
+                logger.warning("Failed to append event to SQLite state", exc_info=True)
         for sub in self.subscribers:
             sub.set()
         return event_id
@@ -89,7 +111,13 @@ class EventLog:
         for event in self.events:
             if event["id"] == event_id:
                 event.update(updates)
-                self.dirty = True
+                if self.store is None:
+                    self.dirty = True
+                else:
+                    try:
+                        self.store.update(event)
+                    except Exception:
+                        logger.warning("Failed to update event in SQLite state", exc_info=True)
                 return True
         return False
 
