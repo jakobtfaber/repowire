@@ -42,7 +42,9 @@ This is why `spawn_peer(..., message=...)` is effectively required for Codex pee
 
 ## Status Lifecycle
 
-`UserPromptSubmit` marks the peer `busy` with `turn_state=working`. `Stop` marks it `online` with `turn_state=idle`. If Codex misses the terminal hook after a user interrupt, the daemon's demand-driven lazy repair can reset a stale `busy`/`working` peer after `daemon.stale_busy_timeout_seconds`; this is a fallback for stale state, not guaranteed cancel detection.
+`UserPromptSubmit` marks the peer `busy` with `turn_state=working`. `Stop` marks it `online` with `turn_state=idle`.
+
+Manual interrupt/Esc in the Codex TUI currently has no clean Repowire-visible lifecycle signal. If the interrupt aborts the visible turn without a `Stop` hook, the peer can stay `busy` until the next successful turn boundary or until the daemon's conservative stale-state repair sees `busy`/`working` with no recent liveness for longer than `daemon.stale_busy_timeout_seconds`. Repowire intentionally does not guess that a recent busy Codex peer is idle; when Codex exposes a reliable interrupt/cancel hook, Repowire should wire that directly.
 
 Codex can also drop the background WebSocket hook while the TUI pane remains alive. Repowire treats that as transport loss, not proof that the runtime is dead: status stays runtime-driven when pane/process evidence still exists, but inbound ask/notify delivery fails loudly until the WebSocket hook reconnects.
 

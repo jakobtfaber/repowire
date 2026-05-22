@@ -35,6 +35,14 @@ not touch `awaiting_input`, and it is not a guarantee that every backend emitted
 a cancel event — it only reconciles stale daemon state without adding a polling
 loop.
 
+For Codex specifically, manual interrupt/Esc can abort the visible turn without
+emitting a reliable `Stop`/cancel hook. In that case the daemon may continue to
+show the peer as `busy` even though the TUI is ready for input again. This is a
+known runtime-signal limitation, not a state Repowire should infer from timing
+alone; lowering the stale-busy timeout too far can make long-running turns look
+idle incorrectly. When Codex exposes a clean interrupt/cancel lifecycle event,
+Repowire should use that instead of a heuristic.
+
 ## Why no polling
 
 Repowire deliberately has no heartbeat or watchdog thread. State catches up on the next routing call. If a fully idle mesh is leaving you with stale state for too long, that's a sign you should reach for `repowire peer prune` rather than ask repowire to poll.
