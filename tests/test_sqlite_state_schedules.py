@@ -28,7 +28,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
         assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert db.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert db.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
-        assert db.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+        assert db.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
         tables = {
             row[0]
             for row in db.conn.execute(
@@ -36,13 +36,14 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
             ).fetchall()
         }
         assert "session_bindings" in tables
+        assert "events" in tables
     finally:
         db.close()
 
     db2 = StateDatabase(db_path)
     try:
         assert db2.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert db2.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+        assert db2.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
     finally:
         db2.close()
 

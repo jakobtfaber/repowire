@@ -52,6 +52,7 @@ from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.schedule_store import ScheduleStore
 from repowire.daemon.scheduler import Scheduler
 from repowire.daemon.state import StateDatabase
+from repowire.daemon.state.events import SQLiteEventStore
 from repowire.daemon.state.schedules import SQLiteScheduleStore
 from repowire.daemon.state.session_bindings import (
     SQLiteSessionBindingStore,
@@ -216,7 +217,18 @@ def create_app(
         transport = WebSocketTransport()
         query_tracker = QueryTracker()
         ask_tracker = AskTracker(ttl_hours=cfg.daemon.prune_max_age_hours)
-        event_log = EventLog(Path.home() / ".repowire" / "events.json")
+        state_db: StateDatabase | None = None
+        state_dir = Path.home() / ".repowire"
+        events_path = state_dir / "events.json"
+        schedules_path = state_dir / "schedules.json"
+        event_store: SQLiteEventStore | None = None
+        if cfg.experiments.sqlite_state:
+            state_db = StateDatabase(state_dir / "state.db")
+            event_store = SQLiteEventStore(
+                db=state_db,
+                legacy_path=events_path,
+            )
+        event_log = EventLog(events_path, store=event_store)
         message_router = MessageRouter(
             transport=transport,
             query_tracker=query_tracker,
@@ -234,10 +246,8 @@ def create_app(
         )
         peer_registry.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
 
-        state_db: StateDatabase | None = None
-        schedules_path = Path.home() / ".repowire" / "schedules.json"
         if cfg.experiments.sqlite_state:
-            state_db = StateDatabase(Path.home() / ".repowire" / "state.db")
+            assert state_db is not None
             schedule_store = SQLiteScheduleStore(
                 db=state_db,
                 legacy_path=schedules_path,
@@ -382,9 +392,9 @@ def create_app(
             await relay_client.stop()
         await acp_manager.close()
         await scheduler.stop()
+        event_log.save()
         if state_db is not None:
             state_db.close()
-        event_log.save()
         peer_registry._persist_mappings()
         await peer_registry.stop()
         cleanup_deps()
@@ -514,11 +524,17 @@ def create_test_app(
         transport = WebSocketTransport()
         query_tracker = QueryTracker()
         ask_tracker = AskTracker(ttl_hours=cfg.daemon.prune_max_age_hours)
-        event_path = (
-            (persistence_path.parent if persistence_path else Path("/tmp"))
-            / "events.json"
-        )
-        event_log = EventLog(event_path)
+        state_db: StateDatabase | None = None
+        state_dir = persistence_path.parent if persistence_path else Path("/tmp")
+        event_path = state_dir / "events.json"
+        event_store: SQLiteEventStore | None = None
+        if cfg.experiments.sqlite_state:
+            state_db = StateDatabase(state_dir / "state.db")
+            event_store = SQLiteEventStore(
+                db=state_db,
+                legacy_path=event_path,
+            )
+        event_log = EventLog(event_path, store=event_store)
         msg_router = message_router or MessageRouter(
             transport=transport,
             query_tracker=query_tracker,
@@ -536,11 +552,9 @@ def create_test_app(
             event_log=event_log,
         )
 
-        state_db: StateDatabase | None = None
-        state_dir = persistence_path.parent if persistence_path else Path("/tmp")
         schedules_path = state_dir / "schedules.json"
         if cfg.experiments.sqlite_state:
-            state_db = StateDatabase(state_dir / "state.db")
+            assert state_db is not None
             schedule_store = SQLiteScheduleStore(
                 db=state_db,
                 legacy_path=schedules_path,
@@ -619,9 +633,9 @@ def create_test_app(
 
         await acp_manager.close()
         await scheduler.stop()
+        event_log.save()
         if state_db is not None:
             state_db.close()
-        event_log.save()
         await registry.stop()
         cleanup_deps()
 
