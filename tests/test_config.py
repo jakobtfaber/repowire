@@ -25,6 +25,7 @@ class TestConfig:
         assert config.relay.enabled is False
         assert config.relay.url == "wss://repowire.io"
         assert len(config.peers) == 0
+        assert config.experiments.sqlite_state is True
 
     def test_get_peer(self):
         config = Config(

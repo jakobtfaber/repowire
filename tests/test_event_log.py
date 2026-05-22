@@ -95,7 +95,8 @@ async def test_subscribers_are_woken_and_can_unsubscribe(tmp_path):
 
 @pytest.mark.asyncio
 async def test_create_test_app_persists_events_on_shutdown(tmp_path):
-    app = create_test_app(persistence_path=tmp_path / "sessions.json")
+    cfg = Config(experiments={"sqlite_state": False})
+    app = create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
 
     async with app.router.lifespan_context(app):
         app.state.event_log.add_event("shutdown", {"text": "persist me"})

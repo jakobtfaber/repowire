@@ -304,10 +304,10 @@ class ExperimentsConfig(BaseModel):
     )
 
     sqlite_state: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "Use the experimental SQLite daemon state store for migrated "
-            "domains. Currently used for schedules, peer mappings, and session bindings."
+            "Use the SQLite daemon state store for migrated domains. "
+            "Currently used for schedules, peer mappings, events, and session bindings."
         ),
     )
 

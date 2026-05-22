@@ -1,15 +1,15 @@
 # SQLite state expansion plan
 
-Status: architecture recommendation for v0.13.x review, updated after the event-journal slice landed. Do not implement additional schema migration from this document without a follow-up implementation review.
+Status: current storage architecture and migration notes for v0.13.x. Do not implement additional schema migration from this document without a follow-up implementation review.
 
 ## Current state
 
 Repowire currently has two persistence styles:
 
-- Experimental SQLite state under `~/.repowire/state.db`, gated by `experiments.sqlite_state`.
+- SQLite state under `~/.repowire/state.db`, enabled by default.
 - JSON files under `~/.repowire/`, usually loaded into daemon memory and flushed by lazy repair or explicit mutation paths.
 
-The SQLite path currently covers schedules, session bindings, dashboard/session events, and peer session mappings when `experiments.sqlite_state` is enabled. `StateDatabase` owns WAL mode, `synchronous=NORMAL`, foreign keys, busy timeout, schema versioning, and the `legacy_imports` audit table. `SQLiteScheduleStore` is adapter-compatible with `ScheduleStore`, imports `schedules.json` once when the SQL table is empty, and leaves the JSON file untouched for downgrade and backcompat. `SQLiteSessionBindingStore` persists binding identifiers, runtime source locators, cursors, provenance, resume capability metadata, and lifecycle status. It deliberately does not persist raw transcript bodies. `SQLiteEventStore` imports legacy `events.json` once, appends/updates event payloads in SQLite, and seeds the bounded in-memory event window at daemon startup. `PeerRegistry` imports legacy `sessions.json` once into `peer_session_mappings` and stops writing new `sessions.json` state.
+The SQLite path currently covers schedules, session bindings, dashboard/session events, and peer session mappings. `StateDatabase` owns WAL mode, `synchronous=NORMAL`, foreign keys, busy timeout, schema versioning, and the `legacy_imports` audit table. `SQLiteScheduleStore` is adapter-compatible with `ScheduleStore`, imports `schedules.json` once when the SQL table is empty, and leaves the JSON file untouched for downgrade and backcompat. `SQLiteSessionBindingStore` persists binding identifiers, runtime source locators, cursors, provenance, resume capability metadata, and lifecycle status. It deliberately does not persist raw transcript bodies. `SQLiteEventStore` imports legacy `events.json` once, appends/updates event payloads in SQLite, and seeds the bounded in-memory event window at daemon startup. `PeerRegistry` imports legacy `sessions.json` once into `peer_session_mappings` and stops writing new `sessions.json` state.
 
 Other state remains JSON or in-memory:
 
@@ -29,51 +29,25 @@ Before:
 - Peer mappings are restored from `sessions.json`.
 - Open asks and pending replies are lost on daemon restart.
 
-Current compatible SQLite slices:
+Current SQLite slices:
 
-- Schedules stay on the existing experimental SQLite adapter.
-- Peer mappings move to SQLite when `experiments.sqlite_state` is enabled; JSON mode keeps `sessions.json`.
+- Schedules use the SQLite adapter by default.
+- Peer mappings use SQLite by default; JSON mode keeps `sessions.json` only when explicitly disabled.
 - Asks, query futures, transport state, and raw transcripts keep their current ownership.
 - Session bindings are stored in SQLite as control/provenance metadata and are used by compatible timeline/transcript and session-control slices when an unambiguous binding exists.
 - Dashboard/session events remain a bounded in-memory deque for route/SSE compatibility; with `sqlite_state` enabled, persistence is backed by SQLite instead of new `events.json` writes.
 - `events.json` remains in place for downgrade/backcompat and one-time import.
 
-## Recommendation
-
-Use SQLite next for the append-only dashboard/session event journal, not peer identity or asks.
-
-This is the safest expansion because event persistence is mostly append-only, already normalized through `PeerRegistry.add_event()`, and directly supports the v0.13 session-native direction: persisted history plus realtime events in one timeline. It improves restart durability and historical query capability without changing routing correctness, peer identity reuse, ask reminder semantics, or transport behavior.
-
-Recommended event table shape, subject to implementation review:
-
-- `event_id TEXT PRIMARY KEY`
-- `type TEXT NOT NULL`
-- `timestamp TEXT NOT NULL`
-- `peer_id TEXT`
-- `peer_name TEXT`
-- `session_id TEXT`
-- `turn_id TEXT`
-- `payload_json TEXT NOT NULL`
-
-Indexes should support newest-first timeline reads and session-scoped dashboard queries:
-
-- `(timestamp)`
-- `(session_id, timestamp)`
-- `(peer_id, timestamp)`
-- `(type, timestamp)` if route usage needs it
-
-Keep payload JSON as the compatibility envelope in the event-journal slice. Typed columns should be limited to query keys that are already stable.
-
 ## Event journal slice
 
-Implemented behind `experiments.sqlite_state`:
+Implemented in the default SQLite state path:
 
 1. Add the event table in the daemon state migration.
 2. Import legacy `events.json` once if the SQL event table is empty.
 3. On `PeerRegistry.add_event()`, append the event to SQLite best-effort and still append to the in-memory deque.
 4. Preserve current `/events`, `/events?since=...`, and `/events/stream` behavior initially by reading from the in-memory window.
 5. On daemon startup with SQLite enabled, seed the in-memory event window from the newest SQL events.
-6. Keep `events.json` untouched for downgrade/backcompat during the experimental phase.
+6. Keep `events.json` untouched for downgrade/backcompat.
 
 This slice intentionally does not change dashboard API semantics. It only adds a durable event journal and validates the shared SQLite lifecycle on a low-risk state domain.
 
@@ -105,15 +79,15 @@ The review queue is small, low-frequency, and already has atomic rewrite behavio
 
 ## Migration and backcompat
 
-Use the existing schedule migration pattern:
+Use the existing migration pattern:
 
-- Gate new stores behind `experiments.sqlite_state`.
-- Keep JSON files intact during the experimental phase.
+- Keep the `experiments.sqlite_state` flag as an explicit opt-out while the compatibility path exists.
+- Keep JSON files intact while the opt-out/downgrade path exists.
 - Import legacy JSON once only when the corresponding SQL table is empty.
 - Record import success or failure in `legacy_imports`.
 - Treat corrupt legacy JSON as a logged import error, not a daemon startup failure.
 - Make migrations idempotent and update `PRAGMA user_version`.
-- Keep downgrade possible by leaving JSON files in place until SQLite state is default-on and separately reviewed.
+- Keep downgrade possible by leaving JSON files in place while the opt-out path exists.
 
 For the event journal specifically:
 

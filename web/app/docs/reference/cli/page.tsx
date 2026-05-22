@@ -19,6 +19,9 @@ export default function CliReference() {
         <p>
           One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service. <Mono>--relay</Mono> opts in to the hosted relay at <Mono>repowire.io</Mono>. <Mono>--experimental-channels</Mono> enables the experimental MCP channel / ACP transport for Claude Code. <Mono>--http-mcp</Mono> enables localhost Streamable HTTP MCP at <Mono>/mcp</Mono> and generates a bearer token if needed. <Mono>--no-service</Mono> skips daemon service installation. <Mono>--non-interactive</Mono> skips prompts and uses flag values only.
         </p>
+        <p>
+          SQLite state is enabled by default. On first daemon startup after install or update, Repowire applies migrations and imports legacy <Mono>schedules.json</Mono>, <Mono>events.json</Mono>, and <Mono>sessions.json</Mono> once while leaving those files in place for downgrade compatibility.
+        </p>
       </Cmd>
 
       <Cmd name="repowire serve" usage="repowire serve [--host HOST] [--port PORT] [--relay]">
@@ -83,7 +86,7 @@ repowire schedule delete SCHEDULE_ID`}
 
       <Cmd name="repowire update" usage="repowire update">
         <p>
-          Re-install repowire via the same package manager that installed it. Use after pulling a new release.
+          Re-install repowire via the same package manager that installed it. Use after pulling a new release. After reinstalling hooks/plugins, <Mono>update</Mono> restarts the daemon service when it is running. SQLite state migrations run during that daemon restart; verify with <Mono>repowire doctor</Mono>.
         </p>
       </Cmd>
 

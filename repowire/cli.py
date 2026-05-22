@@ -346,6 +346,9 @@ def setup(
         ])
 
     # Save config
+    if config.experiments.sqlite_state:
+        console.print("[green]✓[/] SQLite state enabled")
+        console.print("  State migrations run automatically when the daemon starts.")
     config.save()
 
     # Install daemon as system service
@@ -640,6 +643,14 @@ def update(post_upgrade: bool) -> None:
     if shutil.which("pi") or (Path.home() / ".pi").exists():
         _setup_pi()
 
+    from repowire.config.models import load_config
+
+    config = load_config()
+    config.save()
+    if config.experiments.sqlite_state:
+        console.print("[green]✓[/] SQLite state enabled")
+        console.print("  State migrations run automatically when the daemon restarts.")
+
     # Restart daemon service if running
     from repowire.service.installer import get_service_status, restart_service
 
@@ -648,9 +659,6 @@ def update(post_upgrade: bool) -> None:
         success, msg = restart_service()
         if success:
             console.print("[green]✓[/] Daemon service restarted")
-            from repowire.config.models import load_config
-
-            config = load_config()
             if _daemon_health_ok(config.daemon.host, config.daemon.port):
                 console.print("[green]✓[/] Daemon health confirmed")
             else:

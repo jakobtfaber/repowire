@@ -20,6 +20,7 @@ from repowire.doctor import (
     check_repowire_version,
     check_runtimes,
     check_spawn_allowlist,
+    check_state_database,
     check_tmux,
     exit_code,
     run_all,
@@ -191,6 +192,49 @@ class TestAuthToken:
     def test_unset_skip(self):
         r = check_auth_token(Config())
         assert r.status is Status.SKIP
+
+
+class TestStateDatabase:
+    def test_disabled_warns(self):
+        config = Config(experiments={"sqlite_state": False})
+        r = check_state_database(config)
+        assert r.status is Status.WARN
+        assert "legacy JSON" in r.detail
+
+    def test_missing_warns(self, tmp_path: Path):
+        with patch.object(Config, "get_config_dir", return_value=tmp_path):
+            r = check_state_database(Config())
+        assert r.status is Status.WARN
+        assert "not initialized" in r.detail
+
+    def test_initialized_ok(self, tmp_path: Path):
+        from repowire.daemon.state.database import StateDatabase
+
+        db = StateDatabase(tmp_path / "state.db")
+        try:
+            db.conn.execute(
+                """
+                INSERT INTO events(event_id, type, timestamp, payload_json)
+                VALUES ('e1', 'test', '2026-05-22T00:00:00+00:00', '{}')
+                """,
+            )
+            db.conn.execute(
+                """
+                INSERT INTO peer_session_mappings(
+                    session_id, display_name, circle, backend, role
+                ) VALUES ('p1', 'peer', 'default', 'codex', 'agent')
+                """,
+            )
+            db.conn.commit()
+        finally:
+            db.close()
+
+        with patch.object(Config, "get_config_dir", return_value=tmp_path):
+            r = check_state_database(Config())
+        assert r.status is Status.OK
+        assert "schema v" in r.detail
+        assert "1 event" in r.detail
+        assert "1 peer mapping" in r.detail
 
 
 class TestRelay:

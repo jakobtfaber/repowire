@@ -13,6 +13,7 @@ Status semantics:
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ import httpx
 
 from repowire import __version__
 from repowire.config.models import Config
+from repowire.daemon.state.database import SCHEMA_VERSION
 
 
 class Status(str, Enum):
@@ -291,6 +293,80 @@ def check_auth_token(config: Config) -> CheckResult:
     )
 
 
+def check_state_database(config: Config) -> CheckResult:
+    """Inspect the daemon SQLite state database without applying migrations."""
+    if not config.experiments.sqlite_state:
+        return CheckResult(
+            "State database",
+            Status.WARN,
+            "disabled; using legacy JSON state paths",
+        )
+
+    path = Config.get_config_dir() / "state.db"
+    if not path.exists():
+        return CheckResult(
+            "State database",
+            Status.WARN,
+            f"{path} not initialized yet; restart the daemon to run migrations",
+        )
+
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()
+            integrity_status = str(integrity[0]) if integrity is not None else "missing"
+            if integrity_status != "ok":
+                return CheckResult("State database", Status.FAIL, f"integrity: {integrity_status}")
+
+            user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'",
+                ).fetchall()
+            }
+            required = {
+                "schema_migrations",
+                "legacy_imports",
+                "schedules",
+                "session_bindings",
+                "events",
+                "peer_session_mappings",
+            }
+            missing = sorted(required - tables)
+            if missing:
+                return CheckResult(
+                    "State database",
+                    Status.WARN,
+                    f"schema v{user_version}; missing tables: {', '.join(missing)}",
+                )
+            if user_version < SCHEMA_VERSION:
+                return CheckResult(
+                    "State database",
+                    Status.WARN,
+                    f"schema v{user_version}; restart daemon to migrate to v{SCHEMA_VERSION}",
+                )
+
+            import_count = int(conn.execute("SELECT COUNT(*) FROM legacy_imports").fetchone()[0])
+            event_count = int(conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
+            mapping_count = int(
+                conn.execute("SELECT COUNT(*) FROM peer_session_mappings").fetchone()[0],
+            )
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return CheckResult("State database", Status.FAIL, f"{path}: {exc}")
+
+    return CheckResult(
+        "State database",
+        Status.OK,
+        (
+            f"schema v{user_version}; integrity ok; "
+            f"{import_count} import(s), {event_count} event(s), {mapping_count} peer mapping(s)"
+        ),
+    )
+
+
 def check_relay(config: Config, timeout: float = 5.0) -> CheckResult:
     if not config.relay.enabled:
         return CheckResult("Relay", Status.SKIP, "not enabled")
@@ -375,6 +451,7 @@ def run_all(config: Config, daemon_url: str) -> list[CheckResult]:
         check_runtimes(),
         check_spawn_allowlist(config),
         check_auth_token(config),
+        check_state_database(config),
         check_relay(config),
         check_channel_transport(),
     ]

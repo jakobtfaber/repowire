@@ -10,6 +10,11 @@ repowire setup [--relay] [--experimental-channels] [--http-mcp] [--no-service] [
 
 One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service.
 
+Setup enables the SQLite daemon state store by default. The daemon applies
+idempotent migrations on startup, imports legacy `schedules.json`,
+`events.json`, and `sessions.json` once, and leaves those JSON files in place
+for downgrade compatibility.
+
 - `--relay` opts in to the hosted relay at `repowire.io`.
 - `--experimental-channels` enables the experimental MCP channel / ACP transport for Claude Code (v2.1.80+, claude.ai login, bun).
 - `--http-mcp` enables the experimental localhost Streamable HTTP MCP endpoint at `http://127.0.0.1:8377/mcp` and generates `daemon.auth_token` if needed.
@@ -63,6 +68,7 @@ Checks include:
 - `tmux`, Python, and package-manager (`uv`/`pipx`/`pip`) availability
 - Spawn allowlist resolves (commands on `PATH`, paths exist as directories)
 - WebSocket auth token state
+- SQLite state database integrity, schema version, import audit, event count, and peer mapping count
 - Relay reachable (when `relay.enabled`)
 - Channel transport (when configured via `--experimental-channels`)
 
@@ -128,6 +134,9 @@ repowire update
 ```
 
 Re-install repowire via the same package manager that installed it. Use after pulling a new release.
+After reinstalling hooks/plugins, `update` restarts the daemon service when it
+is running. SQLite state migrations run during that daemon restart; verify with
+`repowire doctor`.
 
 ## `repowire uninstall`
 
