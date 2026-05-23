@@ -74,6 +74,11 @@ Ask project-b what API endpoints they expose.
 
 Your local agent invokes Repowire's `ask` MCP tool, the second agent receives the question, and the reply comes back as an `ack` notification. Repowire is the mesh and tool surface around the agents, not a standalone chat UI. The same pattern works across Claude Code, Codex, Gemini CLI, OpenCode, and Pi when those runtimes are installed.
 
+
+https://github.com/user-attachments/assets/3c4943f9-4ba2-468b-b771-9ba468874f7e
+
+
+
 You can also spawn peers through Repowire:
 
 ```bash
