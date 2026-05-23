@@ -5,7 +5,7 @@
   </picture>
 
   <h1>Repowire</h1>
-  <p>Local-first operating layer for agent teams.</p>
+  <p>Let your coding agents talk to each other.</p>
 
   [![PyPI](https://img.shields.io/pypi/v/repowire)](https://pypi.org/project/repowire/)
   [![CI](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml/badge.svg)](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml)
@@ -14,9 +14,9 @@
   [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/prassanna-ravishankar/repowire)
 </div>
 
-Repowire is a local-first harness for working with more than one coding agent at a time. It gives every live Claude Code, Codex, Gemini CLI, OpenCode, or Pi session an address in a shared mesh, so agents can ask each other questions, send updates, schedule follow-ups, and coordinate without copy-paste handoffs.
+Repowire connects the coding agents you already have open. Claude Code in one repo, Codex in another, a dashboard in your browser, Telegram on your phone — Repowire gives them names and lets them pass messages without copy-paste.
 
-Think of it as the lightweight operating layer around your agent team: a communication mesh, an orchestrator path for multi-repo work, and a set of human controls for when you want to steer from a browser, Telegram, or Slack.
+It is a local control layer for multi-agent work: ask another agent a question, send a quick update, schedule a reminder, or run one session as the coordinator.
 
 Use it when:
 
@@ -31,15 +31,22 @@ Repowire runs locally by default through a daemon on your machine. The hosted re
 
 **Requirements:** macOS or Linux, Python 3.10+, tmux.
 
+**1. Install Repowire and wire your agents.**
+
 ```bash
 uv tool install repowire    # or: pipx install repowire / pip install repowire
 repowire setup
+```
 
-# Alternate interactive installer: detects uv/pipx/pip, installs, then runs setup
+Or use the interactive installer:
+
+```bash
 curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
 ```
 
-Open two agent sessions in separate tmux windows:
+**2. Open your normal agent CLIs.**
+
+Use the tools directly; Repowire hooks into them after setup.
 
 ```bash
 # tmux window 1
@@ -49,7 +56,17 @@ cd ~/projects/project-a && claude
 cd ~/projects/project-b && codex
 ```
 
-Claude Code registers on session start. Codex registers after its first interaction, so send a short warmup prompt in `project-b`, then confirm both peers with `repowire peer list`. In `project-a`, ask:
+**3. Check that both peers appeared.**
+
+Claude Code registers on session start. Codex registers after its first interaction, so send a short warmup prompt in `project-b`, then run:
+
+```bash
+repowire peer list
+```
+
+**4. Ask from one agent to the other.**
+
+In `project-a`, tell your local agent:
 
 ```text
 Ask project-b what API endpoints they expose.
@@ -68,11 +85,11 @@ Full docs: [docs.repowire.io](https://docs.repowire.io).
 
 ## What You Get
 
-- **Agent-to-agent asks.** Non-blocking questions with explicit `ack` replies and reminder injection until a thread is closed.
-- **Human control surfaces.** Browser dashboard, Telegram, and Slack can route messages as service peers.
-- **Orchestrator pattern.** A dedicated peer can dispatch work, check status, coordinate reviews, and keep a queue moving.
-- **Scheduled wake-ups.** Send a future notification or ask to yourself, another peer, or an orchestrator.
-- **Optional relay.** Reach the dashboard remotely and bridge machines without opening inbound ports.
+- **Agent-to-agent asks**: Non-blocking questions with explicit `ack` replies and reminder injection until a thread is closed.
+- **Human control surfaces**: Browser dashboard, Telegram, and Slack can route messages as service peers.
+- **Orchestrator pattern**: A dedicated peer can dispatch work, check status, coordinate reviews, and keep a queue moving.
+- **Scheduled wake-ups**: Send a future notification or ask to yourself, another peer, or an orchestrator.
+- **Optional relay**: Reach the dashboard remotely and bridge machines without opening inbound ports.
 
 ## How It Works
 
@@ -111,6 +128,17 @@ Transport notes:
 | Relay dashboard | Optional remote dashboard and cross-machine bridge |
 
 `repowire setup` auto-detects installed runtimes and wires the supported transports it finds.
+
+## How It Compares
+
+The agent-orchestration space is moving fast. Most projects cluster around a few shapes:
+
+- **Worktree/task runners**: [Claude Squad](https://github.com/smtg-ai/claude-squad), [Vibe Kanban](https://github.com/BloopAI/vibe-kanban), and [dmux](https://dmux.ai/) help launch and review many isolated agent workspaces.
+- **Deterministic schedulers**: [Bernstein](https://github.com/sipyourdrink-ltd/bernstein) decomposes goals, runs agents in parallel worktrees, verifies, and merges passing work.
+- **Hierarchical swarms**: [multi-agent-shogun](https://github.com/yohey-w/multi-agent-shogun) defines manager/worker roles and routes tasks through tmux, files, or role-specific protocols.
+- **Agent IDEs and workflow systems**: [HumanLayer/CodeLayer](https://github.com/humanlayer/humanlayer) focuses on planning, review, team workflows, and richer agent workspaces.
+
+Repowire sits in a different slot: it is a live mesh and control plane for agent sessions you already have running. It does not try to be the scheduler that decomposes every goal, the kanban board that owns every branch, or the merge gate that lands code. It gives your existing terminals, dashboard, Telegram, Slack, and orchestrator session a shared address book, message lifecycle, schedule queue, and local session timeline.
 
 ## Common Workflows
 
