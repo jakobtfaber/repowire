@@ -10,8 +10,9 @@ circle="default".
 
 To bridge that gap, the spawn flow drops a small JSON hint file under
 `~/.cache/repowire/spawn-hints/` keyed by (path, backend). Registration
-fallbacks consult this hint before falling back to "default" and consume it
-on use. Hints have a short TTL so stale ones never override later spawns.
+fallbacks consult this hint before falling back to "default" and consume one
+queued entry on use. Hints have a short TTL so stale ones never override later
+spawns.
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ logger = logging.getLogger(__name__)
 # → eager register usually completes within a few seconds; 5 minutes is
 # generous slack for slow hosts and codex's late-fired SessionStart.
 HINT_TTL_SECONDS = 300
+
+HintPayload = dict[str, object]
 
 
 def _hints_dir() -> Path:
@@ -64,7 +67,7 @@ def write_hint(
     the peer's initial turn_state, so orchestrators can spot
     spawn-seed-drops and re-send the brief.
     """
-    payload: dict = {
+    payload: HintPayload = {
         "path": str(Path(path).resolve()),
         "backend": backend,
         "circle": circle,
@@ -76,7 +79,9 @@ def write_hint(
         payload["pending_first_turn"] = True
     target = _hint_path(path, backend)
     try:
-        target.write_text(json.dumps(payload))
+        existing = _read_hint_queue(target)
+        existing.append(payload)
+        target.write_text(json.dumps(existing))
     except OSError as e:
         logger.warning("spawn_hints: failed to write %s: %s", target, e)
 
@@ -101,36 +106,64 @@ def consume_hint_full(path: str, backend: str) -> dict | None:
     None when no fresh hint exists.
     """
     target = _hint_path(path, backend)
+    queue = _read_hint_queue(target)
+    if not queue:
+        with suppress(OSError):
+            target.unlink()
+        return None
+
+    now = time.time()
+    fresh: list[HintPayload] = []
+    selected: HintPayload | None = None
+    for item in queue:
+        ts = item.get("ts")
+        circle = item.get("circle")
+        if not isinstance(ts, (int, float)) or not isinstance(circle, str):
+            continue
+        if now - ts > HINT_TTL_SECONDS:
+            continue
+        if selected is None:
+            selected = item
+        else:
+            fresh.append(item)
+
+    if fresh:
+        with suppress(OSError):
+            target.write_text(json.dumps(fresh))
+    else:
+        with suppress(OSError):
+            target.unlink()
+
+    if selected is None:
+        return None
+
+    out: dict = {"circle": selected["circle"]}
+    role = selected.get("role")
+    if isinstance(role, str) and role:
+        out["role"] = role
+    if selected.get("pending_first_turn") is True:
+        out["pending_first_turn"] = True
+    return out
+
+
+def _read_hint_queue(target: Path) -> list[HintPayload]:
+    """Return queued hint payloads, accepting the legacy single-dict format."""
     try:
         raw = target.read_text()
     except OSError:
-        return None
+        return []
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         with suppress(OSError):
             target.unlink()
-        return None
+        return []
 
-    ts = data.get("ts")
-    circle = data.get("circle")
-    if not isinstance(ts, (int, float)) or not isinstance(circle, str):
-        with suppress(OSError):
-            target.unlink()
-        return None
-
-    age = time.time() - ts
+    if isinstance(data, dict):
+        return [data]
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
     with suppress(OSError):
         target.unlink()
-
-    if age > HINT_TTL_SECONDS:
-        return None
-
-    out: dict = {"circle": circle}
-    role = data.get("role")
-    if isinstance(role, str) and role:
-        out["role"] = role
-    if data.get("pending_first_turn") is True:
-        out["pending_first_turn"] = True
-    return out
+    return []

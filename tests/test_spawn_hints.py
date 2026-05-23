@@ -40,6 +40,14 @@ def test_hints_keyed_by_path_and_backend(tmp_cache: Path) -> None:
     assert consume_hint("/tmp/proj", "claude-code") == "7"
 
 
+def test_hints_for_same_path_and_backend_are_fifo(tmp_cache: Path) -> None:
+    write_hint("/tmp/proj", "codex", "agentbox")
+    write_hint("/tmp/proj", "codex", "agentbox")
+    assert consume_hint("/tmp/proj", "codex") == "agentbox"
+    assert consume_hint("/tmp/proj", "codex") == "agentbox"
+    assert consume_hint("/tmp/proj", "codex") is None
+
+
 def test_stale_hint_returns_none_and_is_deleted(
     tmp_cache: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -50,6 +58,22 @@ def test_stale_hint_returns_none_and_is_deleted(
     monkeypatch.setattr(spawn_hints, "time", fake_time)
     assert consume_hint("/tmp/proj", "codex") is None
     # Calling again should still return None (file already deleted).
+    assert consume_hint("/tmp/proj", "codex") is None
+
+
+def test_stale_hint_does_not_block_later_fresh_hint(
+    tmp_cache: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = time.time()
+    fake_time = type("T", (), {"time": staticmethod(lambda: now - 9999)})
+    monkeypatch.setattr(spawn_hints, "time", fake_time)
+    write_hint("/tmp/proj", "codex", "stale")
+
+    fake_time = type("T", (), {"time": staticmethod(lambda: now)})
+    monkeypatch.setattr(spawn_hints, "time", fake_time)
+    write_hint("/tmp/proj", "codex", "fresh")
+
+    assert consume_hint("/tmp/proj", "codex") == "fresh"
     assert consume_hint("/tmp/proj", "codex") is None
 
 
