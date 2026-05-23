@@ -9,7 +9,7 @@ A peer is one running agent session. Claude Code, Codex, Gemini CLI, and OpenCod
 - a `circle`,
 - a `status` (`online` / `busy` / `offline`),
 - a free-form `description` the agent sets via `set_description`,
-- a `backend` (`claude-code`, `codex`, `gemini`, `opencode`, …),
+- a `backend` (`claude-code`, `codex`, `gemini`, `antigravity`, `opencode`, …),
 - a `last_seen` timestamp,
 - and a `turn_state` (`idle`, `working`, `awaiting_input`, `pending_first_turn`, or empty when unknown).
 

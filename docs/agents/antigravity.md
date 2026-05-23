@@ -13,7 +13,7 @@ Repowire ships a plugin into the Antigravity plugins directory at `~/.gemini/ant
     └── hooks.json       # SessionStart / BeforeAgent / AfterAgent
 ```
 
-Hook events mirror Gemini's naming, since `agy` and Gemini CLI share the same plugin schema for hooks. The adapter at `hooks/adapters.py` already normalises `BeforeAgent`/`AfterAgent` to canonical names.
+The validated hook file uses Gemini-style event names. If `agy` fires those plugin hooks, Repowire's adapter at `hooks/adapters.py` maps `BeforeAgent`/`AfterAgent` to canonical prompt/stop events.
 
 | Antigravity event | Mapped to | Command |
 | --- | --- | --- |

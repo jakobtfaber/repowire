@@ -2057,7 +2057,7 @@ def _render_peer_snapshot(snapshot: object) -> None:
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option(
     "--backend", "-b", default="claude-code",
-    type=click.Choice(["claude-code", "opencode", "codex", "gemini", "pi"])
+    type=click.Choice(["claude-code", "opencode", "codex", "gemini", "antigravity", "pi"])
 )
 @click.option("--command", "-c", "cmd", help="Deprecated: explicit command override")
 @click.option("--circle", help="Circle (defaults to 'default')")

@@ -206,6 +206,14 @@ def test_legacy_allowed_commands_maps_agy_to_antigravity():
     assert s.commands[AgentType.ANTIGRAVITY] == "agy --dangerously-skip-permissions"
 
 
+def test_peer_new_cli_choice_includes_antigravity():
+    """`repowire peer new --backend=antigravity` must be an accepted choice."""
+    from repowire.cli import peer_new
+
+    backend_param = next(p for p in peer_new.params if p.name == "backend")
+    assert "antigravity" in backend_param.type.choices
+
+
 # -- Round-trip -------------------------------------------------------------
 
 

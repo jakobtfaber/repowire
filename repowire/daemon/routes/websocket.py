@@ -113,7 +113,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     "type": "error",
                     "error": (
                         "Invalid backend: must be claude-code, opencode, codex, "
-                        "gemini, or pi"
+                        "gemini, antigravity, or pi"
                     ),
                 }
             )
