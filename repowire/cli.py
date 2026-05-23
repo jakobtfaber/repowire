@@ -306,6 +306,14 @@ def setup(
             AgentType.GEMINI, DEFAULT_SPAWN_COMMANDS[AgentType.GEMINI],
         )
 
+    # Detect and set up Antigravity CLI (`agy`) if installed
+    if shutil.which("agy") or (Path.home() / ".gemini" / "antigravity-cli").exists():
+        _setup_antigravity()
+        agents_setup.append("antigravity")
+        config.daemon.spawn.commands.setdefault(
+            AgentType.ANTIGRAVITY, DEFAULT_SPAWN_COMMANDS[AgentType.ANTIGRAVITY],
+        )
+
     # Detect and set up Pi if pi CLI or config exists
     if shutil.which("pi") or (Path.home() / ".pi").exists():
         _setup_pi()
@@ -316,7 +324,7 @@ def setup(
 
     if not agents_setup:
         console.print("[yellow]No agent types detected.[/]")
-        console.print("Install claude, codex, gemini, opencode, or pi first.")
+        console.print("Install claude, codex, gemini, agy, opencode, or pi first.")
         if not (http_mcp or relay or update_checks is not None or interactive):
             return
     else:
@@ -533,6 +541,7 @@ def uninstall(yes: bool) -> None:
     _uninstall_opencode()
     _uninstall_codex()
     _uninstall_gemini()
+    _uninstall_antigravity()
     _uninstall_pi()
 
     # Remove config directory
@@ -637,6 +646,19 @@ def _uninstall_gemini() -> None:
         pass
 
 
+def _uninstall_antigravity() -> None:
+    """Uninstall Antigravity CLI plugin."""
+    from repowire.installers.antigravity import uninstall_hooks
+
+    try:
+        if uninstall_hooks():
+            console.print("[green]✓[/] Antigravity plugin removed")
+        else:
+            console.print("[dim]Antigravity plugin not installed[/]")
+    except Exception as e:
+        console.print(f"[yellow]![/] Failed to remove Antigravity plugin: {e}")
+
+
 def _uninstall_pi() -> None:
     """Uninstall Pi components."""
     from repowire.installers.pi import uninstall_extension
@@ -700,6 +722,8 @@ def update(post_upgrade: bool) -> None:
         _setup_codex()
     if shutil.which("gemini"):
         _setup_gemini()
+    if shutil.which("agy") or (Path.home() / ".gemini" / "antigravity-cli").exists():
+        _setup_antigravity()
     if shutil.which("pi") or (Path.home() / ".pi").exists():
         _setup_pi()
 
@@ -773,6 +797,19 @@ def status() -> None:
             console.print("  [yellow]✗[/] codex (hooks not installed)")
     else:
         console.print("  [dim]✗[/] codex (not detected)")
+
+    if shutil.which("agy") or (Path.home() / ".gemini" / "antigravity-cli").exists():
+        from repowire.installers.antigravity import (
+            check_hooks_installed as check_agy_hooks,
+        )
+        if check_agy_hooks():
+            console.print(
+                "  [green]✓[/] antigravity (plugin installed; hook firing pending upstream)"
+            )
+        else:
+            console.print("  [yellow]✗[/] antigravity (plugin not installed)")
+    else:
+        console.print("  [dim]✗[/] antigravity (not detected)")
 
     if shutil.which("pi") or (Path.home() / ".pi").exists():
         from repowire.installers.pi import check_extension_installed as check_pi_ext
@@ -995,6 +1032,28 @@ def _setup_gemini() -> None:
         console.print("[green]✓[/] Gemini MCP server configured")
     except Exception as e:
         console.print(f"[red]Failed to configure Gemini MCP: {e}[/]")
+
+
+def _setup_antigravity() -> None:
+    """Setup for Antigravity CLI (`agy`) agent type.
+
+    Installs a Repowire plugin into the Antigravity plugins directory. The
+    plugin layout (plugin.json + hooks/hooks.json) is verified via
+    `agy plugin validate`. End-to-end hook firing and MCP registration via
+    the plugin system are pending upstream verification — `repowire status`
+    and `repowire doctor` report that gap explicitly.
+    """
+    from repowire.installers.antigravity import install_hooks
+
+    try:
+        install_hooks()
+        console.print("[green]✓[/] Antigravity plugin installed")
+        console.print(
+            "  [dim]Hook firing and MCP registration via `agy` plugins are"
+            " pending upstream verification.[/]"
+        )
+    except Exception as e:
+        console.print(f"[red]Failed to install Antigravity plugin: {e}[/]")
 
 
 def _setup_pi() -> None:

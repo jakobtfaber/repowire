@@ -28,6 +28,7 @@ class AgentType(str, Enum):
     OPENCODE = "opencode"
     CODEX = "codex"
     GEMINI = "gemini"
+    ANTIGRAVITY = "antigravity"
     PI = "pi"
     MCP_HTTP = "mcp-http"
 
@@ -37,6 +38,7 @@ DEFAULT_SPAWN_COMMANDS: dict[AgentType, str] = {
     AgentType.OPENCODE: "opencode",
     AgentType.CODEX: "codex --dangerously-bypass-approvals-and-sandbox",
     AgentType.GEMINI: "gemini --yolo",
+    AgentType.ANTIGRAVITY: "agy --dangerously-skip-permissions",
     AgentType.PI: "pi",
 }
 
@@ -168,6 +170,7 @@ class SpawnSettings(BaseModel):
             "opencode": AgentType.OPENCODE,
             "codex": AgentType.CODEX,
             "gemini": AgentType.GEMINI,
+            "agy": AgentType.ANTIGRAVITY,
             "pi": AgentType.PI,
         }
         for command in self.allowed_commands:

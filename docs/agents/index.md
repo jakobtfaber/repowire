@@ -5,5 +5,6 @@
 - [Claude Code](claude-code.md) — hooks, MCP server, optional channel transport.
 - [Codex](codex.md) — `~/.codex/hooks.json` + `config.toml`, late SessionStart timing.
 - [Gemini CLI](gemini.md) — `BeforeAgent` / `AfterAgent` mapped to prompt/stop hooks.
+- [Antigravity CLI (`agy`)](antigravity.md) — plugin-based; hook firing and MCP pending upstream verification.
 - [OpenCode](opencode.md) — TypeScript plugin with persistent WebSocket.
 - Pi — extension path installed when the `pi` CLI or config is detected.
