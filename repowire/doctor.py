@@ -121,6 +121,7 @@ def check_runtimes() -> CheckResult:
     children.append(_check_claude_code())
     children.append(_check_codex())
     children.append(_check_gemini())
+    children.append(_check_antigravity())
     children.append(_check_opencode())
     children.append(_check_pi())
 
@@ -213,6 +214,32 @@ def _check_gemini() -> CheckResult:
         "gemini",
         Status.FAIL,
         f"v{ver_str} — missing: {', '.join(missing)} (run `repowire setup`)",
+    )
+
+
+def _check_antigravity() -> CheckResult:
+    if not shutil.which("agy") and not (Path.home() / ".gemini" / "antigravity-cli").exists():
+        return CheckResult("antigravity", Status.SKIP, "not detected")
+    from repowire.installers.antigravity import (
+        check_hooks_installed,
+        get_antigravity_version,
+    )
+
+    version = get_antigravity_version()
+    ver_str = ".".join(str(x) for x in version) if version else "unknown"
+
+    if not check_hooks_installed():
+        return CheckResult(
+            "antigravity",
+            Status.FAIL,
+            f"v{ver_str} — plugin not installed (run `repowire setup`)",
+        )
+    # Plugin file-drop verified via `agy plugin validate`, but hook firing
+    # and MCP wiring through the Antigravity plugin system are unverified.
+    return CheckResult(
+        "antigravity",
+        Status.WARN,
+        f"v{ver_str} — plugin installed; hook firing/MCP pending upstream",
     )
 
 

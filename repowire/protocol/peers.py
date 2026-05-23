@@ -66,7 +66,7 @@ class Peer(BaseModel):
     # Agent type
     backend: AgentType = Field(
         default=AgentType.CLAUDE_CODE,
-        description="Agent type: claude-code, opencode, codex, gemini, or pi"
+        description="Agent type: claude-code, opencode, codex, gemini, antigravity, or pi"
     )
 
     # circle (logical subnet)

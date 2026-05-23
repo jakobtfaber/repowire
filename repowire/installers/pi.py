@@ -879,7 +879,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     description: "Spawn a new coding session in a different project directory. The backend must be configured in daemon.spawn.commands; if none are configured, spawn is disabled. The spawned agent self-registers shortly after start; use list_peers to confirm and get peer_id. Circle maps to tmux session name and cannot be reassigned after spawn. Pass message with first-turn context; codex needs it or the default warmup to register promptly. After spawn, use ask for tracked work or notify_peer for fire-and-forget prompts, not SendMessage.",
     parameters: Type.Object({
       path: Type.String({ description: "Absolute path to the project directory" }),
-      backend: Type.String({ description: "Backend/runtime profile to spawn (claude-code, codex, gemini, opencode, pi)" }),
+      backend: Type.String({ description: "Backend/runtime profile to spawn (claude-code, codex, gemini, antigravity, opencode, pi)" }),
       circle: Type.Optional(Type.String({ description: "Circle to spawn into (default: 'default')" })),
       message: Type.Optional(Type.String({ description: "Optional first-turn prompt for the spawned agent" })),
     }),

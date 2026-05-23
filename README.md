@@ -120,6 +120,7 @@ Transport notes:
 | Claude Code | Hooks + MCP; optional experimental channel/ACP transport |
 | Codex | Hooks + MCP |
 | Gemini CLI | Hooks + MCP through normalized `BeforeAgent` / `AfterAgent` events |
+| Antigravity CLI (`agy`) | Plugin install verified; hook firing and MCP pending upstream verification |
 | OpenCode | Plugin + WebSocket |
 | Pi | Repowire extension |
 

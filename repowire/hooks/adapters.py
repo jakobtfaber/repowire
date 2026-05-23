@@ -55,6 +55,12 @@ def normalize(input_data: dict, backend: str) -> HookPayload:
 
 
 def hook_output(backend: str) -> None:
-    """Print required hook output to stdout. Gemini needs explicit approval."""
-    if backend == "gemini":
+    """Print required hook output to stdout. Gemini needs explicit approval.
+
+    Antigravity CLI shares Gemini's hook event names (BeforeAgent/AfterAgent)
+    and JSON-decision shape based on its plugin schema, so it gets the same
+    explicit allow. Whether the Antigravity CLI actually fires plugin-defined
+    hooks today is pending upstream verification.
+    """
+    if backend in ("gemini", "antigravity"):
         print(json.dumps({"decision": "allow"}))

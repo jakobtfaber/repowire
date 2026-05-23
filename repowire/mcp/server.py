@@ -277,7 +277,12 @@ async def _get_my_peer_name() -> str:
 
 
 def _detect_backend() -> str:
-    """Detect which agent runtime is hosting this MCP server."""
+    """Detect which agent runtime is hosting this MCP server.
+
+    Antigravity CLI (`agy`) has no documented env-var signature today, so
+    detection relies on the explicit REPOWIRE_BACKEND override propagated
+    via the spawn command profile or hook --backend flag.
+    """
     if os.environ.get("GEMINI_CLI"):
         return "gemini"
     if ".codex/" in os.environ.get("PATH", ""):
@@ -876,7 +881,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
     ) -> str:
         """[Repowire mesh] Spawn a new coding session in a different project directory.
 
-        Prefer `backend` (claude-code, codex, gemini, opencode, pi). The backend
+        Prefer `backend` (claude-code, codex, gemini, antigravity, opencode, pi).
+        The backend
         must have a command configured in daemon.spawn.commands in
         ~/.repowire/config.yaml. `command` is retained as a one-release
         compatibility alias for older callers.
