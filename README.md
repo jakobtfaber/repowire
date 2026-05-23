@@ -14,7 +14,7 @@
   [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/prassanna-ravishankar/repowire)
 </div>
 
-Repowire connects the coding agents you already have open. Claude Code in one repo, Codex in another, a dashboard in your browser, Telegram on your phone — Repowire gives them names and lets them pass messages without copy-paste.
+Repowire connects the coding agents you already have open. Claude Code in one repo, Codex in another, a dashboard in your browser, Telegram on your phone: Repowire gives them names and lets them pass messages without copy-paste.
 
 It is a local control layer for multi-agent work: ask another agent a question, send a quick update, schedule a reminder, or run one session as the coordinator.
 
