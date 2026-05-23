@@ -103,7 +103,7 @@ All peers connect to a local daemon. The daemon keeps the registry, routes asks/
   <img src="images/repowire-arch.webp" alt="Repowire architecture" width="700" />
 </p>
 
-The stable public surface is still peers, circles, asks, notifications, broadcasts, and schedules. The v0.13 direction is session-native: sessions become the durable unit of work, while peers remain the live runtime executors. The current dashboard shows the selected peer/session view, merges Claude transcript history where available with realtime events, and is moving toward broader session commands for controls like resume, scheduling, approvals, and future backend/model changes.
+The stable public surface is still peers, circles, asks, notifications, broadcasts, and schedules. The v0.14 direction is session-native: sessions become the durable unit of work, while peers remain the live runtime executors. The current dashboard shows the selected peer/session view, merges Claude transcript history where available with realtime events, and is moving toward broader session commands for controls like resume, scheduling, approvals, and future backend/model changes.
 
 Transport notes:
 

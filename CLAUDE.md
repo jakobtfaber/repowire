@@ -68,7 +68,7 @@ The daemon is the single routing hub. It doesn't care how a peer connects — al
 - `hooks/` — **default** Claude Code transport (session, stop, prompt, notification, websocket_hook)
 - `slack/bot.py` — Slack bot peer via Socket Mode
 
-### v0.13 session-native architecture train
+### v0.14 session-native architecture
 
 Frame this as roadmap/current direction, not fully shipped behavior:
 
@@ -76,9 +76,9 @@ Frame this as roadmap/current direction, not fully shipped behavior:
 - **Transport-neutral routing:** ask/notify delivery now goes through a transport router. WebSocket hooks, experimental ACP, relay, and future transports continue moving toward the same message/control boundary.
 - **Session timeline:** dashboard direction is persisted history plus realtime events in one timeline, not separate live/history mental models.
 - **Shared command surface:** send message, resume, schedule, switch backend/model, plan mode, and approvals should become session commands reusable from dashboard, MCP, Telegram, and future surfaces.
-- **Compatible v0.13.x slices:** preserve current hooks/MCP/HTTP behavior while internals harden.
+- **Compatible v0.14 slices:** preserve current hooks/MCP/HTTP behavior while internals harden.
 
-Avoid claiming model switching, plan approval, reliable delivery across every transport, production-ready ACP, or transport-neutral routes/control paths are complete today. Do not call this v0.14. The ask/notify transport-router extraction has landed, but ACP remains experimental and not every route/control path is transport-neutral yet.
+Avoid claiming model switching, plan approval, reliable delivery across every transport, production-ready ACP, or transport-neutral routes/control paths are complete today. The ask/notify transport-router extraction has landed, but ACP remains experimental and not every route/control path is transport-neutral yet.
 
 ## Transports
 

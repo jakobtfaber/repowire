@@ -59,9 +59,9 @@ The daemon connects outbound to the hosted relay over WSS. The relay tunnels das
 
 Repowire avoids polling loops. Liveness repair, persistence flushes, and ghost cleanup are piggy-backed on user-visible requests, bounded by cooldowns. The design rule is: repair when needed, not on timers.
 
-## v0.13 session-native direction
+## v0.14 session-native direction
 
-The current stable surface is peer-oriented, but the v0.13 architecture train is moving toward a session-first mesh:
+The current stable surface is peer-oriented, but the v0.14 architecture train is moving toward a session-first mesh:
 
 - Sessions become the durable unit of work.
 - Peers remain runtime executors.

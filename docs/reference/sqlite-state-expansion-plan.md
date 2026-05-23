@@ -1,6 +1,6 @@
 # SQLite state expansion plan
 
-Status: current storage architecture and migration notes for v0.13.x. Do not implement additional schema migration from this document without a follow-up implementation review.
+Status: current storage architecture and migration notes for v0.14.x. Do not implement additional schema migration from this document without a follow-up implementation review.
 
 ## Current state
 

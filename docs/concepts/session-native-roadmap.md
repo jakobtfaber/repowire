@@ -2,7 +2,7 @@
 
 Repowire's current public model is peer-oriented: running agent processes register as peers, and tools route `ask`, `ack`, `notify`, `broadcast`, and schedules between those peers.
 
-The v0.13 architecture train is moving toward a **session-native mesh**. This is roadmap and design direction, not a statement that all of it has shipped.
+The v0.14 architecture train is moving toward a **session-native mesh**. This is roadmap and design direction, not a statement that all of it has shipped.
 
 ## Direction
 
@@ -11,10 +11,10 @@ The v0.13 architecture train is moving toward a **session-native mesh**. This is
 - **Timeline-centered dashboard.** Persisted history and realtime events converge into one session timeline instead of separate live/history views.
 - **Shared command surface.** Controls such as send message, switch backend/model, resume, schedule, and approvals target sessions and can be reused from dashboard, MCP, Telegram, and other surfaces.
 - **Search as large recall.** SQLite-backed session/timeline search should carry detailed historical recall, while orchestrator markdown memory remains a small curated procedure layer.
-- **Compatible v0.13.x slices.** The architecture changes land incrementally while preserving current hooks, MCP tools, HTTP routes, and dashboard workflows.
+- **Compatible v0.14 slices.** The architecture changes land incrementally while preserving current hooks, MCP tools, HTTP routes, and dashboard workflows.
 - **Human approval path.** Permission and plan approval events become first-class timeline/control events instead of transport-specific callbacks.
 
-The ask/notify transport-router extraction has landed. The remaining planned sequence adds a session/timeline store, updates the dashboard to render persisted and realtime conversation state together, moves composer/control actions onto session commands, and centralizes runtime lifecycle plus approval events.
+The ask/notify transport-router extraction, SQLite session bindings, dashboard session timeline, conversation search, and first session controls have landed. The remaining planned sequence expands the shared session command surface, centralizes more runtime lifecycle behavior, and turns approval events into richer dashboard and control-surface workflows.
 
 ## Memory and audit hooks
 
@@ -38,7 +38,7 @@ Today, the stable surface is still peer and message based:
 - `ask` opens a thread; `ack` closes it.
 - `notify_peer` and `broadcast` are fire-and-forget.
 - `schedule_create`, `schedule_self`, and `schedule_cron` schedule future deliveries through the daemon.
-- The dashboard shows peers, live events, per-peer chat history, tool calls, and compose controls.
+- The dashboard shows peers, live events, selected peer/session timelines, conversation search, tool calls, and compose controls.
 
 ## What not to assume yet
 
@@ -46,7 +46,7 @@ Today, the stable surface is still peer and message based:
 - Do not imply every route/control path is transport-neutral yet.
 - Do not call ACP production-ready; treat ACP as experimental.
 - Do not claim reliable delivery across all transports.
-- Do not call this a v0.14 plan; the current direction belongs to the v0.13 architecture train.
+- Do not describe the roadmap items as fully shipped; v0.14.0 marks the session-native train boundary, not the end of the work.
 
 ## Why it matters
 
