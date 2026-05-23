@@ -77,16 +77,44 @@ def _push_query_cid(pane_id: str, correlation_id: str) -> None:
     push_query_cid(pane_id, correlation_id)
 
 
+def _pane_in_copy_mode(pane_id: str) -> bool:
+    """Return True if the pane is in copy-mode (or any other interactive mode).
+
+    `#{pane_in_mode}` is 1 for copy-mode, view-mode, clock-mode, etc. -X cancel
+    is the correct exit for all of them, so this broad check is fine.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_in_mode}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        return result.stdout.strip() == "1"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
     """Send keys to a tmux pane via subprocess.
 
     Implements Gastown's battle-tested NudgeSession pattern:
-    1. Send text in literal mode (bracketed paste)
-    2. 500ms debounce — tested, required for paste to complete
-    3. Explicitly close bracketed paste mode with ESC[201~
-    4. Enter — submits
+    1. If pane is in copy-mode, cancel out first (otherwise -l lands in the
+       copy buffer and Enter triggers a selection action instead of submit)
+    2. Send text in literal mode (bracketed paste)
+    3. 500ms debounce — tested, required for paste to complete
+    4. Explicitly close bracketed paste mode with ESC[201~
+    5. Enter — submits
     """
     try:
+        if _pane_in_copy_mode(pane_id):
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, "-X", "cancel"],
+                capture_output=True,
+                check=True,
+            )
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, "-l", text],
             capture_output=True,
