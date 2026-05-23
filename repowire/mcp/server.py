@@ -876,7 +876,7 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         path: str,
         backend: str | None = None,
         command: str | None = None,
-        circle: str = "default",
+        circle: str | None = None,
         message: str | None = None,
     ) -> str:
         """[Repowire mesh] Spawn a new coding session in a different project directory.
@@ -892,7 +892,7 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         the peer_id.
 
         The circle maps to the tmux session name and cannot be reassigned after
-        spawn.
+        spawn. If omitted, Repowire uses the caller's current circle.
 
         Pass `message` to seed the spawned agent with first-turn context (task
         brief, who spawned them, what to work on). Required for codex peers to
@@ -908,7 +908,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             path: Absolute path to the project directory
             backend: Runtime profile to spawn (e.g. "claude-code", "codex")
             command: Deprecated compatibility command/profile selector
-            circle: Circle to spawn into (default: "default") -- maps to tmux session name
+            circle: Circle to spawn into (default: caller's current circle)
+                    -- maps to tmux session name
             message: Optional first-turn prompt for the spawned agent. Codex
                      needs it (or the default warmup) to register promptly.
 
@@ -920,6 +921,10 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             raise ValueError("Pass backend or command, not both")
         if backend is None and command is None:
             raise ValueError("Pass backend or command")
+        if circle is None:
+            await _ensure_registered(strict=True)
+            _name, my_circle, _role = await _get_my_identity()
+            circle = my_circle or "default"
         body: dict = {"path": path, "circle": circle}
         if backend is not None:
             body["backend"] = backend

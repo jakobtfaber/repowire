@@ -19,7 +19,7 @@ Any time you're about to dispatch work. This is the baseline shape; other patter
 1. **Spawn or reuse a peer.**
    - Default: reuse if the work is continuous with their prior turn (same worktree, same concern).
    - Spawn fresh when: independent review needed, cross-model critique needed, decoupled concern, or the peer's context is already too long.
-   - MCP signature: `spawn_peer(path, backend, circle="default", message=None)`. The `backend` carries the runtime choice — match to the work shape:
+   - MCP signature: `spawn_peer(path, backend, circle=None, message=None)`. Omitted `circle` uses the caller's current circle; pass `circle="default"` explicitly for the default tmux session. The `backend` carries the runtime choice — match to the work shape:
      - **pi**: `"pi"` — orchestrator-shaped, conversational
      - **codex**: `"codex --dangerously-bypass-approvals-and-sandbox"` — bare codex blocks on approval prompts during warmup
      - **claude-code**: `"claude --dangerously-skip-permissions"`

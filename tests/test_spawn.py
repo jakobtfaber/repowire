@@ -514,6 +514,68 @@ class TestMcpSpawnPeerReturn:
 
     @pytest.mark.asyncio
     @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
+    @patch("repowire.mcp.server._get_my_identity", new_callable=AsyncMock)
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_spawn_peer_defaults_to_callers_circle(
+        self,
+        mock_request: AsyncMock,
+        mock_identity: AsyncMock,
+        mock_register: AsyncMock,
+    ) -> None:
+        """Omitting circle should spawn into the caller's current tmux circle."""
+        mock_identity.return_value = ("repowire-codex", "agentbox", "agent")
+        mock_request.return_value = {
+            "ok": True,
+            "display_name": "alpha-svc",
+            "tmux_session": "agentbox:alpha-svc",
+        }
+
+        from repowire.mcp.server import create_mcp_server
+
+        mcp = create_mcp_server()
+        spawn_tool = mcp._tool_manager._tools["spawn_peer"]
+        result = await spawn_tool.fn(path="/tmp/alpha-svc", backend="codex")
+
+        mock_register.assert_awaited_once_with(strict=True)
+        mock_identity.assert_awaited_once()
+        mock_request.assert_awaited_once_with(
+            "POST",
+            "/spawn",
+            {"path": "/tmp/alpha-svc", "circle": "agentbox", "backend": "codex"},
+        )
+        assert "agentbox:alpha-svc" in result
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_spawn_peer_preserves_explicit_default_circle(
+        self, mock_request: AsyncMock, mock_register: AsyncMock,
+    ) -> None:
+        """Explicit circle='default' should still target the default tmux session."""
+        mock_request.return_value = {
+            "ok": True,
+            "display_name": "alpha-svc",
+            "tmux_session": "default:alpha-svc",
+        }
+
+        from repowire.mcp.server import create_mcp_server
+
+        mcp = create_mcp_server()
+        spawn_tool = mcp._tool_manager._tools["spawn_peer"]
+        result = await spawn_tool.fn(
+            path="/tmp/alpha-svc", backend="codex", circle="default",
+        )
+
+        mock_register.assert_not_awaited()
+        mock_request.assert_awaited_once_with(
+            "POST",
+            "/spawn",
+            {"path": "/tmp/alpha-svc", "circle": "default", "backend": "codex"},
+        )
+        assert "default:alpha-svc" in result
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
     @patch("repowire.mcp.server._get_my_peer_name", new_callable=AsyncMock)
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     async def test_kill_peer_uses_peer_identifier_not_tmux_session(
