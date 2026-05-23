@@ -16,6 +16,7 @@ repowire-design-system/
 
 # Debug artifacts
 .gemini-clipboard/
+.antigravitycli/
 .playwright-mcp/
 .memsearch/
 .opencode/
