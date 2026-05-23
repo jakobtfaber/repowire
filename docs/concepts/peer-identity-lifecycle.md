@@ -22,6 +22,8 @@ The in-memory `Peer` is the live routing record. The durable `SessionMapping` pr
 
 On registration, the daemon allocates a `peer_id` and builds a display name from the working directory and backend. If another active peer in the same circle already holds the display name, the daemon suffixes the new name. Offline same-name peers may be pruned so a fresh session can reclaim the name cleanly.
 
+During hook-based `SessionStart`, the agent receives a compact self-identity context block from the daemon's effective peer record. That block includes the display name, peer id, circle, backend, role, project path, and branch when known. It is intentionally based on the daemon's `/peers` view, not only local tmux or spawn-hint guesses, so restored circle and role state are visible to the session.
+
 A reconnect may reclaim an existing `peer_id` only when the claim still describes the same peer identity. Today that check is intentionally narrow and v0.13-compatible:
 
 - backend must match;
