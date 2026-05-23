@@ -288,20 +288,79 @@ class TestHandleAskAndNotify:
 class TestTmuxSendKeys:
     """Tests for _tmux_send_keys."""
 
+    @staticmethod
+    def _mode_result(in_mode: bool) -> CompletedProcess:
+        return CompletedProcess(
+            args=[], returncode=0, stdout=("1" if in_mode else "0") + "\n", stderr=""
+        )
+
     def test_closes_bracketed_paste_without_bare_escape(self):
+        """Normal mode: no -X cancel issued, just the literal/paste-close/Enter sequence."""
         with (
             patch("repowire.hooks.websocket_hook.subprocess.run") as mock_run,
             patch("repowire.hooks.websocket_hook.time.sleep"),
         ):
+            mock_run.side_effect = [
+                self._mode_result(False),  # display-message (copy-mode probe)
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # -l text
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # -H close
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # Enter
+            ]
             assert _tmux_send_keys("%5", "hello") is True
 
         calls = [call.args[0] for call in mock_run.call_args_list]
         assert calls == [
+            ["tmux", "display-message", "-t", "%5", "-p", "#{pane_in_mode}"],
             ["tmux", "send-keys", "-t", "%5", "-l", "hello"],
             ["tmux", "send-keys", "-t", "%5", "-H", "1b", "5b", "32", "30", "31", "7e"],
             ["tmux", "send-keys", "-t", "%5", "Enter"],
         ]
         assert ["tmux", "send-keys", "-t", "%5", "Escape"] not in calls
+        assert ["tmux", "send-keys", "-t", "%5", "-X", "cancel"] not in calls
+
+    def test_cancels_copy_mode_before_paste(self):
+        """Copy-mode: -X cancel runs before the literal paste, in that order."""
+        with (
+            patch("repowire.hooks.websocket_hook.subprocess.run") as mock_run,
+            patch("repowire.hooks.websocket_hook.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                self._mode_result(True),  # display-message reports copy-mode
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # -X cancel
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # -l text
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # -H close
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # Enter
+            ]
+            assert _tmux_send_keys("%5", "hello") is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls == [
+            ["tmux", "display-message", "-t", "%5", "-p", "#{pane_in_mode}"],
+            ["tmux", "send-keys", "-t", "%5", "-X", "cancel"],
+            ["tmux", "send-keys", "-t", "%5", "-l", "hello"],
+            ["tmux", "send-keys", "-t", "%5", "-H", "1b", "5b", "32", "30", "31", "7e"],
+            ["tmux", "send-keys", "-t", "%5", "Enter"],
+        ]
+        cancel_idx = calls.index(["tmux", "send-keys", "-t", "%5", "-X", "cancel"])
+        paste_idx = calls.index(["tmux", "send-keys", "-t", "%5", "-l", "hello"])
+        assert cancel_idx < paste_idx, "cancel must precede the literal paste"
+
+    def test_mode_probe_failure_treated_as_not_in_mode(self):
+        """If display-message fails, skip cancel rather than blocking the send."""
+        with (
+            patch("repowire.hooks.websocket_hook.subprocess.run") as mock_run,
+            patch("repowire.hooks.websocket_hook.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                CompletedProcess(args=[], returncode=1, stdout="", stderr="no pane"),
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+            ]
+            assert _tmux_send_keys("%5", "hello") is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert ["tmux", "send-keys", "-t", "%5", "-X", "cancel"] not in calls
 
 
 class TestIsPaneSafe:
