@@ -159,6 +159,110 @@ def _mark_peer_offline(peer_id: str | None) -> None:
     daemon_post(f"/peers/{quote(peer_id, safe='')}/offline", {})
 
 
+_CIRCLE_SOURCE_LABELS = {
+    "tmux": "from tmux session",
+    "spawn_hint": "from spawn hint",
+    "fallback": "default fallback",
+}
+
+
+def _find_self_peer(
+    peers: list[dict] | None,
+    *,
+    peer_id: str | None,
+    display_name: str,
+) -> dict | None:
+    """Locate this session's record in a /peers list.
+
+    Prefer peer_id (unique); fall back to display_name when the id is not
+    yet known (registration HTTP transport hiccup) or absent from the
+    record. Returns None when no record matches — caller falls back to the
+    registration/request values.
+    """
+    if not peers:
+        return None
+    if peer_id:
+        for p in peers:
+            if p.get("peer_id") == peer_id:
+                return p
+    for p in peers:
+        if p.get("display_name") == display_name or p.get("name") == display_name:
+            return p
+    return None
+
+
+def format_self_context(
+    *,
+    display_name: str,
+    peer_id: str | None,
+    circle: str,
+    circle_source: str | None,
+    backend: str,
+    role: str | None,
+    cwd: str,
+    branch: str | None,
+    self_peer: dict | None = None,
+) -> str:
+    """Render a 'who you are on the mesh' block from daemon registration result.
+
+    When ``self_peer`` is provided (the daemon's record from /peers), its
+    effective fields win over the registration/request values for
+    display_name, peer_id, circle, backend, role, path, and metadata.branch.
+    This matters when the daemon restored circle/role from persisted state
+    or canonicalized the display_name — the agent sees what other peers
+    will actually see. Request values are only the fallback.
+    """
+    eff_display_name = display_name
+    eff_peer_id = peer_id
+    eff_circle = circle
+    eff_backend = backend
+    eff_role = role
+    eff_path = cwd
+    eff_branch = branch
+
+    if self_peer:
+        eff_display_name = (
+            self_peer.get("display_name") or self_peer.get("name") or eff_display_name
+        )
+        eff_peer_id = self_peer.get("peer_id") or eff_peer_id
+        eff_circle = self_peer.get("circle") or eff_circle
+        eff_backend = self_peer.get("backend") or eff_backend
+        # role is an enum on the daemon side; serialized as a string. Empty
+        # / missing => keep request fallback.
+        peer_role = self_peer.get("role")
+        if peer_role:
+            eff_role = peer_role
+        peer_path = self_peer.get("path")
+        if peer_path:
+            eff_path = peer_path
+        meta_branch = (self_peer.get("metadata") or {}).get("branch")
+        if meta_branch:
+            eff_branch = meta_branch
+
+    source_label = _CIRCLE_SOURCE_LABELS.get(circle_source or "", circle_source or "")
+    circle_str = f"{eff_circle} ({source_label})" if source_label else eff_circle
+    project = Path(eff_path).name or eff_display_name
+
+    lines = ["[Repowire Mesh] You are registered on the mesh as:"]
+    if eff_peer_id:
+        lines.append(f"  - display_name: {eff_display_name}  (peer_id: {eff_peer_id})")
+    else:
+        lines.append(f"  - display_name: {eff_display_name}")
+    lines.append(f"  - circle: {circle_str}")
+    lines.append(f"  - backend: {eff_backend}")
+    if eff_role:
+        lines.append(f"  - role: {eff_role}")
+    lines.append(f"  - project: {project}  (path: {eff_path})")
+    if eff_branch:
+        lines.append(f"  - branch: {eff_branch}")
+    lines.append(
+        f"Peers in circle '{eff_circle}' reach you as @{eff_display_name}. "
+        "Cross-circle replies only land when the asker used reply_to on an "
+        "existing thread."
+    )
+    return "\n".join(lines)
+
+
 def format_peers_context(peers: list[dict], my_name: str) -> str:
     """Format peers into context string for Claude."""
     other_peers = [p for p in peers if p["name"] != my_name and p["status"] == "online"]
@@ -400,18 +504,36 @@ def main(backend: str = "claude-code") -> int:
             # Child inherited the flock via pass_fds; release our copy.
             lock_fd.close()
 
-        # Fetch peers and output context for Claude
+        # Anchor identity from the daemon's effective view of this peer.
+        # /peers is the source of truth — the daemon may have restored
+        # circle/role from persisted state or canonicalized the display
+        # name. Fall back to registration/request values only when the
+        # self record isn't available (e.g. daemon unreachable).
         peers = fetch_peers()
-        if peers:
-            context = format_peers_context(peers, display_name)
-            if context:
-                output = {
-                    "hookSpecificOutput": {
-                        "hookEventName": "SessionStart",
-                        "additionalContext": context,
-                    }
+        self_peer = _find_self_peer(peers, peer_id=peer_id, display_name=display_name)
+        self_context = format_self_context(
+            display_name=display_name,
+            peer_id=peer_id,
+            circle=circle,
+            circle_source=circle_source,
+            backend=backend,
+            role=hint_role,
+            cwd=cwd,
+            branch=branch,
+            self_peer=self_peer,
+        )
+
+        peers_context = format_peers_context(peers, display_name) if peers else ""
+
+        sections = [s for s in (self_context, peers_context) if s]
+        if sections:
+            output = {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": "\n\n".join(sections),
                 }
-                print(json.dumps(output))
+            }
+            print(json.dumps(output))
 
     elif event == "SessionEnd":
         # Don't mark peer offline here - SessionEnd fires frequently during

@@ -6,10 +6,167 @@ from pathlib import Path
 from unittest.mock import patch
 
 from repowire.hooks.session_handler import (
+    _find_self_peer,
     format_peers_context,
+    format_self_context,
     get_peer_name,
     main,
 )
+
+
+class TestFindSelfPeer:
+    def test_prefers_peer_id_match(self):
+        peers = [
+            {"peer_id": "repow-other", "display_name": "alice", "name": "alice"},
+            {"peer_id": "repow-me", "display_name": "different-name", "name": "x"},
+        ]
+        result = _find_self_peer(peers, peer_id="repow-me", display_name="alice")
+        assert result is not None
+        assert result["peer_id"] == "repow-me"
+
+    def test_falls_back_to_display_name(self):
+        peers = [
+            {"peer_id": "repow-other", "display_name": "alice", "name": "alice"},
+        ]
+        result = _find_self_peer(peers, peer_id=None, display_name="alice")
+        assert result is not None
+        assert result["display_name"] == "alice"
+
+    def test_returns_none_when_not_found(self):
+        peers = [{"peer_id": "repow-x", "display_name": "x", "name": "x"}]
+        assert _find_self_peer(peers, peer_id="repow-me", display_name="me") is None
+
+    def test_none_peers_list(self):
+        assert _find_self_peer(None, peer_id="x", display_name="x") is None
+
+
+class TestFormatSelfContext:
+    def _base_kwargs(self, **overrides):
+        kwargs = {
+            "display_name": "repowire-claude-code",
+            "peer_id": "repow-default-abc12345",
+            "circle": "default",
+            "circle_source": "tmux",
+            "backend": "claude-code",
+            "role": None,
+            "cwd": "/Users/x/projects/repowire",
+            "branch": None,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_includes_peer_id_when_assigned(self):
+        result = format_self_context(**self._base_kwargs())
+        assert "display_name: repowire-claude-code" in result
+        assert "peer_id: repow-default-abc12345" in result
+        assert "circle: default (from tmux session)" in result
+        assert "backend: claude-code" in result
+        assert "project: repowire" in result
+        assert "path: /Users/x/projects/repowire" in result
+        assert "@repowire-claude-code" in result
+
+    def test_omits_peer_id_when_none(self):
+        result = format_self_context(**self._base_kwargs(peer_id=None))
+        assert "display_name: repowire-claude-code" in result
+        assert "peer_id" not in result
+
+    def test_includes_role_when_set(self):
+        result = format_self_context(**self._base_kwargs(role="worker"))
+        assert "role: worker" in result
+
+    def test_omits_role_when_none(self):
+        result = format_self_context(**self._base_kwargs(role=None))
+        assert "role:" not in result
+
+    def test_includes_branch_when_set(self):
+        result = format_self_context(**self._base_kwargs(branch="feat/x"))
+        assert "branch: feat/x" in result
+
+    def test_omits_branch_when_none(self):
+        result = format_self_context(**self._base_kwargs(branch=None))
+        assert "branch:" not in result
+
+    def test_circle_source_tmux_label(self):
+        result = format_self_context(**self._base_kwargs(circle_source="tmux"))
+        assert "(from tmux session)" in result
+
+    def test_circle_source_spawn_hint_label(self):
+        result = format_self_context(
+            **self._base_kwargs(circle="arch", circle_source="spawn_hint"),
+        )
+        assert "circle: arch (from spawn hint)" in result
+
+    def test_circle_source_fallback_label(self):
+        result = format_self_context(
+            **self._base_kwargs(circle="default", circle_source="fallback"),
+        )
+        assert "circle: default (default fallback)" in result
+
+    def test_self_peer_overrides_request_values(self):
+        """Daemon-effective values from /peers win over request defaults.
+
+        Covers the main case for this revision: when the daemon has
+        restored circle/role from persisted state (or canonicalized the
+        display_name), the agent must see those — not the values the
+        hook sent at registration time.
+        """
+        self_peer = {
+            "peer_id": "repow-default-effective-id",
+            "display_name": "canonical-name",
+            "name": "canonical-name",
+            "circle": "restored-circle",
+            "backend": "codex",
+            "role": "worker",
+            "path": "/canonical/path/project-x",
+            "metadata": {"branch": "feat/restored"},
+        }
+        result = format_self_context(
+            **self._base_kwargs(
+                display_name="request-name",
+                peer_id="repow-default-request-id",
+                circle="request-circle",
+                backend="claude-code",
+                role=None,
+                cwd="/request/path/proj",
+                branch="request-branch",
+            ),
+            self_peer=self_peer,
+        )
+        assert "canonical-name" in result
+        assert "request-name" not in result
+        assert "repow-default-effective-id" in result
+        assert "repow-default-request-id" not in result
+        assert "restored-circle" in result
+        assert "request-circle" not in result
+        assert "backend: codex" in result
+        assert "role: worker" in result
+        assert "project: project-x" in result
+        assert "path: /canonical/path/project-x" in result
+        assert "branch: feat/restored" in result
+
+    def test_self_peer_partial_falls_back_per_field(self):
+        """Missing self_peer fields fall back to request values one by one."""
+        self_peer = {"peer_id": "repow-x", "display_name": "x", "circle": "circle-from-peer"}
+        result = format_self_context(
+            **self._base_kwargs(
+                display_name="x",
+                peer_id="repow-x",
+                circle="request-circle",
+                backend="claude-code",
+                role="request-role",
+                branch="request-branch",
+            ),
+            self_peer=self_peer,
+        )
+        assert "circle-from-peer" in result
+        assert "backend: claude-code" in result
+        assert "role: request-role" in result
+        assert "branch: request-branch" in result
+
+    def test_circle_source_none_shows_circle_only(self):
+        result = format_self_context(**self._base_kwargs(circle_source=None))
+        assert "circle: default" in result
+        assert "(" not in result.split("circle: default", 1)[1].split("\n", 1)[0]
 
 
 def _run_with_input(input_data: dict) -> int:
