@@ -18,6 +18,34 @@ A live peer has these identity and lifecycle fields:
 
 The in-memory `Peer` is the live routing record. The durable `SessionMapping` preserves fields that should survive daemon restart, including display name, circle, backend, path, role, description, and the last known agent pid when available. Those mappings live in `~/.repowire/state.db`; legacy `sessions.json` is imported once and then left untouched for downgrade/export compatibility.
 
+## Source-of-truth hierarchy
+
+Peer identity should be resolved from the strongest daemon-owned proof available
+and should fail closed when only ambiguous hints remain. The intended authority
+order is:
+
+| Level | Signal | Authority | Notes |
+| --- | --- | --- | --- |
+| 1 | Daemon-minted `peer_id` in the live registry | Authoritative routing identity | Exact key for asks, acks, notifications, and peer lookup. |
+| 2 | Daemon-minted runtime identity envelope | Authoritative handoff proof | Planned birth certificate for SessionStart/channel connect to hand MCP a peer identity without path search. |
+| 3 | Local pane runtime metadata plus process proof | Local adoption proof | Valid only when backend, daemon peer id, and owning agent process match the current MCP process. |
+| 4 | Durable `SessionMapping` / session binding records | Compatibility and provenance | Useful for restoring circle, role, description, runtime session pointers, and history relationships; not pane ownership proof. |
+| 5 | Durable spawn ownership plus live tmux evidence | Destructive-action proof | Authorizes kill/restart of a daemon-spawned pane. It does not prove caller identity for MCP tools. |
+| 6 | Display name, path, backend, machine, `last_seen` | Hints and filters only | Never sufficient by themselves to impersonate a peer or choose among ambiguous candidates. |
+
+This hierarchy keeps three concerns separate:
+
+- Routing identity: the daemon `peer_id` names the live peer.
+- Runtime/session provenance: runtime session ids and session bindings explain
+  where history and control state came from.
+- Pane ownership: spawn ownership records decide whether Repowire may kill or
+  restart a tmux pane.
+
+Project path is deliberately downgraded to metadata. It is useful for display
+name allocation, filtering, history discovery, and human context, but path is
+not identity proof. A same-path peer may be a second terminal, a sibling runtime,
+an inherited environment, or a stale process.
+
 ## Registration and reconnect
 
 On registration, the daemon allocates a `peer_id` and builds a display name from the working directory and backend. If another active peer in the same circle already holds the display name, the daemon suffixes the new name. Offline same-name peers may be pruned so a fresh session can reclaim the name cleanly.
@@ -37,6 +65,42 @@ When a new peer claims a pane already held by another peer, the old peer normall
 There is one protected case: a fresh live `orchestrator` peer keeps sticky ownership of its tmux pane. If a temporary same-pane session starts in a split terminal, the daemon can register that session without assigning the pane (`pane_assigned=false`). The temporary peer can still use outbound MCP/HTTP tools, but it does not get inbound hook transport and must not clear the incumbent orchestrator's pane metadata or WebSocket hook.
 
 MCP lazy registration treats tmux pane lookup as a locator, not as identity proof. A by-pane daemon result is accepted only when local pane runtime metadata proves the same daemon peer id, backend, and owning agent process. If that proof is missing or belongs to another process, MCP registers or resolves its own peer instead of adopting the incumbent. This keeps path and display name as useful context while avoiding path-based identity takeover.
+
+The remaining compatibility fallback is path+backend lookup when MCP starts
+without pane context, no local metadata is available, and exactly one online
+candidate matches. This is a narrow bridge for stripped tmux environments, not
+an identity source of truth. The daemon-minted birth certificate described below
+is the intended replacement.
+
+## Runtime birth certificate direction
+
+Future SessionStart and channel-connect paths should mint a short-lived runtime
+identity envelope after daemon registration. The envelope should be created by
+the daemon or contain daemon-unguessable proof, then be written where the local
+runtime and MCP server can read it.
+
+Minimum envelope fields:
+
+- `peer_id`
+- `display_name`
+- `backend`
+- `circle`
+- `runtime_session_id` or hook `session_id` when known
+- `pane_id` when the runtime is pane-local
+- `agent_pid` / process proof when available
+- `issued_at` and `expires_at`
+- an unguessable nonce or daemon-verifiable token
+
+MCP lazy registration should eventually consult this envelope before pane,
+metadata, or path lookup. Validation should reject expired envelopes, backend
+mismatches, pane reuse, process mismatches, and daemon peer ids that no longer
+exist or no longer match the envelope. When the envelope is absent or invalid,
+MCP may register a fresh peer or fail closed for strict outbound tools; it
+should not silently adopt identity from path alone.
+
+This direction does not make the daemon the owner of raw transcript history and
+does not authorize destructive pane actions. Runtime session ids remain source
+history/provenance. Spawn ownership remains the kill/restart proof.
 
 ## Display-name ambiguity
 

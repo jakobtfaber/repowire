@@ -254,6 +254,41 @@ async def test_stale_peer_id_claim_same_path_different_backend_does_not_steal_pe
 
 
 @pytest.mark.asyncio
+async def test_same_peer_id_reconnect_same_path_is_current_compatibility_boundary(tmp_path):
+    """Current reconnect accepts peer_id+backend+path as a compatibility check.
+
+    This is deliberately documented as the pre-birth-certificate boundary:
+    path participates only in narrowing a claimed daemon peer_id, not in
+    selecting an arbitrary peer. A later daemon-minted certificate slice should
+    replace this same-path compatibility proof.
+    """
+    registry = _make_registry(tmp_path)
+    shared_path = "/tmp/repowire-same-path"
+
+    peer_id, _name = await registry.allocate_and_register(
+        circle="dev",
+        backend=AgentType.CLAUDE_CODE,
+        path=shared_path,
+        pane_id="%1",
+    )
+
+    reconnected_id, reconnected_name = await registry.allocate_and_register(
+        circle="dev",
+        backend=AgentType.CLAUDE_CODE,
+        path=shared_path,
+        pane_id="%2",
+        peer_id=peer_id,
+    )
+
+    assert reconnected_id == peer_id
+    assert reconnected_name == "repowire-same-path-claude-code"
+    peer = await registry.get_peer(peer_id)
+    assert peer is not None
+    assert peer.pane_id == "%2"
+    assert peer.path == shared_path
+
+
+@pytest.mark.asyncio
 async def test_circle_and_description_persist_across_restart(tmp_path):
     """A peer re-registering after restart restores its prior circle + description.
 

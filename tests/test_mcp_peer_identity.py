@@ -319,6 +319,65 @@ async def test_ensure_registered_does_not_claim_when_multiple_candidates():
 
 
 @pytest.mark.asyncio
+async def test_ensure_registered_treats_single_path_backend_candidate_as_compatibility_bridge():
+    """Path+backend is a compatibility bridge, not authoritative proof.
+
+    The current no-pane MCP path may adopt one online candidate only when the
+    daemon returns exactly one path+backend match. This pins the narrow current
+    behavior while documenting the source-of-truth boundary: daemon-minted
+    runtime certificates should replace this fallback.
+    """
+    sole = {
+        "display_name": "agentbox-codex",
+        "peer_id": "p1",
+        "path": str(Path.cwd()),
+        "backend": "codex",
+    }
+    calls: list[tuple[str, str]] = []
+
+    async def daemon_router(method, url, body=None, params=None):  # noqa: ARG001
+        del body
+        calls.append((method, url))
+        if method == "GET" and url == "/peers":
+            assert params == {
+                "path": str(Path.cwd()),
+                "backend": "codex",
+                "status": "online",
+            }
+            return {"peers": [sole]}
+        if method == "POST" and url.endswith("/touch"):
+            return {"ok": True}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    with patch.object(
+            mcp_server, "get_tmux_info", return_value={"pane_id": None, "session_name": None},
+         ), \
+         patch.object(mcp_server, "_detect_backend", return_value="codex"), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)):
+        await mcp_server._ensure_registered()
+
+    assert mcp_server._cached_peer_id == "p1"
+    assert mcp_server._cached_peer_name == "agentbox-codex"
+    assert ("POST", "/peers") not in calls
+
+
+@pytest.mark.xfail(
+    reason="repowire-0ml birth-certificate implementation is not shipped yet",
+    strict=True,
+)
+@pytest.mark.asyncio
+async def test_ensure_registered_uses_daemon_minted_birth_certificate_before_path_lookup():
+    """Future contract: daemon-minted identity proof replaces path adoption.
+
+    Once the runtime birth certificate exists, MCP should validate it before
+    any path+backend lookup. The certificate path is intentionally not modeled
+    in production code yet, so this xfail is an executable marker for the next
+    implementation slice.
+    """
+    assert hasattr(mcp_server, "read_runtime_birth_certificate")
+
+
+@pytest.mark.asyncio
 async def test_ensure_registered_marks_explicit_tmux_default_as_tmux():
     """MCP lazy registration must not let explicit tmux "default" look legacy.
 
