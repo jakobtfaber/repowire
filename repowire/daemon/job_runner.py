@@ -40,6 +40,7 @@ class JobRunner:
         *,
         config: Config,
         work_store: Any,
+        calendar_store: Any | None = None,
         peer_registry: PeerRegistry,
         peer_delivery: PeerDeliveryService,
         spawn_service: SpawnService,
@@ -49,6 +50,7 @@ class JobRunner:
     ) -> None:
         self._config = config
         self._store = work_store
+        self._calendar = calendar_store
         self._registry = peer_registry
         self._delivery = peer_delivery
         self._spawn = spawn_service
@@ -92,6 +94,7 @@ class JobRunner:
                 self._wake.clear()
                 try:
                     self.recover_stale()
+                    self.materialize_due_calendar()
                     await self.run_due_once()
                 except asyncio.CancelledError:
                     raise
@@ -139,9 +142,23 @@ class JobRunner:
                 lease_until = _parse_due(runner.get("lease_until"))
                 if lease_until is not None and (soonest is None or lease_until < soonest):
                     soonest = lease_until
+        if self._calendar is not None:
+            calendar_delay = self._calendar.seconds_until_next_due(now=now)
+            if calendar_delay is not None:
+                calendar_due = now + timedelta(seconds=calendar_delay)
+                if soonest is None or calendar_due < soonest:
+                    soonest = calendar_due
         if soonest is None:
             return None
         return max(0.0, (soonest - now).total_seconds())
+
+    def materialize_due_calendar(self) -> list[TrackedWork]:
+        if self._calendar is None:
+            return []
+        materialized = self._calendar.materialize_due(now=_utcnow())
+        if materialized:
+            self._wake.set()
+        return materialized
 
     async def run_due_once(self) -> list[str]:
         dispatched: list[str] = []

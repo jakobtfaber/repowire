@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state
+from repowire.daemon.schedule_cron import CronExpressionError
 from repowire.daemon.work_store import TrackedWork
 
 router = APIRouter(tags=["work"])
@@ -41,6 +42,7 @@ class WorkCreateRequest(BaseModel):
     )
     profile: str | None = Field(None, description="Optional backend profile")
     due_at: str | None = Field(None, description="Optional scheduled due time")
+    cron: str | None = Field(None, description="Optional recurring cron expression")
     result_surface: str | None = Field(None, description="Metadata-only result surface")
 
 
@@ -85,8 +87,15 @@ class WorkCreateResponse(BaseModel):
         return cls(job_id=work.work_id, work_id=work.work_id, status=work.status())
 
 
+class CalendarCreateResponse(BaseModel):
+    calendar_id: str
+    recurring_id: str
+    calendar: dict[str, Any]
+
+
 class WorkListResponse(BaseModel):
     work: list[dict[str, Any]]
+    recurring: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkResultResponse(BaseModel):
@@ -98,6 +107,14 @@ def _store():
     store = getattr(state, "work_store", None)
     if store is None:
         raise RuntimeError("work_store not initialized")
+    return store
+
+
+def _calendar_store():
+    state = get_app_state()
+    store = getattr(state, "calendar_store", None)
+    if store is None:
+        raise RuntimeError("calendar_store not initialized")
     return store
 
 
@@ -255,15 +272,44 @@ def _merge_protocol_cancel(
     return provenance
 
 
-@router.post("/work", response_model=WorkCreateResponse)
-@router.post("/jobs", response_model=WorkCreateResponse)
+@router.post("/work")
+@router.post("/jobs")
 async def create_work(
     request: WorkCreateRequest,
     _: str | None = Depends(require_auth),
-) -> WorkCreateResponse:
+) -> dict[str, Any]:
     store = _store()
+    if request.due_at is not None and request.cron is not None:
+        raise HTTPException(status_code=400, detail="provide due_at or cron, not both")
     assigned_peer_id = await _canonical_assigned_peer(request.assigned_peer_id, request.circle)
     merged_request = _merge_execution_request(request, assigned_peer_id)
+    if request.cron is not None:
+        try:
+            entry = _calendar_store().create(
+                title=request.title,
+                kind=request.kind,
+                cron=request.cron,
+                created_by_peer_id=request.created_by_peer_id,
+                owner_peer_id=request.owner_peer_id,
+                assigned_peer_id=assigned_peer_id,
+                circle=request.circle,
+                source_kind=request.source_kind,
+                source_id=request.source_id,
+                scope=request.scope,
+                visibility=request.visibility,
+                request=merged_request,
+                provenance=request.provenance,
+            )
+        except (ValueError, CronExpressionError) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        runner = getattr(get_app_state(), "job_runner", None)
+        if runner is not None and hasattr(runner, "wake"):
+            runner.wake()
+        return CalendarCreateResponse(
+            calendar_id=entry.calendar_id,
+            recurring_id=entry.calendar_id,
+            calendar=entry.status(),
+        ).model_dump()
     work = store.create(
         title=request.title,
         kind=request.kind,
@@ -285,7 +331,7 @@ async def create_work(
     runner = getattr(get_app_state(), "job_runner", None)
     if runner is not None and hasattr(runner, "wake"):
         runner.wake()
-    return WorkCreateResponse.from_work(work)
+    return WorkCreateResponse.from_work(work).model_dump()
 
 
 @router.get("/work", response_model=WorkListResponse)
@@ -307,9 +353,22 @@ async def list_work(
             repowire_session_id=repowire_session_id,
             circle=circle,
         )
+        recurring_store = getattr(get_app_state(), "calendar_store", None)
+        recurring = []
+        if recurring_store is not None:
+            if state is None or state in {"active", "paused", "cancelled"}:
+                recurring = recurring_store.list_all(
+                    state=state,
+                    owner_peer_id=owner_peer_id,
+                    created_by_peer_id=created_by_peer_id,
+                    circle=circle,
+                )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return WorkListResponse(work=[item.status() for item in items])
+    return WorkListResponse(
+        work=[item.status() for item in items],
+        recurring=[item.status() for item in recurring],
+    )
 
 
 @router.get("/work/{work_id}/status", response_model=WorkStatusResponse)
@@ -319,6 +378,11 @@ async def get_work_status(
     work_id: str,
     _: str | None = Depends(require_auth),
 ) -> WorkStatusResponse:
+    if work_id.startswith("cal-"):
+        entry = _calendar_store().get(work_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"No recurring job: {work_id}")
+        return WorkStatusResponse(status=entry.status())
     work = _store().get(work_id)
     if work is None:
         raise HTTPException(status_code=404, detail=f"No work: {work_id}")
@@ -365,6 +429,8 @@ async def run_work(
     request: WorkRunRequest | None = None,
     _: str | None = Depends(require_auth),
 ) -> WorkStatusResponse:
+    if work_id.startswith("cal-"):
+        raise HTTPException(status_code=409, detail="Recurring job templates cannot be run")
     existing = _store().get(work_id)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"No work: {work_id}")
@@ -387,6 +453,8 @@ async def retry_work(
     request: WorkRunRequest | None = None,
     _: str | None = Depends(require_auth),
 ) -> WorkStatusResponse:
+    if work_id.startswith("cal-"):
+        raise HTTPException(status_code=409, detail="Recurring job templates cannot be retried")
     existing = _store().get(work_id)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"No work: {work_id}")
@@ -408,6 +476,13 @@ async def get_work_result(
     work_id: str,
     _: str | None = Depends(require_auth),
 ) -> WorkResultResponse:
+    if work_id.startswith("cal-"):
+        entry = _calendar_store().get(work_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"No recurring job: {work_id}")
+        return WorkResultResponse(
+            result={"result_state": "recurring_template", "calendar": entry.status()}
+        )
     work = _store().get(work_id)
     if work is None:
         raise HTTPException(status_code=404, detail=f"No work: {work_id}")
@@ -421,6 +496,14 @@ async def cancel_work(
     request: WorkCancelRequest,
     _: str | None = Depends(require_auth),
 ) -> WorkStatusResponse:
+    if work_id.startswith("cal-"):
+        entry = _calendar_store().cancel(work_id, reason=request.reason)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"No recurring job: {work_id}")
+        runner = getattr(get_app_state(), "job_runner", None)
+        if runner is not None and hasattr(runner, "wake"):
+            runner.wake()
+        return WorkStatusResponse(status=entry.status())
     existing = _store().get(work_id)
     work = _store().cancel(
         work_id,

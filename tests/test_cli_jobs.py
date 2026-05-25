@@ -20,6 +20,19 @@ def _status(job_id: str = "work-abc123") -> dict:
     }
 
 
+def _calendar(calendar_id: str = "cal-abc123") -> dict:
+    return {
+        "calendar_id": calendar_id,
+        "recurring_id": calendar_id,
+        "title": "Daily brief",
+        "kind": "brief",
+        "state": "active",
+        "cron": "0 0 * * *",
+        "next_due_at": "2026-05-26T00:00:00+00:00",
+        "last_occurrence_work_id": None,
+    }
+
+
 def _mock_client(monkeypatch, response_json: dict | None = None) -> MagicMock:
     response = MagicMock()
     response.status_code = 200
@@ -81,8 +94,60 @@ def test_jobs_create_json_emits_status_json(monkeypatch) -> None:
     assert '"title": "Run checks"' in result.output
 
 
+def test_jobs_create_with_cron_posts_recurring_spec(monkeypatch) -> None:
+    client = _mock_client(
+        monkeypatch,
+        response_json={
+            "calendar_id": "cal-abc123",
+            "recurring_id": "cal-abc123",
+            "calendar": _calendar(),
+        },
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "jobs",
+            "create",
+            "Daily brief",
+            "--cron",
+            "@daily",
+            "--path",
+            "/tmp/brief",
+            "--backend",
+            "codex",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    client.post.assert_called_once_with(
+        "http://127.0.0.1:8377/jobs",
+        json={
+            "title": "Daily brief",
+            "kind": "general",
+            "source_kind": "cli",
+            "path": "/tmp/brief",
+            "backend": "codex",
+            "cron": "@daily",
+        },
+    )
+    assert "cal-abc123" in result.output
+
+
+def test_jobs_create_rejects_due_at_and_cron(monkeypatch) -> None:
+    _mock_client(monkeypatch)
+
+    result = CliRunner().invoke(
+        main,
+        ["jobs", "create", "Bad", "--due-at", "10m", "--cron", "@daily"],
+    )
+
+    assert result.exit_code != 0
+    assert "Pass --due-at or --cron" in result.output
+
+
 def test_jobs_list_filters_and_renders_table(monkeypatch) -> None:
-    client = _mock_client(monkeypatch, response_json={"work": [_status()]})
+    client = _mock_client(monkeypatch, response_json={"work": [_status()], "recurring": []})
 
     result = CliRunner().invoke(main, ["jobs", "list", "--state", "queued"])
 
@@ -95,14 +160,28 @@ def test_jobs_list_filters_and_renders_table(monkeypatch) -> None:
 
 
 def test_jobs_list_json_emits_work_array(monkeypatch) -> None:
-    client = _mock_client(monkeypatch, response_json={"work": [_status()]})
+    client = _mock_client(
+        monkeypatch,
+        response_json={"work": [_status()], "recurring": [_calendar()]},
+    )
 
     result = CliRunner().invoke(main, ["jobs", "list", "--json"])
 
     assert result.exit_code == 0, result.output
     client.get.assert_called_once_with("http://127.0.0.1:8377/jobs", params=None)
     assert '"work"' in result.output
+    assert '"recurring"' in result.output
     assert '"job_id": "work-abc123"' in result.output
+
+
+def test_jobs_list_renders_recurring_table(monkeypatch) -> None:
+    _mock_client(monkeypatch, response_json={"work": [], "recurring": [_calendar()]})
+
+    result = CliRunner().invoke(main, ["jobs", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "Recurring Jobs" in result.output
+    assert "cal-abc123" in result.output
 
 
 def test_jobs_show_404_exits_nonzero(monkeypatch) -> None:

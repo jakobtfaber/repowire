@@ -356,6 +356,8 @@ def check_state_database(config: Config) -> CheckResult:
                 "session_bindings",
                 "events",
                 "peer_session_mappings",
+                "tracked_work",
+                "calendar_entries",
             }
             missing = sorted(required - tables)
             if missing:

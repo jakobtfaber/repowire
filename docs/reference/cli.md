@@ -130,7 +130,7 @@ Create one-shot or recurring scheduled mesh messages. Without `--cron`, `WHEN_OR
 ## `repowire jobs`
 
 ```bash
-repowire jobs create TITLE [--kind KIND] [--prompt TEXT | --prompt-file PATH] [--assigned-peer PEER] [--path PATH --backend BACKEND] [--profile NAME] [--due-at ISO_TIME] [--result-surface NAME] [--json]
+repowire jobs create TITLE [--kind KIND] [--prompt TEXT | --prompt-file PATH] [--assigned-peer PEER] [--path PATH --backend BACKEND] [--profile NAME] [--due-at TIME | --cron EXPR] [--result-surface NAME] [--json]
 repowire jobs run JOB_ID [--json]
 repowire jobs retry JOB_ID [--json]
 repowire jobs list [--state STATE] [--owner PEER_ID] [--created-by PEER_ID] [--session SESSION_ID] [--circle CIRCLE] [--json]
@@ -142,9 +142,20 @@ repowire jobs result JOB_ID [--json]
 
 Create, run, retry, and inspect daemon-owned tracked work records. Jobs are
 durable control state in `state.db`; they can exist without a live peer, ask
-thread, schedule, or session. Creating a job persists an execution spec but does
-not dispatch it until the daemon runner reaches `due_at` or you call
-`repowire jobs run JOB_ID`.
+thread, schedule, or session. Creating a one-shot job persists an execution
+spec but does not dispatch it until the daemon runner reaches `due_at` or you
+call `repowire jobs run JOB_ID`.
+
+Pass `--cron` instead of `--due-at` to create a recurring durable job template.
+`--due-at` accepts the same one-shot time forms as `repowire schedule`
+(ISO-8601 or compact relatives such as `10m`, `1h`, or `in 30s`). `--cron`
+uses the same five-field cron syntax and aliases as schedules (`@daily`,
+`@hourly`, and so on). The returned id starts with `cal-`. The daemon
+materializes each due calendar template into a normal child `work-` job and
+then dispatches that child through the same runner. Missed recurring fires
+coalesce into one child occurrence before the next future fire; Repowire does
+not backfill a flood of missed runs. Cancel a `cal-` id to stop future child
+creation. Existing child jobs are not cancelled automatically.
 
 Use `--assigned-peer` for an exact peer id/name. Ambiguous display names are
 rejected before persistence. Without an assigned peer, pass `--path` and
@@ -153,6 +164,13 @@ the same guardrails as `/spawn`. Delivery is an `ask`; ack is only receipt, and
 workers should first mark receipt/start with the current attempt id, for example
 `repowire jobs update JOB_ID --state running --attempt-id ATTEMPT_ID`, then
 complete with a terminal update using the same attempt id.
+
+Agent folders are a convention, not a registry. For standing workers such as a
+daily brief, create a folder with runtime instructions (`AGENTS.md` for Codex,
+`CLAUDE.md` for Claude Code, or both via symlink/copy), then target it with
+`--path <folder> --backend <runtime>`. `--result-surface` is metadata only in
+this slice; the daemon does not automatically send email, Telegram, or
+dashboard notifications from it.
 
 Jobs commands are script-safe: daemon connection failures, missing jobs, and
 HTTP errors exit non-zero. Pass `--json` when scripts need the status, list, or

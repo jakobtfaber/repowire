@@ -4,9 +4,10 @@ Status: architecture contract plus first durable job-runner slice. The daemon
 now has a durable tracked-work store and lifecycle surface separately from
 conversational `ask`/`ack`, persisted execution spec, HTTP/CLI
 create-run-retry-cancel surfaces, and a daemon `JobRunner` that dispatches work
-via `ask`. Dashboard workflows, MCP mirroring of run/retry, ACP/channel health
-handling beyond the narrow cancel hook, and backend resume execution remain
-future slices.
+via `ask`. Recurring durable jobs are represented as internal calendar
+templates that materialize normal tracked-work child jobs. Dashboard workflows,
+MCP mirroring of run/retry/recurrence, ACP/channel health handling beyond the
+narrow cancel hook, and backend resume execution remain future slices.
 
 ## Problem
 
@@ -47,6 +48,9 @@ persona, or a specific backend.
 - `POST /jobs` / `POST /work` creates a durable work record, persists
   `request.execution`, and returns a `job_id` / `work_id` with initial
   `queued` status.
+- `POST /jobs` with `cron` creates a recurring calendar template and returns a
+  `cal-...` id. The template is not an executable work item; it materializes
+  child `work-...` jobs as fires become due.
 - `GET /jobs` / `GET /work` lists status records with optional filters for
   state, owner, creator, Repowire session, and circle.
 - `GET /jobs/{job_id}` / `GET /work/{work_id}/status` returns the current
@@ -79,6 +83,13 @@ current attempt id, lease, attempt count, and bounded attempt records. The
 runner uses wake-on-create plus sleep-until-next-due behavior; it does not scan
 continuously when no job is due.
 
+Recurring templates store the same execution spec plus cron metadata. The
+template controls recurrence state (`active` or `cancelled` in this slice),
+`next_due_at`, and the last child id. Each child occurrence owns execution
+state, attempts, result, retry, and cancellation. If the daemon was down for
+several matching cron times, the next runner tick creates one overdue child and
+advances the template to the next future fire.
+
 Executor selection is deliberately small: an exact assigned peer id wins; an
 ambiguous display name is rejected before create/run; otherwise `path` +
 `backend` + optional `profile` spawns a new peer through the shared spawn
@@ -92,6 +103,8 @@ be retried or inspected.
 Use jobs when work needs durable status, progress history, result metadata, or
 cancellation. Use `ask` for a conversational request that another peer should
 close with `ack`. Use `schedule` for future delivery of a notify or ask.
+Use recurring jobs when the future action is durable work, not merely a future
+message.
 
 Terminal jobs cannot be moved back to non-terminal states in this slice. A
 terminal job may be updated with the same terminal state to add bounded
@@ -234,10 +247,10 @@ does not expand ACP/channel health diagnostics.
 
 ## Storage boundary
 
-Tracked work is daemon control state and belongs under a daemon-owned store
-interface. The first implementation may be in-memory for contract slicing, but
-durable tracked work should persist through the existing daemon state boundary
-used for schedules, session bindings, and events.
+Tracked work is daemon control state and belongs under a daemon-owned SQLite
+store, alongside schedules, session bindings, and events. Recurring calendar
+templates use the same state database and materialize ordinary tracked-work
+children.
 
 Persist:
 
@@ -254,6 +267,16 @@ Do not persist:
 - unbounded logs or full command output inline;
 - backend secrets, approval credentials, tokens, or private transport handles;
 - Beads ledgers or product-repo issue tracker data as part of work records.
+
+## Agent-folder convention
+
+Recurring jobs can target a stable worker folder with `--path` and `--backend`.
+Repowire does not maintain an agent registry in this slice. The folder is just
+the backend working directory, so runtime-specific instruction loading remains
+runtime-specific: Codex reads `AGENTS.md`; Claude Code commonly uses
+`CLAUDE.md`. Keep both names in the folder when a worker may run under either
+backend. Store credentials outside the job record and folder instructions; a job
+only spawns and prompts the worker.
 
 The store should have an explicit retention policy for terminal work. Retention
 cleanup must follow Repowire's lazy-repair philosophy and should be triggered by

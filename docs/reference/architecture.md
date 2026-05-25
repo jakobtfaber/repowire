@@ -30,6 +30,7 @@ The daemon is the single routing hub. It does not care whether a peer arrived th
 | Ask lifecycle | `repowire/daemon/ask_tracker.py`, `repowire/daemon/routes/asks.py` | Open ask state, pending reminders, close/ack handling |
 | Session controls | `repowire/daemon/session_controls.py`, `repowire/daemon/routes/sessions.py` | Session-binding resolution and session-targeted control capability routes |
 | Schedules | `repowire/daemon/scheduler.py`, `repowire/daemon/schedule_store.py`, `repowire/daemon/routes/schedules.py` | One-shot and recurring cron deliveries |
+| Jobs | `repowire/daemon/job_runner.py`, `repowire/daemon/state/work.py`, `repowire/daemon/state/calendar.py`, `repowire/daemon/routes/work.py` | Durable tracked work, recurring calendar templates, and spawned job dispatch |
 | Hooks | `repowire/hooks/` | Runtime event adapters, tmux injection, transcript/chat extraction |
 | MCP server | `repowire/mcp/server.py` | Agent-facing tools over stdio |
 | Control surfaces | `web/`, `repowire/telegram/bot.py`, `repowire/slack/bot.py` | Dashboard and human/service peers |

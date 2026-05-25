@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class StateDatabase:
@@ -310,6 +310,44 @@ class StateDatabase:
             )
             self.conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS calendar_entries (
+                    calendar_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    cron TEXT NOT NULL,
+                    next_due_at TEXT NOT NULL,
+                    owner_peer_id TEXT,
+                    assigned_peer_id TEXT,
+                    circle TEXT,
+                    created_by_peer_id TEXT,
+                    source_kind TEXT,
+                    source_id TEXT,
+                    scope TEXT,
+                    visibility TEXT NOT NULL,
+                    request_json TEXT NOT NULL,
+                    provenance_json TEXT NOT NULL,
+                    last_occurrence_work_id TEXT,
+                    last_materialized_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_calendar_entries_state_due
+                ON calendar_entries(state, next_due_at)
+                """,
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_calendar_entries_circle_due
+                ON calendar_entries(circle, next_due_at)
+                """,
+            )
+            self.conn.execute(
+                """
                 INSERT OR IGNORE INTO schema_migrations(version, description)
                 VALUES (?, ?)
                 """,
@@ -356,6 +394,13 @@ class StateDatabase:
                 VALUES (?, ?)
                 """,
                 (7, "tracked work lifecycle records"),
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (8, "recurring durable job calendar entries"),
             )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

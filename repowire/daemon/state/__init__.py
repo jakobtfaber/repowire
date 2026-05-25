@@ -1,5 +1,6 @@
 """SQLite-backed daemon state primitives."""
 
+from repowire.daemon.state.calendar import CalendarEntry, SQLiteCalendarStore
 from repowire.daemon.state.database import StateDatabase
 from repowire.daemon.state.queued_deliveries import (
     QueuedDelivery,
@@ -10,7 +11,9 @@ from repowire.daemon.state.work import SQLiteWorkStore
 
 __all__ = [
     "QueuedDelivery",
+    "CalendarEntry",
     "SQLiteQueuedDeliveryStore",
+    "SQLiteCalendarStore",
     "SQLiteWorkStore",
     "SessionBinding",
     "SQLiteSessionBindingStore",

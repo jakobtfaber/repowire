@@ -2004,6 +2004,7 @@ def jobs() -> None:
 @click.option("--backend", help="Backend to spawn when no assigned peer is provided")
 @click.option("--profile", help="Spawn profile")
 @click.option("--due-at", help="Schedule due time (ISO-8601)")
+@click.option("--cron", help="Recurring cron expression or alias")
 @click.option("--result-surface", help="Metadata-only result surface")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
 def jobs_create_cmd(
@@ -2024,11 +2025,14 @@ def jobs_create_cmd(
     backend: str | None,
     profile: str | None,
     due_at: str | None,
+    cron: str | None,
     result_surface: str | None,
     as_json: bool,
 ) -> None:
     """Create a durable job without dispatching it to an executor."""
     import httpx
+    if due_at and cron:
+        raise click.ClickException("Pass --due-at or --cron, not both.")
 
     body = {
         "title": title,
@@ -2049,7 +2053,8 @@ def jobs_create_cmd(
         "path": path,
         "backend": backend,
         "profile": profile,
-        "due_at": due_at,
+        "due_at": _parse_schedule_when(due_at) if due_at else None,
+        "cron": cron,
         "result_surface": result_surface,
     }.items():
         if value:
@@ -2059,11 +2064,13 @@ def jobs_create_cmd(
         with httpx.Client(timeout=5.0) as client:
             resp = client.post(f"{_get_daemon_url()}/jobs", json=body)
             resp.raise_for_status()
-            status = resp.json()["status"]
+            payload = resp.json()
             if as_json:
-                console.print_json(data=status)
+                console.print_json(data=payload.get("calendar") or payload.get("status") or payload)
+            elif payload.get("calendar"):
+                _print_calendar_status(payload["calendar"], created=True)
             else:
-                _print_job_status(status, created=True)
+                _print_job_status(payload["status"], created=True)
     except httpx.ConnectError:
         raise click.ClickException("Cannot connect to daemon. Run 'repowire serve' first.")
     except httpx.HTTPStatusError as e:
@@ -2103,38 +2110,59 @@ def jobs_list_cmd(
         with httpx.Client(timeout=5.0) as client:
             resp = client.get(f"{_get_daemon_url()}/jobs", params=params or None)
             resp.raise_for_status()
-            items = resp.json().get("work", [])
+            payload = resp.json()
+            items = payload.get("work", [])
+            recurring = payload.get("recurring", [])
     except httpx.ConnectError:
         raise click.ClickException("Cannot connect to daemon. Run 'repowire serve' first.")
     except httpx.HTTPStatusError as e:
         raise click.ClickException(f"Failed to list jobs: {_http_error_detail(e)}") from e
 
     if as_json:
-        console.print_json(data={"work": items})
+        console.print_json(data={"work": items, "recurring": recurring})
         return
 
-    if not items:
+    if not items and not recurring:
         console.print("[yellow]No jobs.[/]")
         return
-    table = Table(title="Repowire Jobs")
-    table.add_column("ID", style="cyan")
-    table.add_column("State")
-    table.add_column("Title")
-    table.add_column("Kind")
-    table.add_column("Owner")
-    table.add_column("Due")
-    table.add_column("Updated")
-    for item in items:
-        table.add_row(
-            item.get("job_id") or item.get("work_id", ""),
-            item.get("state", ""),
-            item.get("title", ""),
-            item.get("kind", ""),
-            item.get("owner_peer_id") or "-",
-            item.get("due_at") or "-",
-            item.get("updated_at", ""),
-        )
-    console.print(table)
+    if recurring:
+        recurring_table = Table(title="Recurring Jobs")
+        recurring_table.add_column("ID", style="cyan")
+        recurring_table.add_column("State")
+        recurring_table.add_column("Title")
+        recurring_table.add_column("Cron")
+        recurring_table.add_column("Next Due")
+        recurring_table.add_column("Last Job")
+        for item in recurring:
+            recurring_table.add_row(
+                item.get("calendar_id") or item.get("recurring_id", ""),
+                item.get("state", ""),
+                item.get("title", ""),
+                item.get("cron", ""),
+                item.get("next_due_at") or "-",
+                item.get("last_occurrence_work_id") or "-",
+            )
+        console.print(recurring_table)
+    if items:
+        table = Table(title="Repowire Jobs")
+        table.add_column("ID", style="cyan")
+        table.add_column("State")
+        table.add_column("Title")
+        table.add_column("Kind")
+        table.add_column("Owner")
+        table.add_column("Due")
+        table.add_column("Updated")
+        for item in items:
+            table.add_row(
+                item.get("job_id") or item.get("work_id", ""),
+                item.get("state", ""),
+                item.get("title", ""),
+                item.get("kind", ""),
+                item.get("owner_peer_id") or "-",
+                item.get("due_at") or "-",
+                item.get("updated_at", ""),
+            )
+        console.print(table)
 
 
 @jobs.command(name="show")
@@ -2153,6 +2181,8 @@ def jobs_show_cmd(job_id: str, as_json: bool) -> None:
             status = resp.json()["status"]
             if as_json:
                 console.print_json(data=status)
+            elif status.get("calendar_id"):
+                _print_calendar_status(status)
             else:
                 _print_job_status(status)
     except httpx.ConnectError:
@@ -2202,6 +2232,8 @@ def jobs_update_cmd(
             status = resp.json()["status"]
             if as_json:
                 console.print_json(data=status)
+            elif status.get("calendar_id"):
+                _print_calendar_status(status)
             else:
                 _print_job_status(status)
     except httpx.ConnectError:
@@ -2328,6 +2360,18 @@ def _print_job_status(status: dict[str, Any], *, created: bool = False) -> None:
         console.print(f"  result: {status.get('result_summary')}")
     if status.get("cancellation_reason"):
         console.print(f"  cancel: {status.get('cancellation_reason')}")
+
+
+def _print_calendar_status(status: dict[str, Any], *, created: bool = False) -> None:
+    prefix = "Created recurring job" if created else "Recurring job"
+    console.print(f"[green]{prefix} {status.get('calendar_id') or status.get('recurring_id')}[/]")
+    console.print(f"  title: [cyan]{status.get('title') or ''}[/]")
+    console.print(f"  state: {status.get('state')}")
+    console.print(f"  kind:  {status.get('kind')}")
+    console.print(f"  cron:  {status.get('cron')}")
+    console.print(f"  next_due_at: {status.get('next_due_at')}")
+    if status.get("last_occurrence_work_id"):
+        console.print(f"  last_job: {status.get('last_occurrence_work_id')}")
 
 
 @main.group()

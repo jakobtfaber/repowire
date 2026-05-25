@@ -19,6 +19,7 @@ from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import work as work_routes
 from repowire.daemon.spawn_service import SpawnService, SpawnServiceResult
+from repowire.daemon.state.calendar import SQLiteCalendarStore
 from repowire.daemon.state.database import StateDatabase
 from repowire.daemon.state.work import SQLiteWorkStore
 from repowire.daemon.websocket_transport import WebSocketTransport
@@ -71,11 +72,13 @@ def _env(tmp_path: Path):
     )
     db = StateDatabase(tmp_path / "state.db")
     store = SQLiteWorkStore(db)
+    calendar = SQLiteCalendarStore(db, store)
     delivery = FakeDelivery()
     spawn = FakeSpawn()
     runner = JobRunner(
         config=cfg,
         work_store=store,
+        calendar_store=calendar,
         peer_registry=registry,
         peer_delivery=delivery,  # type: ignore[arg-type]
         spawn_service=spawn,  # type: ignore[arg-type]
@@ -89,11 +92,12 @@ def _env(tmp_path: Path):
         message_router=router,
         peer_registry=registry,
         work_store=store,
+        calendar_store=calendar,
         job_runner=runner,
         relay_mode=False,
     )
     init_deps(cfg, registry, state)
-    return cfg, registry, db, store, delivery, spawn, runner
+    return cfg, registry, db, store, calendar, delivery, spawn, runner
 
 
 async def _register_peer(
@@ -114,7 +118,7 @@ async def _register_peer(
 
 
 def test_atomic_acquire_prevents_double_dispatch(tmp_path):
-    _cfg, _registry, db, store, _delivery, _spawn, _runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _delivery, _spawn, _runner = _env(tmp_path)
     work = store.create(title="job")
 
     first = store.acquire_for_dispatch(
@@ -136,7 +140,7 @@ def test_atomic_acquire_prevents_double_dispatch(tmp_path):
 
 
 def test_startup_recovery_marks_stale_dispatching_unavailable(tmp_path):
-    _cfg, _registry, db, store, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
     work = store.create(title="job")
     store.acquire_for_dispatch(
         work.work_id,
@@ -156,7 +160,7 @@ def test_startup_recovery_marks_stale_dispatching_unavailable(tmp_path):
 
 
 def test_startup_recovery_marks_stale_delivered_unavailable(tmp_path):
-    _cfg, _registry, db, store, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
     work = store.create(title="job")
     acquired = store.acquire_for_dispatch(
         work.work_id,
@@ -182,7 +186,7 @@ def test_startup_recovery_marks_stale_delivered_unavailable(tmp_path):
 
 @pytest.mark.anyio
 async def test_live_runner_recovers_delivered_after_lease_without_restart(tmp_path):
-    _cfg, _registry, db, store, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
     work = store.create(title="job")
     acquired = store.acquire_for_dispatch(
         work.work_id,
@@ -211,7 +215,7 @@ async def test_live_runner_recovers_delivered_after_lease_without_restart(tmp_pa
 
 
 def test_running_heartbeat_avoids_delivered_lease_recovery(tmp_path):
-    _cfg, _registry, db, store, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
     work = store.create(title="job")
     acquired = store.acquire_for_dispatch(
         work.work_id,
@@ -238,7 +242,7 @@ def test_running_heartbeat_avoids_delivered_lease_recovery(tmp_path):
 
 @pytest.mark.anyio
 async def test_wake_set_during_deadline_computation_is_not_lost(tmp_path, monkeypatch):
-    _cfg, _registry, db, _store, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, _store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
     calls = 0
 
     async def fake_run_due_once():
@@ -265,7 +269,7 @@ async def test_wake_set_during_deadline_computation_is_not_lost(tmp_path, monkey
 
 
 def test_runner_waits_indefinitely_when_no_due_or_lease_deadline(tmp_path):
-    _cfg, _registry, db, _store, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, _store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
 
     assert runner._seconds_until_next_deadline() is None  # noqa: SLF001
 
@@ -274,7 +278,7 @@ def test_runner_waits_indefinitely_when_no_due_or_lease_deadline(tmp_path):
 
 
 def test_due_at_offset_is_compared_by_instant_not_string(tmp_path):
-    _cfg, _registry, db, store, _delivery, _spawn, _runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _delivery, _spawn, _runner = _env(tmp_path)
     # Lexicographically less than a UTC now string on many days, but far in the future by instant.
     future = (datetime.now(timezone.utc) + timedelta(days=1)).astimezone(
         timezone(timedelta(hours=-10))
@@ -298,7 +302,7 @@ def test_due_at_offset_is_compared_by_instant_not_string(tmp_path):
 
 @pytest.mark.anyio
 async def test_manual_run_future_due_dispatches_once_and_records_correlation(tmp_path):
-    _cfg, registry, db, store, delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, delivery, _spawn, runner = _env(tmp_path)
     peer_id = await _register_peer(registry)
     future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
     work = store.create(
@@ -332,7 +336,7 @@ async def test_manual_run_future_due_dispatches_once_and_records_correlation(tmp
 
 @pytest.mark.anyio
 async def test_cancel_during_acquired_before_delivery_records_cancelled(tmp_path):
-    _cfg, registry, db, store, delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, delivery, _spawn, runner = _env(tmp_path)
     peer_id = await _register_peer(registry)
     work = store.create(
         title="cancel",
@@ -358,7 +362,7 @@ async def test_cancel_during_acquired_before_delivery_records_cancelled(tmp_path
 
 @pytest.mark.anyio
 async def test_retry_preserves_attempts_and_stale_update_conflicts(tmp_path):
-    _cfg, registry, db, store, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
     peer_id = await _register_peer(registry)
     work = store.create(
         title="retry",
@@ -404,7 +408,7 @@ async def test_retry_preserves_attempts_and_stale_update_conflicts(tmp_path):
 
 @pytest.mark.anyio
 async def test_retry_from_delivered_creates_new_attempt(tmp_path):
-    _cfg, registry, db, store, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
     peer_id = await _register_peer(registry)
     work = store.create(
         title="retry delivered",
@@ -426,7 +430,7 @@ async def test_retry_from_delivered_creates_new_attempt(tmp_path):
 
 @pytest.mark.anyio
 async def test_offline_explicit_peer_becomes_unavailable(tmp_path):
-    _cfg, registry, db, store, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
     peer_id = await _register_peer(registry, status=PeerStatus.OFFLINE)
     work = store.create(
         title="offline",
@@ -445,7 +449,7 @@ async def test_offline_explicit_peer_becomes_unavailable(tmp_path):
 
 @pytest.mark.anyio
 async def test_create_ambiguous_display_name_returns_409(tmp_path):
-    _cfg, registry, db, _store, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, _store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
     peer_a, _ = await registry.allocate_and_register(
         circle="default",
         backend=AgentType.CLAUDE_CODE,
@@ -472,6 +476,108 @@ async def test_create_ambiguous_display_name_returns_409(tmp_path):
     await runner.stop()
     db.close()
     cleanup_deps()
+
+
+def test_calendar_materializes_one_child_and_advances_next_due(tmp_path):
+    _cfg, _registry, db, store, calendar, _delivery, _spawn, runner = _env(tmp_path)
+    base = datetime(2026, 5, 25, 8, 0, tzinfo=timezone.utc)
+    entry = calendar.create(
+        title="daily brief",
+        kind="brief",
+        cron="0 8 * * *",
+        request={"execution": {"prompt": {"body": "brief", "source": "inline"}}},
+        now=base - timedelta(days=1),
+    )
+
+    materialized = calendar.materialize_due(now=base + timedelta(minutes=1))
+    second = calendar.materialize_due(now=base + timedelta(minutes=1))
+
+    assert len(materialized) == 1
+    assert second == []
+    child = store.get(materialized[0].work_id)
+    assert child.source_kind == "calendar"
+    assert child.source_id == entry.calendar_id
+    assert child.provenance["calendar"]["calendar_id"] == entry.calendar_id
+    refreshed = calendar.get(entry.calendar_id)
+    assert refreshed.last_occurrence_work_id == child.work_id
+    assert _parse_iso_for_test(refreshed.next_due_at) > base + timedelta(minutes=1)
+    db.close()
+    cleanup_deps()
+
+
+def test_calendar_missed_runs_coalesce_to_one_occurrence(tmp_path):
+    _cfg, _registry, db, store, calendar, _delivery, _spawn, _runner = _env(tmp_path)
+    entry = calendar.create(
+        title="hourly",
+        kind="brief",
+        cron="@hourly",
+        now=datetime(2026, 5, 25, 0, 0, tzinfo=timezone.utc),
+    )
+
+    materialized = calendar.materialize_due(
+        now=datetime(2026, 5, 25, 5, 30, tzinfo=timezone.utc)
+    )
+
+    assert len(materialized) == 1
+    assert len(store.list_all()) == 1
+    assert _parse_iso_for_test(calendar.get(entry.calendar_id).next_due_at) == datetime(
+        2026, 5, 25, 6, 0, tzinfo=timezone.utc
+    )
+    db.close()
+    cleanup_deps()
+
+
+def test_calendar_cancel_prevents_future_materialization(tmp_path):
+    _cfg, _registry, db, store, calendar, _delivery, _spawn, _runner = _env(tmp_path)
+    entry = calendar.create(
+        title="cancel recurring",
+        kind="brief",
+        cron="@hourly",
+        now=datetime(2026, 5, 25, 0, 0, tzinfo=timezone.utc),
+    )
+
+    cancelled = calendar.cancel(entry.calendar_id, reason="user_requested")
+    materialized = calendar.materialize_due(
+        now=datetime(2026, 5, 25, 2, 0, tzinfo=timezone.utc)
+    )
+
+    assert cancelled.state == "cancelled"
+    assert materialized == []
+    assert store.list_all() == []
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_runner_materializes_and_dispatches_due_calendar_child(tmp_path):
+    _cfg, registry, db, store, calendar, delivery, _spawn, runner = _env(tmp_path)
+    peer_id = await _register_peer(registry)
+    calendar.create(
+        title="daily brief",
+        kind="brief",
+        cron="0 8 * * *",
+        assigned_peer_id=peer_id,
+        circle="default",
+        request={"execution": {"target": {"assigned_peer_id": peer_id}}},
+        now=datetime(2026, 5, 25, 7, 0, tzinfo=timezone.utc),
+    )
+
+    runner.materialize_due_calendar()
+    dispatched = await runner.run_due_once()
+
+    assert len(store.list_all()) == 1
+    assert dispatched == [store.list_all()[0].work_id]
+    assert store.list_all()[0].state == "delivered"
+    assert len(delivery.calls) == 1
+    db.close()
+    cleanup_deps()
+
+
+def _parse_iso_for_test(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 @pytest.mark.anyio

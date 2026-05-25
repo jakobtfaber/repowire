@@ -15,6 +15,7 @@ from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import work as work_routes
+from repowire.daemon.state.calendar import SQLiteCalendarStore
 from repowire.daemon.state.database import StateDatabase
 from repowire.daemon.state.work import SQLiteWorkStore
 from repowire.daemon.websocket_transport import WebSocketTransport
@@ -36,6 +37,7 @@ def _make_app(tmp_path: Path):
     )
     db = StateDatabase(tmp_path / "state.db")
     store = SQLiteWorkStore(db)
+    calendar_store = SQLiteCalendarStore(db, store)
 
     state = SimpleNamespace(
         config=cfg,
@@ -45,6 +47,7 @@ def _make_app(tmp_path: Path):
         message_router=router,
         peer_registry=registry,
         work_store=store,
+        calendar_store=calendar_store,
         relay_mode=False,
     )
     init_deps(cfg, registry, state)
@@ -140,6 +143,67 @@ async def test_jobs_alias_can_update_progress_and_return_result(env) -> None:
     result = await env.get(f"/jobs/{job_id}/result")
     assert result.status_code == 200
     assert result.json()["result"]["summary"] == "root cause found"
+
+
+async def test_jobs_create_with_cron_returns_recurring_calendar(env) -> None:
+    created = await env.post(
+        "/jobs",
+        json={
+            "title": "Daily brief",
+            "kind": "brief",
+            "cron": "@daily",
+            "prompt": "write the brief",
+            "path": "/tmp/brief",
+            "backend": "codex",
+        },
+    )
+
+    assert created.status_code == 200
+    body = created.json()
+    assert body["calendar_id"].startswith("cal-")
+    assert body["recurring_id"] == body["calendar_id"]
+    assert body["calendar"]["cron"] == "0 0 * * *"
+    assert body["calendar"]["execution"]["target"] == {
+        "path": "/tmp/brief",
+        "backend": "codex",
+    }
+
+
+async def test_jobs_create_rejects_due_at_and_cron_together(env) -> None:
+    created = await env.post(
+        "/jobs",
+        json={
+            "title": "Bad time",
+            "due_at": "2026-05-26T08:00:00Z",
+            "cron": "@daily",
+        },
+    )
+
+    assert created.status_code == 400
+    assert "not both" in created.json()["detail"]
+
+
+async def test_jobs_list_and_show_include_recurring_calendar(env) -> None:
+    created = await env.post("/jobs", json={"title": "Daily brief", "cron": "@daily"})
+    calendar_id = created.json()["calendar_id"]
+
+    listed = await env.get("/jobs")
+    shown = await env.get(f"/jobs/{calendar_id}/status")
+
+    assert listed.status_code == 200
+    assert listed.json()["recurring"][0]["calendar_id"] == calendar_id
+    assert shown.status_code == 200
+    assert shown.json()["status"]["calendar_id"] == calendar_id
+
+
+async def test_jobs_cancel_recurring_calendar_does_not_require_work(env) -> None:
+    created = await env.post("/jobs", json={"title": "Daily brief", "cron": "@daily"})
+    calendar_id = created.json()["calendar_id"]
+
+    cancelled = await env.post(f"/jobs/{calendar_id}/cancel", json={"reason": "done"})
+
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"]["state"] == "cancelled"
 
 
 async def test_terminal_job_cannot_move_back_to_non_terminal(env) -> None:
