@@ -89,6 +89,64 @@ Use the matrix to decide what ships together, what needs compatibility shims, an
 
 Before risky or experimental runtime work (service restarts, hook/protocol changes, scheduler work, deploys, migrations), schedule self-wakes or watchdog asks so silence is observable. If the wake fires and the worker is silent or status looks stale, inspect the underlying terminal, logs, or panes before assuming the mesh state is complete.
 
+## Durable jobs and agent folders
+
+Use `repowire jobs` when work needs durable lifecycle state, recovery after peer death, retry/cancel/result inspection, or recurring execution. Use `schedule` only for future ask/notify wakeups to an existing target.
+
+Agent folders are a convention, not a registry. For recurring background workers, scaffold a folder with `repowire agents create <name> --backend <runtime>`, then create a job targeting its absolute path with `--path <abs-path> --backend <runtime> --cron ...`. The folder's `AGENTS.md` is the source of truth; `CLAUDE.md` is only a shim for Claude Code. Other supported runtimes load `AGENTS.md` directly.
+
+`--result-surface` is metadata only until delivery routing exists. Do not claim that jobs send Telegram, email, or dashboard notifications automatically. Workers must update the job result explicitly.
+
+Memory is for durable operational lessons. Job status, attempts, failures, and results belong in `repowire jobs`, not memory files.
+
+### Durable jobs routing examples
+
+**Daily email brief**
+
+User intent: "Every morning, summarize important email and send me a brief."
+
+Route:
+
+```bash
+repowire agents create daily-email-brief --backend codex
+repowire jobs create "Daily email brief" \
+  --path "$(pwd)/.repowire/agents/daily-email-brief" \
+  --backend codex \
+  --cron "0 8 * * *" \
+  --prompt "Prepare today's email brief. Use the job_id and attempt_id from this prompt when updating lifecycle state." \
+  --result-surface telegram
+```
+
+Then put standing worker guidance in `.repowire/agents/daily-email-brief/AGENTS.md`: email tool expectations, privacy boundaries, what counts as important, and output format. Keep credentials outside the folder. Do not use `schedule` as the primary mechanism; it wakes a peer but does not persist executor path/backend/profile or spawn on demand.
+
+**One-time cross-repo task**
+
+User intent: "Have someone inspect the billing API and report whether the new webhook shape is compatible."
+
+Route:
+
+```bash
+repowire jobs create "Inspect billing webhook compatibility" \
+  --path /path/to/billing-repo \
+  --backend codex \
+  --prompt "Inspect webhook compatibility risk and update this job with a concise result."
+repowire jobs run <job_id>
+```
+
+Use a job instead of `notify_peer` when the result needs to survive peer death, be retried, or be inspected later with `repowire jobs result`.
+
+**Wake-up reminder**
+
+User intent: "Remind the orchestrator in 30 minutes to check whether the release peer replied."
+
+Route:
+
+```bash
+repowire schedule self 30m "Check whether the release peer replied."
+```
+
+Use `schedule`, not `jobs`, because this is just a future message to an existing orchestrator session, not durable spawned work.
+
 ## Cleanup hygiene
 
 Cleanup is a triad: **registered peer/session + terminal/process + workspace artifacts**. For git work, that means worktrees, branches, and generated artifacts too. For any "is X clean?" check (machine switch, kill-peer prep, prune, audit), enumerate all relevant worktrees/workspaces, not just the root `git status`. Sibling worktrees with unique unpushed commits are invisible to root-dir status. Cross-check the mesh registry against terminal/session state — orphan panes or processes are the common gap. Preserve dirty, unmerged, or unpushed user work unless the user explicitly tells you to clear it.

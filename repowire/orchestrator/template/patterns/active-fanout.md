@@ -50,7 +50,7 @@ These are orchestrator-scoped defaults for future automation, not global peer be
 
 - **Input triage hook:** classify each user message as immediate reply, board candidate, memory candidate, dispatch command, or schedule request. Default to no write; ask before creating durable state unless the user explicitly named a board/memory action.
 - **Stop consolidation hook:** after orchestrator turns, suggest or stage memory/board/session-summary updates only when there is a durable lesson, a board state transition, or a delegated lane changed status.
-- **Scheduled background child peers:** use schedules to wake the orchestrator or a specific child peer for status, summary, cleanup, or review. Every recurring job needs an owner, cancellation path, and quiet default.
+- **Background work:** use schedules for wake/check-in messages to existing targets; use durable jobs for spawned work, recurring workers, retry/cancel/result inspection, or anything that must survive peer death. Every recurring job needs an owner, cancellation path, and quiet default.
 - **Automatic description/summary jobs:** keep peer descriptions short and current; write longer summaries to session timeline/report surfaces, not memory.
 
 ## Anti-patterns
