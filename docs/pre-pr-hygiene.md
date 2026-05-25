@@ -28,10 +28,10 @@ and explain any intentional docs deferral in the handoff.
 
 | Change area | Code paths that usually trigger review | Public surfaces to check |
 | --- | --- | --- |
-| CLI and setup | `repowire/cli.py`, `repowire/config/`, `repowire/spawn.py`, `install.sh`, `repowire.yaml.example` | `README.md`, `docs/reference/cli.md`, `web/app/docs/reference/cli/page.tsx`, `CLAUDE.md`, `AGENTS.md` |
-| MCP and Python client | `repowire/mcp/`, `repowire/peer_mcp.py`, `repowire/client.py`, `repowire/protocol/` | `docs/reference/mcp-tools.md`, `docs/reference/python-client.md`, mirrored web docs, `README.md` when the surface changes materially |
+| CLI and setup | `repowire/cli.py`, `repowire/config/`, `repowire/spawn.py`, `install.sh`, `repowire.yaml.example` | `README.md`, `docs/reference/cli.md`, `CLAUDE.md`, `AGENTS.md` |
+| MCP and Python client | `repowire/mcp/`, `repowire/peer_mcp.py`, `repowire/client.py`, `repowire/protocol/` | `docs/reference/mcp-tools.md`, `docs/reference/python-client.md`, `README.md` when the surface changes materially |
 | Agent runtimes and hooks | `repowire/hooks/`, `repowire/installers/`, `repowire/channel/`, `repowire/acp/` | `docs/agents/`, hook/channel troubleshooting docs, `CLAUDE.md`, `AGENTS.md` |
-| Dashboard and human surfaces | `web/app/dashboard/`, `repowire/telegram/`, `repowire/slack/`, attachments routes, relay code | `docs/surfaces/`, `docs/relay/`, `web/app/docs/`, `README.md`, browser-generated screenshots under `images/` when UI changes materially |
+| Dashboard and human surfaces | `web/app/dashboard/`, `repowire/telegram/`, `repowire/slack/`, attachments routes, relay code | `docs/surfaces/`, `docs/relay/`, `README.md`, browser-generated screenshots under `images/` when UI changes materially |
 | Daemon routing and architecture | `repowire/daemon/`, `repowire/session/`, routing/lifecycle/scheduling state | `docs/reference/architecture.md`, `docs/concepts/`, `docs/patterns/`, `CLAUDE.md`, `AGENTS.md` |
 
 ## Graphify Reminder

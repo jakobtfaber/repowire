@@ -170,7 +170,6 @@ together:
   drift, if such a command is added.
 - `docs/troubleshooting/diagnostics.md`: include plugin drift checks in the
   doctor explanation.
-- `web/app/docs/*`: mirror any shipped docs page that the dashboard docs expose.
 
 Do not update uninstall docs to imply plugin removal cleans Repowire state.
 Plugin uninstall and Repowire uninstall are separate operations.

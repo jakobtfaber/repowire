@@ -257,7 +257,6 @@ Feature work that changes public behavior must update public docs in the same PR
 - `docs/agents/*` when per-runtime install/config/hook/plugin behavior changes.
 - `docs/surfaces/*` when dashboard, Telegram, Slack, attachments, or relay behavior changes.
 - `docs/concepts/*` and `docs/patterns/*` when the recommended workflow or architecture framing changes.
-- `web/app/docs/*` when the shipped Next docs pages mirror the changed reference surface.
 - README screenshots under `images/` when dashboard UI changes materially; use browser-generated screenshots only, not AI-generated UI mockups.
 
 When adding features, explicitly check docs impact before closing the issue. If docs are intentionally deferred, file a Beads follow-up and say why in the PR handoff.
@@ -268,7 +267,7 @@ Before opening a PR, run the advisory pre-PR hygiene check:
 python3 scripts/pre_pr_hygiene.py
 ```
 
-This is a lightweight opt-in checklist, not a mandatory hook. It compares the branch with `origin/main`, includes staged and unstaged changes, points at README, reference docs, mirrored web docs, `CLAUDE.md` / `AGENTS.md`, and graphify follow-ups that may need review, and fails if Beads JSONL ledger churn (`.beads/issues.jsonl` or root `issues.jsonl`) is present. Use `--restore-beads-ledgers` for local-only ledger churn. Keep the final decision product-repo focused and document intentional deferrals in the PR handoff.
+This is a lightweight opt-in checklist, not a mandatory hook. It compares the branch with `origin/main`, includes staged and unstaged changes, points at README, reference docs, `CLAUDE.md` / `AGENTS.md`, and graphify follow-ups that may need review, and fails if Beads JSONL ledger churn (`.beads/issues.jsonl` or root `issues.jsonl`) is present. Use `--restore-beads-ledgers` for local-only ledger churn. Keep the final decision product-repo focused and document intentional deferrals in the PR handoff.
 
 See `docs/pre-pr-hygiene.md` for the tool-surface matrix.
 

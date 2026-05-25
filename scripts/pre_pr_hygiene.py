@@ -39,7 +39,6 @@ RULES: tuple[Rule, ...] = (
         check=(
             "README.md",
             "docs/reference/cli.md",
-            "web/app/docs/reference/cli/page.tsx",
             "CLAUDE.md",
             "AGENTS.md",
         ),
@@ -59,8 +58,6 @@ RULES: tuple[Rule, ...] = (
             "README.md",
             "docs/reference/mcp-tools.md",
             "docs/reference/python-client.md",
-            "web/app/docs/reference/tools/page.tsx",
-            "web/app/docs/reference/client/page.tsx",
             "CLAUDE.md",
             "AGENTS.md",
         ),
@@ -95,7 +92,6 @@ RULES: tuple[Rule, ...] = (
         name="Dashboard and human control surfaces",
         patterns=(
             "web/app/dashboard/**",
-            "web/app/docs/**",
             "web/components/**",
             "repowire/telegram/**",
             "repowire/slack/**",
@@ -107,7 +103,6 @@ RULES: tuple[Rule, ...] = (
             "README.md",
             "docs/surfaces/**",
             "docs/relay/**",
-            "web/app/docs/**",
             "images/**",
             "CLAUDE.md",
             "AGENTS.md",

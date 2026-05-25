@@ -106,7 +106,12 @@ nav:
       - Message types: concepts/message-types.md
       - Mesh command UX contract: concepts/mesh-command-ux.md
       - Tracked work lifecycle: concepts/tracked-work-lifecycle.md
+      - Persona routing: concepts/persona-routing.md
+      - Personas: concepts/personas.md
+      - Mesh memory: concepts/mesh-memory.md
       - Claude Code plugin packaging: concepts/claude-code-plugin-packaging.md
+      - Peer identity lifecycle: concepts/peer-identity-lifecycle.md
+      - Session binding contract: concepts/session-binding-contract.md
       - Lazy repair: concepts/lazy-repair.md
       - Control surfaces: concepts/control-surfaces.md
       - Orchestrator pattern: concepts/orchestrator.md
@@ -116,6 +121,7 @@ nav:
       - Claude Code: agents/claude-code.md
       - Codex: agents/codex.md
       - Gemini CLI: agents/gemini.md
+      - Antigravity CLI: agents/antigravity.md
       - OpenCode: agents/opencode.md
   - Control surfaces:
       - surfaces/index.md

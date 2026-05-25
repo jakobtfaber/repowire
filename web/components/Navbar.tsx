@@ -16,7 +16,7 @@ export default function Navbar() {
         </Link>
         <div className="flex items-center gap-5">
           <Link
-            href="/docs/quickstart"
+            href="https://docs.repowire.io/"
             className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-outline transition-colors hover:text-primary-fixed"
           >
             Docs

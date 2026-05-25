@@ -1,11 +1,13 @@
 # Docs site IA proposal (issue #126)
 
-Status: **DRAFT — awaiting orchestrator sign-off before content writing.**
+Status: **Historical. Path A was chosen: `docs.repowire.io` is the canonical
+MkDocs site, and the duplicate `web/app/docs/*` Next.js docs route has been
+removed.**
 Branch: `feat/docs-site`. Target: `docs.repowire.io`.
 
 ## Phase 1: audit findings
 
-### Existing surface
+### Existing surface at time of proposal
 
 | Source | What it covers | State |
 |---|---|---|
@@ -196,9 +198,9 @@ Targets:
 - `README.md`: untouched (PR #144 owns it).
 - Existing `docs/design-system.md`: untouched, kept as internal reference.
 
-### What this proposal proposes to remove (subject to sign-off)
+### What this proposal proposed to remove
 
-- `web/app/docs/*` directory after content is ported to mkdocs and `docs.repowire.io` is live, **only if** path A is chosen. Until then, kept as-is.
+- `web/app/docs/*` directory after content is ported to mkdocs and `docs.repowire.io` is live. Path A was chosen and the duplicate Next.js docs route has been removed.
 
 ## Open questions for sign-off
 
