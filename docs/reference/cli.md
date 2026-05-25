@@ -176,6 +176,26 @@ Jobs commands are script-safe: daemon connection failures, missing jobs, and
 HTTP errors exit non-zero. Pass `--json` when scripts need the status, list, or
 result payload.
 
+## `repowire agents`
+
+```bash
+repowire agents create NAME [--path PATH] [--backend BACKEND] [--force] [--json]
+```
+
+Scaffold a local worker folder for durable jobs. By default, the folder is
+created at `.repowire/agents/<name>` under the current Git repo root, or under
+the current directory when outside a Git repo. The command creates `AGENTS.md`
+as the source of truth, `CLAUDE.md` as a relative symlink to `AGENTS.md`, and a
+small `README.md` with a suggested `repowire jobs create ... --path ...`
+command.
+
+Agent folders are a convention, not a registry: jobs still target them with
+`--path` and `--backend`. `--backend` on `agents create` only fills the
+suggested jobs command. The scaffold path is absolute in the output so daemon
+spawn does not depend on the daemon's current directory. If `.repowire/` is
+git-ignored or the folder is outside `daemon.spawn.allowed_paths`, the command
+prints a warning but does not edit repository ignore rules or Repowire config.
+
 ## `repowire orchestrator persona`
 
 ```bash

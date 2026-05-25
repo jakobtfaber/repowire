@@ -85,6 +85,14 @@ repowire peer new ~/projects/project-a
 repowire peer new ~/projects/project-b --backend codex --profile fast
 ```
 
+For durable recurring workers, scaffold a repo-local agent folder and target it
+from jobs:
+
+```bash
+repowire agents create daily-brief --backend codex
+repowire jobs create "Daily brief" --path .repowire/agents/daily-brief --backend codex --cron "@daily" --prompt "Prepare the brief."
+```
+
 Full docs: [docs.repowire.io](https://docs.repowire.io).
 
 ## What You Get

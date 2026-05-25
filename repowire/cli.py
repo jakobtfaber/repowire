@@ -1980,6 +1980,239 @@ def _current_cli_peer_name(client: Any | None = None) -> str:
     return get_display_name()
 
 
+_AGENT_SCAFFOLD_FILES = ("AGENTS.md", "CLAUDE.md", "README.md")
+_AGENT_RUNTIME_LINKS = ("CLAUDE.md",)
+
+
+def _validate_agent_name(name: str) -> str:
+    import re
+
+    cleaned = name.strip()
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", cleaned):
+        raise click.ClickException("Agent name must match ^[a-zA-Z0-9._-]+$")
+    return cleaned
+
+
+def _repo_or_cwd() -> Path:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=Path.cwd(),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        root = result.stdout.strip()
+        if root:
+            return Path(root).resolve()
+    except Exception:
+        pass
+    return Path.cwd().resolve()
+
+
+def _default_agent_path(name: str) -> Path:
+    return _repo_or_cwd() / ".repowire" / "agents" / name
+
+
+def _backup_existing_agent_dir(path: Path) -> Path:
+    import shutil
+    from datetime import datetime, timezone
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup = path.parent / f"{path.name}.bak.{timestamp}"
+    counter = 1
+    while backup.exists():
+        backup = path.parent / f"{path.name}.bak.{timestamp}.{counter}"
+        counter += 1
+    shutil.move(str(path), str(backup))
+    return backup
+
+
+def _agent_scaffold_agents_md(name: str) -> str:
+    return f"""# {name}
+
+You are the `{name}` Repowire worker.
+
+## Purpose
+
+Describe the standing job this worker owns.
+
+## Standing Context
+
+- Keep durable job state honest.
+- Prefer explicit progress updates over silent work.
+- Store secrets outside this folder and outside Repowire job records.
+
+## Durable Job Protocol
+
+When Repowire dispatches a job here, the prompt includes `job_id` and
+`attempt_id`. Use those exact values in lifecycle updates. Acknowledging an ask
+only confirms receipt; completion requires a terminal `repowire jobs update`
+for the current attempt.
+"""
+
+
+def _agent_scaffold_readme(name: str, path: Path, backend: str | None) -> str:
+    backend_arg = f" --backend {backend}" if backend else " --backend <runtime>"
+    return f"""# {name}
+
+This is a Repowire agent folder. Repowire does not register it globally; jobs
+target this folder directly with `--path`.
+
+```bash
+repowire jobs create "{name}" --path {path}{backend_arg} --cron "@daily" --prompt "Run the worker."
+```
+
+`AGENTS.md` is the source of truth. `CLAUDE.md` points back to it for Claude
+Code; other supported runtimes load `AGENTS.md` directly.
+"""
+
+
+def _path_is_git_ignored(path: Path) -> bool:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", str(path)],
+            cwd=Path.cwd(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _path_under_spawn_allowed_paths(path: Path) -> bool:
+    from repowire.config.models import load_config
+
+    try:
+        cfg = load_config()
+        roots = cfg.daemon.spawn.allowed_paths
+    except Exception:
+        return False
+    if not roots:
+        return False
+    resolved = path.expanduser().resolve()
+    for root_raw in roots:
+        root = Path(root_raw).expanduser().resolve()
+        if resolved == root or root in resolved.parents:
+            return True
+    return False
+
+
+@main.group()
+def agents() -> None:
+    """Create local worker folders for durable jobs."""
+    pass
+
+
+@agents.command(name="create")
+@click.argument("name")
+@click.option("--path", "path_raw", help="Scaffold path (default: .repowire/agents/NAME)")
+@click.option(
+    "--backend",
+    type=click.Choice(["claude-code", "codex", "gemini", "antigravity", "opencode", "pi"]),
+    help="Backend to include in the suggested jobs command",
+)
+@click.option("--force", is_flag=True, help="Back up and recreate an existing scaffold")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of text")
+def agents_create_cmd(
+    name: str,
+    path_raw: str | None,
+    backend: str | None,
+    force: bool,
+    as_json: bool,
+) -> None:
+    """Create a repo-local Repowire agent folder scaffold."""
+    clean_name = _validate_agent_name(name)
+    target = (
+        Path(path_raw).expanduser() if path_raw else _default_agent_path(clean_name)
+    ).resolve()
+
+    backup: Path | None = None
+    created = True
+    symlink_fallback = False
+
+    if target.exists():
+        if target.is_file() and not force:
+            raise click.ClickException(f"Scaffold path exists and is not a directory: {target}")
+        if (target / "AGENTS.md").exists() and not force:
+            created = False
+        elif not force:
+            collisions = [
+                filename for filename in _AGENT_SCAFFOLD_FILES if (target / filename).exists()
+            ]
+            if collisions:
+                joined = ", ".join(collisions)
+                raise click.ClickException(
+                    f"Scaffold files already exist at {target}: {joined}. "
+                    "Pass --force to back up and recreate."
+                )
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            backup = _backup_existing_agent_dir(target)
+
+    if created:
+        target.mkdir(parents=True, exist_ok=True)
+        agents_md = target / "AGENTS.md"
+        agents_md.write_text(_agent_scaffold_agents_md(clean_name), encoding="utf-8")
+        for link_name in _AGENT_RUNTIME_LINKS:
+            link = target / link_name
+            if link.exists() or link.is_symlink():
+                link.unlink()
+            try:
+                link.symlink_to("AGENTS.md")
+            except OSError:
+                symlink_fallback = True
+                link.write_text(agents_md.read_text(encoding="utf-8"), encoding="utf-8")
+        (target / "README.md").write_text(
+            _agent_scaffold_readme(clean_name, target, backend),
+            encoding="utf-8",
+        )
+
+    git_ignored = _path_is_git_ignored(target)
+    spawn_allowed = _path_under_spawn_allowed_paths(target)
+    suggested = (
+        f"repowire jobs create \"{clean_name}\" --path {target}"
+        f"{f' --backend {backend}' if backend else ' --backend <runtime>'}"
+        ' --cron "@daily" --prompt "Run the worker."'
+    )
+    payload = {
+        "name": clean_name,
+        "path": str(target),
+        "created": created,
+        "backup": str(backup) if backup else None,
+        "symlink_fallback": symlink_fallback,
+        "git_ignored": git_ignored,
+        "spawn_allowed": spawn_allowed,
+        "suggested_job_command": suggested,
+    }
+    if as_json:
+        console.print_json(data=payload)
+        return
+
+    verb = "Created" if created else "Agent folder already exists"
+    console.print(f"[green]{verb}[/] [cyan]{target}[/]")
+    if backup:
+        console.print(f"  backup: [cyan]{backup}[/]")
+    if symlink_fallback:
+        console.print("  [yellow]runtime files were copied because symlinks failed[/]")
+    if git_ignored:
+        console.print(
+            "  [yellow]note:[/] this path is git-ignored; "
+            "unignore it if you want to share it"
+        )
+    if not spawn_allowed:
+        console.print(
+            "  [yellow]note:[/] this path is not under daemon.spawn.allowed_paths; "
+            "add an allowed path before daemon-spawned jobs can run it"
+        )
+    console.print(f"  job: [cyan]{suggested}[/]")
+
+
 @main.group()
 def jobs() -> None:
     """Create and inspect durable tracked work jobs."""

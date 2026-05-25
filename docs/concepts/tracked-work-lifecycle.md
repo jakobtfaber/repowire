@@ -271,12 +271,12 @@ Do not persist:
 ## Agent-folder convention
 
 Recurring jobs can target a stable worker folder with `--path` and `--backend`.
-Repowire does not maintain an agent registry in this slice. The folder is just
-the backend working directory, so runtime-specific instruction loading remains
-runtime-specific: Codex reads `AGENTS.md`; Claude Code commonly uses
-`CLAUDE.md`. Keep both names in the folder when a worker may run under either
-backend. Store credentials outside the job record and folder instructions; a job
-only spawns and prompts the worker.
+Repowire does not maintain an agent registry in this slice. Use
+`repowire agents create <name>` to scaffold `.repowire/agents/<name>` with
+`AGENTS.md` as the source of truth and `CLAUDE.md` as a symlink for Claude Code.
+Other supported runtimes load `AGENTS.md` directly. Store credentials outside
+the job record and folder instructions; a job only spawns and prompts the
+worker.
 
 The store should have an explicit retention policy for terminal work. Retention
 cleanup must follow Repowire's lazy-repair philosophy and should be triggered by
