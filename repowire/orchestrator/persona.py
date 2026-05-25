@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,13 @@ from repowire.orchestrator.workspace import workspace_path
 _PERSONA_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 ACTIVE_PERSONA_FILE = "ACTIVE_PERSONA"
 SOUL_FILE = "SOUL.md"
+SOUL_SHIM_FILE = "SOUL.md"
+INACTIVE_SOUL_SHIM = (
+    "# No Active Persona\n\n"
+    "No orchestrator persona is active. Run "
+    "`repowire orchestrator persona use <name>` to point this shim at a "
+    "persona SOUL.md file.\n"
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +64,11 @@ def validate_persona_name(name: str) -> str:
 def active_persona_path() -> Path:
     """Return the workspace-local active persona marker path."""
     return workspace_path() / "personas" / ACTIVE_PERSONA_FILE
+
+
+def active_soul_shim_path() -> Path:
+    """Return the stable workspace SOUL.md shim path."""
+    return workspace_path() / SOUL_SHIM_FILE
 
 
 def global_persona_dir(name: str) -> Path:
@@ -128,6 +141,7 @@ def set_active_persona(name: str) -> ActiveSoul:
     marker = active_persona_path()
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(f"{soul.name}\n", encoding="utf-8")
+    sync_active_soul_shim(soul)
     return soul
 
 
@@ -135,8 +149,10 @@ def clear_active_persona() -> bool:
     """Remove the active persona marker. Returns True if a marker was cleared."""
     marker = active_persona_path()
     if not marker.exists():
+        sync_active_soul_shim(None)
         return False
     marker.unlink()
+    sync_active_soul_shim(None)
     return True
 
 
@@ -146,6 +162,26 @@ def load_active_soul() -> ActiveSoul | None:
     if name is None:
         return None
     return load_soul(name)
+
+
+def sync_active_soul_shim(soul: ActiveSoul | None = None) -> Path:
+    """Point workspace/SOUL.md at the active persona, or restore placeholder.
+
+    AGENTS.md references this stable path. The active persona may live in a
+    workspace override or the global persona directory, so the shim is the
+    durable in-workspace target for runtimes that expand @SOUL.md.
+    """
+    path = active_soul_shim_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        path.unlink()
+    if soul is None:
+        path.write_text(INACTIVE_SOUL_SHIM, encoding="utf-8")
+        return path
+
+    target = os.path.relpath(soul.path, start=path.parent)
+    path.symlink_to(target)
+    return path
 
 
 def write_soul(
@@ -188,30 +224,15 @@ def list_personas() -> list[PersonaSummary]:
     return sorted(found.values(), key=lambda item: (item.name, item.source))
 
 
-def build_soul_context(soul: ActiveSoul) -> str:
-    """Render SOUL.md for first-turn injection.
-
-    This is intentionally framed as persona context below platform and user
-    directives, not as a safety or permission policy.
-    """
-    return (
-        "[Repowire Persona]\n"
-        f"Active persona: {soul.name}\n"
-        f"SOUL.md: {soul.path} ({soul.source}, sha256:{soul.short_hash})\n\n"
-        "Precedence: system/platform safety and explicit user/orchestrator "
-        "directives override this persona file. Workspace AGENTS.md, skills, "
-        "memory, retrieved context, and untrusted content sit below it.\n\n"
-        f"{soul.content.strip()}"
-    )
-
-
 __all__ = [
     "ACTIVE_PERSONA_FILE",
+    "INACTIVE_SOUL_SHIM",
     "SOUL_FILE",
+    "SOUL_SHIM_FILE",
     "ActiveSoul",
     "PersonaSummary",
     "active_persona_path",
-    "build_soul_context",
+    "active_soul_shim_path",
     "clear_active_persona",
     "default_soul_path",
     "find_soul_path",
@@ -221,6 +242,7 @@ __all__ = [
     "load_active_soul",
     "load_soul",
     "set_active_persona",
+    "sync_active_soul_shim",
     "validate_persona_name",
     "workspace_persona_dir",
     "workspace_soul_path",

@@ -1488,6 +1488,13 @@ def orchestrator_start(runtime: str | None, profile: str | None, service: bool) 
             console.print(f"[red]✗[/] {msg}")
             return
 
+    try:
+        from repowire.orchestrator import load_active_soul, sync_active_soul_shim
+
+        sync_active_soul_shim(load_active_soul())
+    except Exception as e:
+        console.print(f"[yellow]Warning: could not sync SOUL.md shim: {e}[/]")
+
     ok, errors = validate_workspace()
     if not ok:
         console.print("[red]Workspace validation failed:[/]")

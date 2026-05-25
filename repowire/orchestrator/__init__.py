@@ -11,7 +11,6 @@ See GitHub issue #38 and `/Users/prass/.claude/plans/plan-it-out-glittery-bentle
 from repowire.orchestrator.persona import (
     ActiveSoul,
     PersonaSummary,
-    build_soul_context,
     clear_active_persona,
     find_soul_path,
     get_active_persona,
@@ -19,6 +18,7 @@ from repowire.orchestrator.persona import (
     load_active_soul,
     load_soul,
     set_active_persona,
+    sync_active_soul_shim,
     validate_persona_name,
     write_soul,
 )
@@ -35,7 +35,6 @@ __all__ = [
     "ActiveSoul",
     "PersonaSummary",
     "backup_workspace",
-    "build_soul_context",
     "clear_active_persona",
     "find_soul_path",
     "get_active_persona",
@@ -45,6 +44,7 @@ __all__ = [
     "load_active_soul",
     "load_soul",
     "set_active_persona",
+    "sync_active_soul_shim",
     "update_workspace",
     "validate_persona_name",
     "validate_workspace",

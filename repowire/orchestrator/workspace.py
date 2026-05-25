@@ -46,6 +46,7 @@ REPOWIRE_OWNED_FILES = (
 
 # Files the orchestrator owns at runtime — never touched by update.
 ORCHESTRATOR_OWNED_FILES = (
+    "SOUL.md",
     "comms.md",
     "projects.md",
     "BOOTSTRAP.md",
@@ -156,6 +157,9 @@ def validate_workspace() -> tuple[bool, list[str]]:
     source = ws / SOURCE_FILE
     if not source.exists():
         errors.append(f"Source file missing: {source}")
+    soul = ws / "SOUL.md"
+    if not soul.exists():
+        errors.append(f"Persona shim missing: {soul}")
 
     for name in RUNTIME_SYMLINKS:
         link = ws / name

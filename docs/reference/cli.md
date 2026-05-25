@@ -164,9 +164,9 @@ repowire orchestrator persona clear
 Manage orchestrator persona `SOUL.md` files. Repowire resolves personas from
 `~/.repowire/orchestrator/personas/<name>/SOUL.md` first, then
 `~/.repowire/personas/<name>/SOUL.md`. `use` writes the workspace active marker,
-and the orchestrator `SessionStart` hook injects the active persona with its
-source path and SHA-256 short hash. Persona context is identity guidance, not a
-permission policy.
+then points `~/.repowire/orchestrator/SOUL.md` at the resolved persona file.
+The orchestrator template references that stable shim with `@SOUL.md`. Persona
+context is identity guidance, not a permission policy.
 
 ## `repowire memory`
 

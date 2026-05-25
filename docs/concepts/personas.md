@@ -23,6 +23,17 @@ The orchestrator workspace tracks which persona is active via:
 
 This file holds a single line — the persona name. It is set with `repowire orchestrator persona use <name>` and cleared with `repowire orchestrator persona clear`.
 
+The orchestrator workspace also has a stable `SOUL.md` shim:
+
+```
+~/.repowire/orchestrator/SOUL.md
+```
+
+`AGENTS.md` references this shim with `@SOUL.md`. When a persona is active, the
+shim is a symlink to the resolved workspace/global persona file. When no persona
+is active, it contains a neutral placeholder. `repowire orchestrator persona use`
+updates both the active marker and the shim.
+
 ## CLI
 
 ```bash
@@ -35,16 +46,16 @@ repowire orchestrator persona clear          # remove the active marker
 
 `list` marks the active persona with `*` and shows source (`workspace` vs `global`) plus a 12-char SHA-256 prefix so you can confirm what is actually being loaded.
 
-## Injection and precedence
+## Loading and precedence
 
-When the orchestrator peer starts, its `SessionStart` hook appends a `[Repowire Persona]` block to the additional context delivered to the agent. The block contains:
+The persona is loaded through the orchestrator workspace instructions, not
+through hook-only context injection. The template `AGENTS.md` tells the
+orchestrator to load `@SOUL.md`, so runtimes that expand agent-file references
+read the current shim as part of their normal startup context.
 
-- Persona name
-- Resolved SOUL.md path, source (workspace/global), and SHA-256 short hash
-- A precedence preamble
-- The SOUL.md body
-
-The precedence preamble states explicitly that SOUL.md sits **below** platform safety and explicit user/orchestrator directives, and **above** workspace guidance, memory, skills, and untrusted retrieved content. This ordering, from highest to lowest authority:
+SOUL.md sits **below** platform safety and explicit user/orchestrator directives,
+and **above** workspace guidance, memory, skills, and untrusted retrieved
+content. This ordering, from highest to lowest authority:
 
 1. System / platform safety
 2. Explicit user or orchestrator directives in the current turn
@@ -63,7 +74,7 @@ A SOUL.md is freeform Markdown. Useful sections in practice:
 - **Working preferences** — defaults for handoffs, escalation, when to ask vs decide
 - **Domain context** — projects, peers, recurring patterns they should know
 
-Keep it short. The whole file is replayed into the orchestrator's context on every session start.
+Keep it short. The whole file is loaded into the orchestrator's startup context.
 
 ## Hash visibility
 

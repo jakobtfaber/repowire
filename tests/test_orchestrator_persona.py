@@ -76,11 +76,23 @@ def test_set_and_clear_active_persona(tmp_config: Path) -> None:
     assert persona.get_active_persona() is None
     persona.set_active_persona("anya")
     assert persona.get_active_persona() == "anya"
+    shim = persona.active_soul_shim_path()
+    assert shim.is_symlink()
+    assert shim.resolve() == tmp_config / "personas" / "anya" / "SOUL.md"
     active = persona.load_active_soul()
     assert active is not None and active.name == "anya"
     assert persona.clear_active_persona() is True
     assert persona.get_active_persona() is None
+    assert not shim.is_symlink()
+    assert "No Active Persona" in shim.read_text(encoding="utf-8")
     assert persona.clear_active_persona() is False
+
+
+def test_sync_active_soul_shim_repairs_missing_placeholder(tmp_config: Path) -> None:
+    shim = persona.sync_active_soul_shim(None)
+    assert shim == tmp_config / "orchestrator" / "SOUL.md"
+    assert shim.is_file()
+    assert "No Active Persona" in shim.read_text(encoding="utf-8")
 
 
 def test_set_active_persona_rejects_missing(tmp_config: Path) -> None:
@@ -103,18 +115,6 @@ def test_list_personas_dedupes_and_marks_active(tmp_config: Path) -> None:
     assert ("scout", "global") in names
     actives = {(p.name, p.source) for p in listing if p.active}
     assert actives == {("anya", "workspace")}
-
-
-def test_build_soul_context_includes_precedence_and_hash(tmp_config: Path) -> None:
-    _write(tmp_config / "personas" / "anya" / "SOUL.md", "I am Anya.")
-    soul = persona.load_soul("anya")
-    assert soul is not None
-    text = persona.build_soul_context(soul)
-    assert "[Repowire Persona]" in text
-    assert "anya" in text
-    assert soul.short_hash in text
-    assert "Precedence" in text
-    assert "I am Anya." in text
 
 
 def test_write_soul_creates_and_respects_overwrite(tmp_config: Path) -> None:

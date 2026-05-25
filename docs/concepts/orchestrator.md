@@ -46,7 +46,12 @@ forward-applicable lessons, not just because a hook fired.
 
 ## Persona (SOUL.md)
 
-The orchestrator can carry a persistent identity through a `SOUL.md` file. The active persona is injected into the agent's context at every `SessionStart`, sitting below user/orchestrator directives and above untrusted retrieved content. See [personas](./personas.md) for layout, CLI, and precedence.
+The orchestrator can carry a persistent identity through a `SOUL.md` file. The
+workspace `AGENTS.md` references a stable `@SOUL.md` shim; `repowire
+orchestrator persona use <name>` points that shim at the selected persona file.
+Persona guidance sits below user/orchestrator directives and above untrusted
+retrieved content. See [personas](./personas.md) for layout, CLI, and
+precedence.
 
 ## When *not* to orchestrate
 
