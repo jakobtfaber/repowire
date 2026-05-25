@@ -67,3 +67,39 @@
   border: 1px solid var(--copper-500);
   color: var(--copper-400);
 }
+
+.md-typeset .doc-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.75rem;
+  margin: 1.25rem 0 2rem;
+}
+
+.md-typeset .doc-card {
+  display: block;
+  min-height: 7rem;
+  padding: 1rem;
+  border: 1px solid rgba(199, 123, 61, 0.28);
+  border-radius: 0.35rem;
+  background: rgba(199, 123, 61, 0.08);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.md-typeset .doc-card:hover {
+  border-color: rgba(199, 123, 61, 0.55);
+  background: rgba(199, 123, 61, 0.13);
+}
+
+.md-typeset .doc-card strong,
+.md-typeset .doc-card span {
+  display: block;
+}
+
+.md-typeset .doc-card strong {
+  margin-bottom: 0.45rem;
+  color: var(--md-typeset-a-color);
+}
+
+.md-typeset .doc-card span {
+  color: var(--md-default-fg-color--light);
+}

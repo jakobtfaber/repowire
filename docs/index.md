@@ -1,7 +1,5 @@
 ---
 title: Repowire
-hide:
-  - navigation
 ---
 
 # Repowire
@@ -11,6 +9,35 @@ Repowire is a local-first harness for working with more than one coding agent at
 Think of it as the lightweight operating layer around your agent team: a communication mesh, an orchestrator path for multi-repo work, and a set of human controls for when you want to steer from a browser, Telegram, or Slack.
 
 Use it when one repo needs a concrete answer from another repo, when you want a personal orchestrator session to dispatch tasks and collect status, or when you want to monitor and nudge agent work from your phone or browser.
+
+## Explore the docs
+
+<div class="doc-card-grid">
+  <a class="doc-card" href="quickstart/">
+    <strong>Quickstart</strong>
+    <span>Install, run setup, and send the first cross-repo ask.</span>
+  </a>
+  <a class="doc-card" href="concepts/">
+    <strong>Concepts</strong>
+    <span>Peers, circles, message types, jobs, memory, and routing.</span>
+  </a>
+  <a class="doc-card" href="agents/">
+    <strong>Agent setup</strong>
+    <span>Claude Code, Codex, Gemini CLI, Antigravity, and OpenCode setup.</span>
+  </a>
+  <a class="doc-card" href="surfaces/">
+    <strong>Control surfaces</strong>
+    <span>Dashboard, Telegram, Slack, attachments, and relay paths.</span>
+  </a>
+  <a class="doc-card" href="patterns/">
+    <strong>Patterns</strong>
+    <span>Multi-repo coordination, mobile dispatch, worktrees, and orchestrators.</span>
+  </a>
+  <a class="doc-card" href="reference/">
+    <strong>Reference</strong>
+    <span>MCP tools, CLI commands, Python client, config, and architecture.</span>
+  </a>
+</div>
 
 ## Install
 
