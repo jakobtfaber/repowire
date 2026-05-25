@@ -90,6 +90,29 @@ def test_list_read_and_search_memory(tmp_config: Path) -> None:
     assert hits[0].slug == "routing"
 
 
+def test_list_memory_tolerates_malformed_frontmatter(tmp_config: Path) -> None:
+    _write(
+        tmp_config / "memory" / "projects" / "repowire" / "routing.md",
+        """---
+name: routing
+description: `git status` can include backticks when written by hand
+metadata:
+  type: project
+---
+
+# routing
+
+Transport-neutral routing note.
+""",
+    )
+
+    rows = memory.list_memories("project", project="repowire")
+
+    assert [(row.slug, row.type, row.description) for row in rows] == [
+        ("routing", "", "")
+    ]
+
+
 def test_write_memory_creates_file_and_index(tmp_config: Path) -> None:
     path = memory.write_memory(
         "operator-style",

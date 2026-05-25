@@ -167,7 +167,10 @@ def _split_frontmatter(content: str) -> tuple[dict[str, Any], str]:
         return {}, content
     raw = content[4:end]
     body = content[end + len(marker) :]
-    parsed = yaml.safe_load(raw) or {}
+    try:
+        parsed = yaml.safe_load(raw) or {}
+    except yaml.YAMLError:
+        return {}, body
     if not isinstance(parsed, dict):
         return {}, body
     return parsed, body

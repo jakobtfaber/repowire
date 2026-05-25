@@ -122,7 +122,13 @@ When calling `spawn_peer(backend=...)`, Repowire resolves the launch command fro
 
 `memory/MEMORY.md` is the compact index. Each `memory/<topic>.md` is a single corrected operational lesson with `**Why:**` (the incident or strong preference behind the rule) and `**How to apply:**` (when/where the rule kicks in). The Why lets you judge edge cases instead of blindly following.
 
-Use `bd remember "insight"` to add to persistent knowledge across sessions. Search with `bd memories <keyword>`.
+Use Repowire memory for durable orchestrator lessons:
+- List: `repowire memory list --scope orchestrator`
+- Read: `repowire memory show <slug> --scope orchestrator`
+- Search: `repowire memory search <query> --scope orchestrator`
+- Write after an explicit durable-memory decision: `repowire memory write <slug> --scope orchestrator --body "..." --type lesson --description "..."`
+
+Use `bd remember` only for Beads-specific issue-tracker knowledge, not orchestrator operating memory.
 
 **Filter rule for what to save:** "next time X comes up, do Y differently" → keep. "This happened once, FYI" → log it as a bd note, session note, or commit message, not a memory. Detailed recall belongs in session history/search; memory is only the curated procedural layer.
 
