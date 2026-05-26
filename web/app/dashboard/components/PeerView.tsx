@@ -20,7 +20,7 @@ interface TranscriptTurn {
 
 interface PendingAsk {
   correlation_id: string;
-  to_peer: string;
+  to_peer_id: string;
   preview: string;
   sent_at: number;
   state: "pending" | "delivered" | "timed_out";
@@ -1160,7 +1160,7 @@ function ComposeBar({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           from_peer: "dashboard",
-          to_peer: peer.name,
+          to_peer: peer.peer_id,
           text: msg + hint,
           attachments,
           bypass_circle: true,
@@ -1175,7 +1175,7 @@ function ComposeBar({
           ...prev,
           {
             correlation_id: data.correlation_id,
-            to_peer: peer.name,
+            to_peer_id: peer.peer_id,
             preview,
             sent_at: Date.now(),
             state: "pending",
@@ -1199,7 +1199,7 @@ function ComposeBar({
     }
   };
 
-  const visibleAsks = pendingAsks.filter((a) => a.to_peer === peer.name);
+  const visibleAsks = pendingAsks.filter((a) => a.to_peer_id === peer.peer_id);
 
   return (
     <div className="sticky bottom-0 z-10 border-t border-border-faint bg-surface-dim p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] md:static md:p-4">

@@ -815,7 +815,7 @@ describe("PeerView session controls", () => {
     const askCall = fetchMock.mock.calls.find((call) => String(call[0]) === "/ask");
     expect(JSON.parse(String((askCall?.[1] as RequestInit).body))).toMatchObject({
       from_peer: "dashboard",
-      to_peer: "alice",
+      to_peer: "peer-1",
       bypass_circle: true,
     });
   });
