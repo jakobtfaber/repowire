@@ -1,67 +1,35 @@
 """Tests for /ask, /ack, and /asks/* HTTP routes."""
 
-import time
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
 
-from repowire.config.models import Config
-from repowire.daemon.ask_tracker import AskTracker
-from repowire.daemon.deps import cleanup_deps, init_deps
-from repowire.daemon.message_router import MessageRouter
-from repowire.daemon.peer_registry import PeerRegistry
-from repowire.daemon.query_tracker import QueryTracker
+from repowire.daemon.deps import cleanup_deps
 from repowire.daemon.routes import asks, peers
-from repowire.daemon.websocket_transport import TransportError, WebSocketTransport
+from repowire.daemon.websocket_transport import TransportError
+
+from .conftest import async_client_for, make_daemon_app
+
+ROUTERS = (peers.router, asks.router)
 
 
-def _make_app(tmp_path: Path):
-    cfg = Config()
-    transport = WebSocketTransport()
-    qt = QueryTracker()
-    at = AskTracker(ttl_hours=24.0)
-    router = MessageRouter(transport=transport, query_tracker=qt)
-    registry = PeerRegistry(
-        config=cfg,
-        message_router=router,
-        query_tracker=qt,
-        transport=transport,
-        persistence_path=tmp_path / "sessions.json",
+def _make_app(tmp_path):
+    harness = make_daemon_app(tmp_path, ROUTERS)
+    # Stub the wire-level send so /ask and /ack don't fail on missing transport.
+    harness.message_router.send_notification = AsyncMock()
+    harness.message_router.send_ask = AsyncMock()
+    return (
+        harness.app,
+        harness.registry,
+        harness.ask_tracker,
+        harness.message_router,
     )
-    registry._events_path = tmp_path / "events.json"
-    registry._events.clear()
-    registry._last_repair = time.monotonic() + 3600
-
-    state = SimpleNamespace(
-        config=cfg,
-        transport=transport,
-        query_tracker=qt,
-        ask_tracker=at,
-        message_router=router,
-        peer_registry=registry,
-        relay_mode=False,
-    )
-    init_deps(cfg, registry, state)
-
-    # Stub the wire-level send so /ask and /ack don't fail on missing transport
-    router.send_notification = AsyncMock()
-    router.send_ask = AsyncMock()
-
-    app = FastAPI()
-    app.include_router(peers.router)
-    app.include_router(asks.router)
-    return app, registry, at, router
 
 
 @pytest.fixture
 async def env(tmp_path):
     app, registry, at, msg_router = _make_app(tmp_path)
-    t = ASGITransport(app=app)
-    async with AsyncClient(transport=t, base_url="http://test") as c:
+    async with async_client_for(app) as c:
         yield c, registry, at, msg_router
     cleanup_deps()
 

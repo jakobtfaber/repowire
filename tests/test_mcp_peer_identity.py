@@ -353,6 +353,7 @@ async def test_ensure_registered_treats_single_path_backend_candidate_as_compati
             mcp_server, "get_tmux_info", return_value={"pane_id": None, "session_name": None},
          ), \
          patch.object(mcp_server, "_detect_backend", return_value="codex"), \
+         patch.object(mcp_server, "read_runtime_birth_certificate", return_value=[]), \
          patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)):
         await mcp_server._ensure_registered()
 

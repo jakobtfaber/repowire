@@ -179,6 +179,17 @@ class TestSpawnPeer:
         """Redirect spawn-hint writes into a temp dir so tests don't leak files."""
         monkeypatch.setattr("repowire.spawn_hints.CACHE_DIR", tmp_path)
 
+    def _tmux_spawn(self, mock_get_session: MagicMock, *, pane=True):
+        mock_session = MagicMock()
+        mock_session.windows = []
+        mock_window = MagicMock()
+        mock_pane = MagicMock()
+        mock_pane.id = "%42"
+        mock_window.active_pane = mock_pane if pane else None
+        mock_session.new_window.return_value = mock_window
+        mock_get_session.return_value = mock_session
+        return mock_session, mock_window, mock_pane
+
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
     def test_spawn_peer_creates_tmux_window(
@@ -187,14 +198,7 @@ class TestSpawnPeer:
         mock_get_session: MagicMock,
     ) -> None:
         """Test spawn_peer creates a tmux window."""
-        mock_session = MagicMock()
-        mock_session.windows = []
-        mock_window = MagicMock()
-        mock_pane = MagicMock()
-        mock_pane.id = "%42"
-        mock_window.active_pane = mock_pane
-        mock_session.new_window.return_value = mock_window
-        mock_get_session.return_value = mock_session
+        _mock_session, _mock_window, mock_pane = self._tmux_spawn(mock_get_session)
 
         config = SpawnConfig(path="/tmp/test", circle="dev", backend=AgentType.CLAUDE_CODE)
         result = spawn_peer(config)
@@ -205,79 +209,39 @@ class TestSpawnPeer:
             "claude --dangerously-skip-permissions", enter=True,
         )
 
+    @pytest.mark.parametrize(
+        ("backend", "command", "expected"),
+        [
+            (AgentType.CLAUDE_CODE, "claude --model opus", "claude --model opus"),
+            (AgentType.OPENCODE, "", "opencode"),
+            (
+                AgentType.CODEX,
+                "",
+                "codex --dangerously-bypass-approvals-and-sandbox",
+            ),
+        ],
+    )
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
-    def test_spawn_peer_uses_custom_command(
+    def test_spawn_peer_sends_backend_command(
         self,
         mock_server_class: MagicMock,
         mock_get_session: MagicMock,
+        backend: AgentType,
+        command: str,
+        expected: str,
     ) -> None:
-        """Test spawn_peer uses custom command when provided."""
-        mock_session = MagicMock()
-        mock_session.windows = []
-        mock_window = MagicMock()
-        mock_pane = MagicMock()
-        mock_pane.id = "%42"
-        mock_window.active_pane = mock_pane
-        mock_session.new_window.return_value = mock_window
-        mock_get_session.return_value = mock_session
-
+        """Test spawn_peer sends custom or backend-default command."""
+        _mock_session, _mock_window, mock_pane = self._tmux_spawn(mock_get_session)
         config = SpawnConfig(
             path="/tmp/test",
             circle="dev",
-            backend=AgentType.CLAUDE_CODE,
-            command="claude --model opus",
+            backend=backend,
+            command=command,
         )
         spawn_peer(config)
 
-        mock_pane.send_keys.assert_called_once_with("claude --model opus", enter=True)
-
-    @patch("repowire.spawn._get_or_create_session")
-    @patch("repowire.spawn.libtmux.Server")
-    def test_spawn_peer_opencode_backend(
-        self,
-        mock_server_class: MagicMock,
-        mock_get_session: MagicMock,
-    ) -> None:
-        """Test spawn_peer uses opencode command for opencode backend."""
-        mock_session = MagicMock()
-        mock_session.windows = []
-        mock_window = MagicMock()
-        mock_pane = MagicMock()
-        mock_pane.id = "%42"
-        mock_window.active_pane = mock_pane
-        mock_session.new_window.return_value = mock_window
-        mock_get_session.return_value = mock_session
-
-        config = SpawnConfig(path="/tmp/test", circle="dev", backend=AgentType.OPENCODE)
-        spawn_peer(config)
-
-        mock_pane.send_keys.assert_called_once_with("opencode", enter=True)
-
-    @patch("repowire.spawn._get_or_create_session")
-    @patch("repowire.spawn.libtmux.Server")
-    def test_spawn_peer_codex_backend(
-        self,
-        mock_server_class: MagicMock,
-        mock_get_session: MagicMock,
-    ) -> None:
-        """Test spawn_peer uses codex command for codex backend."""
-        mock_session = MagicMock()
-        mock_session.windows = []
-        mock_window = MagicMock()
-        mock_pane = MagicMock()
-        mock_pane.id = "%42"
-        mock_window.active_pane = mock_pane
-        mock_session.new_window.return_value = mock_window
-        mock_get_session.return_value = mock_session
-
-        from repowire.config.models import AgentType
-        config = SpawnConfig(path="/tmp/test", circle="dev", backend=AgentType.CODEX)
-        spawn_peer(config)
-
-        mock_pane.send_keys.assert_called_once_with(
-            "codex --dangerously-bypass-approvals-and-sandbox", enter=True,
-        )
+        mock_pane.send_keys.assert_called_once_with(expected, enter=True)
 
     @patch("repowire.spawn._get_or_create_session")
     @patch("repowire.spawn.libtmux.Server")
@@ -287,14 +251,7 @@ class TestSpawnPeer:
         mock_get_session: MagicMock,
     ) -> None:
         """Test spawn_peer raises for unknown backend."""
-        mock_session = MagicMock()
-        mock_session.windows = []
-        mock_window = MagicMock()
-        mock_pane = MagicMock()
-        mock_pane.id = "%42"
-        mock_window.active_pane = mock_pane
-        mock_session.new_window.return_value = mock_window
-        mock_get_session.return_value = mock_session
+        self._tmux_spawn(mock_get_session)
 
         config = SpawnConfig(path="/tmp/test", circle="dev", backend="unknown")
 
@@ -309,12 +266,7 @@ class TestSpawnPeer:
         mock_get_session: MagicMock,
     ) -> None:
         """Test spawn_peer raises when no active pane."""
-        mock_session = MagicMock()
-        mock_session.windows = []
-        mock_window = MagicMock()
-        mock_window.active_pane = None
-        mock_session.new_window.return_value = mock_window
-        mock_get_session.return_value = mock_session
+        self._tmux_spawn(mock_get_session, pane=False)
 
         config = SpawnConfig(path="/tmp/test", circle="dev", backend="claude-code")
 
@@ -690,13 +642,14 @@ class TestMcpRegistration:
     """Tests for MCP lazy registration behavior."""
 
     @pytest.mark.asyncio
+    @patch("repowire.mcp.server.read_runtime_birth_certificate", return_value=[])
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     @patch(
         "repowire.mcp.server.get_tmux_info",
         return_value={"pane_id": "%1", "session_name": "0", "window_name": "repowire"},
     )
     async def test_tmux_lazy_registration_uses_pane_and_circle(
-        self, _mock_tmux, mock_request: AsyncMock,
+        self, _mock_tmux, mock_request: AsyncMock, _mock_birth_certificate,
     ) -> None:
         """Tmux-backed MCP registration should converge on the pane-owned circle."""
         import repowire.mcp.server as mcp_server

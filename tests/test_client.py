@@ -5,73 +5,41 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from repowire.client import AsyncRepowireClient, ClientPeer, ToolCall
 from repowire.config.models import Config, DaemonConfig
-from repowire.daemon.ask_tracker import AskTracker
-from repowire.daemon.deps import cleanup_deps, get_config, init_deps
-from repowire.daemon.message_router import MessageRouter
-from repowire.daemon.peer_registry import PeerRegistry
-from repowire.daemon.query_tracker import QueryTracker
+from repowire.daemon.deps import cleanup_deps, get_config
 from repowire.daemon.routes import asks, attachments, health, messages, peers
 from repowire.daemon.routes import spawn as spawn_routes
-from repowire.daemon.websocket_transport import WebSocketTransport
 from repowire.protocol.errors import DaemonHTTPError
 
+from .conftest import async_client_for, make_daemon_app
 
-def _make_app(tmp_path: Path, config: Config | None = None) -> FastAPI:
-    cfg = config or Config()
-    transport = WebSocketTransport()
-    query_tracker = QueryTracker()
-    ask_tracker = AskTracker(ttl_hours=24.0)
-    router = MessageRouter(transport=transport, query_tracker=query_tracker)
-    registry = PeerRegistry(
-        config=cfg,
-        message_router=router,
-        query_tracker=query_tracker,
-        transport=transport,
-        ask_tracker=ask_tracker,
-        persistence_path=tmp_path / "sessions.json",
-    )
-    registry._events_path = tmp_path / "events.json"
-    registry._events.clear()
-    registry._last_repair = time.monotonic() + 3600
+ROUTERS = (
+    health.router,
+    peers.router,
+    messages.router,
+    asks.router,
+    spawn_routes.router,
+    attachments.router,
+)
 
-    state = SimpleNamespace(
-        config=cfg,
-        transport=transport,
-        query_tracker=query_tracker,
-        ask_tracker=ask_tracker,
-        message_router=router,
-        peer_registry=registry,
-        relay_mode=cfg.relay.enabled,
-    )
-    init_deps(cfg, registry, state)
 
-    router.send_ask = AsyncMock()
-    router.send_notification = AsyncMock()
-
-    app = FastAPI()
-    app.include_router(health.router)
-    app.include_router(peers.router)
-    app.include_router(messages.router)
-    app.include_router(asks.router)
-    app.include_router(spawn_routes.router)
-    app.include_router(attachments.router)
-    return app
+def _make_app(tmp_path: Path, config: Config | None = None):
+    harness = make_daemon_app(tmp_path, ROUTERS, config=config)
+    harness.message_router.send_ask = AsyncMock()
+    harness.message_router.send_notification = AsyncMock()
+    return harness.app
 
 
 @pytest.fixture
 async def client(tmp_path):
     app = _make_app(tmp_path)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with async_client_for(app) as http_client:
         yield AsyncRepowireClient(client=http_client)
     cleanup_deps()
 

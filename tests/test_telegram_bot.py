@@ -26,34 +26,23 @@ from repowire.telegram.bot import (
 # -- compute_visible_recents --
 
 
-def test_recents_preserves_newest_first_order():
-    recents = ["c", "b", "a"]
-    online = {"a", "b", "c"}
-    assert compute_visible_recents(recents, online, current=None) == ["c", "b", "a"]
-
-
-def test_recents_filters_offline_peers():
-    recents = ["c", "b", "a"]
-    online = {"a", "c"}
-    assert compute_visible_recents(recents, online, current=None) == ["c", "a"]
-
-
-def test_recents_excludes_current_peer():
-    recents = ["c", "b", "a"]
-    online = {"a", "b", "c"}
-    assert compute_visible_recents(recents, online, current="b") == ["c", "a"]
-
-
-def test_recents_dedups_repeated_names():
-    recents = ["a", "b", "a", "c", "b"]
-    online = {"a", "b", "c"}
-    assert compute_visible_recents(recents, online, current=None) == ["a", "b", "c"]
-
-
-def test_recents_honors_limit():
-    recents = ["e", "d", "c", "b", "a"]
-    online = {"a", "b", "c", "d", "e"}
-    assert compute_visible_recents(recents, online, current=None, limit=3) == ["e", "d", "c"]
+@pytest.mark.parametrize(
+    ("recents", "online", "current", "limit", "expected"),
+    [
+        (["c", "b", "a"], {"a", "b", "c"}, None, 5, ["c", "b", "a"]),
+        (["c", "b", "a"], {"a", "c"}, None, 5, ["c", "a"]),
+        (["c", "b", "a"], {"a", "b", "c"}, "b", 5, ["c", "a"]),
+        (["a", "b", "a", "c", "b"], {"a", "b", "c"}, None, 5, ["a", "b", "c"]),
+        (["e", "d", "c", "b", "a"], {"a", "b", "c", "d", "e"}, None, 3, ["e", "d", "c"]),
+    ],
+)
+def test_compute_visible_recents(recents, online, current, limit, expected):
+    assert compute_visible_recents(
+        recents,
+        online,
+        current=current,
+        limit=limit,
+    ) == expected
 
 
 # -- build_reply_keyboard --
@@ -130,57 +119,38 @@ def test_keyboard_is_persistent_and_resized():
 # -- parse_keyboard_tap --
 
 
-def test_parse_current_peer_tap():
-    assert parse_keyboard_tap(f"{CURRENT_MARK} torale") == ("select", "torale")
-
-
-def test_parse_current_offline_peer_tap():
-    assert parse_keyboard_tap(f"{CURRENT_OFF_MARK} torale") == ("select", "torale")
-
-
-def test_parse_recent_peer_tap():
-    assert parse_keyboard_tap(f"{RECENT_MARK} orch") == ("select", "orch")
-
-
-def test_parse_peers_label():
-    assert parse_keyboard_tap(PEERS_LABEL) == ("peers", None)
-
-
-def test_parse_clear_label():
-    assert parse_keyboard_tap(CLEAR_LABEL) == ("clear", None)
-
-
-def test_parse_more_label():
-    assert parse_keyboard_tap(MORE_LABEL) == ("more", None)
-
-
-def test_parse_plain_text_is_text():
-    assert parse_keyboard_tap("hello there") == ("text", None)
-
-
-def test_parse_at_mention_is_text():
-    # @-prefixed text should fall through to the @peer regex path, not be a tap
-    assert parse_keyboard_tap("@torale do it") == ("text", None)
-
-
-def test_parse_marker_alone_without_name_is_text():
-    assert parse_keyboard_tap(CURRENT_MARK) == ("text", None)
-    assert parse_keyboard_tap(f"{CURRENT_MARK} ") == ("text", None)
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (f"{CURRENT_MARK} torale", ("select", "torale")),
+        (f"{CURRENT_OFF_MARK} torale", ("select", "torale")),
+        (f"{RECENT_MARK} orch", ("select", "orch")),
+        (PEERS_LABEL, ("peers", None)),
+        (CLEAR_LABEL, ("clear", None)),
+        (MORE_LABEL, ("more", None)),
+        ("hello there", ("text", None)),
+        ("@torale do it", ("text", None)),
+        (CURRENT_MARK, ("text", None)),
+        (f"{CURRENT_MARK} ", ("text", None)),
+    ],
+)
+def test_parse_keyboard_tap(text, expected):
+    assert parse_keyboard_tap(text) == expected
 
 
 # -- explicit notify/FYI command parsing --
 
 
-def test_parse_notify_command_with_peer():
-    assert parse_notify_command("/notify @agent build passed") == ("agent", "build passed")
-
-
-def test_parse_fyi_command_without_peer_uses_sticky_target():
-    assert parse_notify_command("/fyi build passed") == (None, "build passed")
-
-
-def test_parse_notify_command_ignores_regular_text():
-    assert parse_notify_command("notify @agent build passed") is None
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/notify @agent build passed", ("agent", "build passed")),
+        ("/fyi build passed", (None, "build passed")),
+        ("notify @agent build passed", None),
+    ],
+)
+def test_parse_notify_command(text, expected):
+    assert parse_notify_command(text) == expected
 
 
 # -- inbound routing --
@@ -377,20 +347,11 @@ async def test_retry_error_offers_peer_id_buttons(
 # -- PendingRetry TTL --
 
 
-def test_pending_retry_active_within_window():
+@pytest.mark.parametrize(
+    ("offset", "expected"),
+    [(0, True), (5, True), (10, False), (11, False)],
+)
+def test_pending_retry_ttl(offset, expected):
     now = time.monotonic()
     r = PendingRetry(text="hi", expires_at=now + 10)
-    assert r.is_active(now) is True
-    assert r.is_active(now + 5) is True
-
-
-def test_pending_retry_expired_after_window():
-    now = time.monotonic()
-    r = PendingRetry(text="hi", expires_at=now + 10)
-    assert r.is_active(now + 11) is False
-
-
-def test_pending_retry_exactly_at_expiry_is_inactive():
-    now = time.monotonic()
-    r = PendingRetry(text="hi", expires_at=now + 10)
-    assert r.is_active(now + 10) is False
+    assert r.is_active(now + offset) is expected

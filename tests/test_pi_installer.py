@@ -17,90 +17,57 @@ from repowire.installers.pi import (
 # -- TS surface --------------------------------------------------------------
 
 
-def test_extension_default_export_is_async_factory():
-    """Pi auto-loads extensions as `export default function (pi) { ... }`."""
-    assert "export default async function repowireExtension" in PLUGIN_CONTENT
-    assert "ExtensionAPI" in PLUGIN_CONTENT
+def assert_contains_all(*needles: str) -> None:
+    for needle in needles:
+        assert needle in PLUGIN_CONTENT
 
 
-def test_session_start_registers_every_reason():
-    """session_start runs ensurePeer for every reason; ensurePeer is idempotent.
-    Earlier versions filtered out resume/reload/fork, which left rebound
-    sessions invisible to the mesh after extension-runtime swaps."""
-    assert "session_start" in PLUGIN_CONTENT
-    # Old guard removed.
+def test_core_runtime_surface():
+    """Pi extension hooks and stream handling stay wired to the runtime APIs."""
+    assert_contains_all(
+        "export default async function repowireExtension",
+        "ExtensionAPI",
+        "session_start",
+        "session_shutdown",
+        "removePeer(sessionId)",
+        "session_before_compact",
+        "turn_end",
+        "flushPending",
+        'turn_state = status === "busy" ? "working"',
+        "message_update",
+        "assistantMessageEvent",
+        'ame.type === "text_delta"',
+        "pending.buffer.push(ame.delta)",
+        'ame.type === "error"',
+        "pending.hasError = true",
+    )
+    # Old startup-only guards must stay gone.
     assert 'reason !== "startup"' not in PLUGIN_CONTENT
     assert 'reason !== "new"' not in PLUGIN_CONTENT
 
 
-def test_session_shutdown_removes_peer():
-    assert "session_shutdown" in PLUGIN_CONTENT
-    assert "removePeer(sessionId)" in PLUGIN_CONTENT
+def test_session_identity_and_injection_surface():
+    """Session lookup, attribution, and injection use Pi context APIs."""
+    assert_contains_all(
+        "getSessionId",
+        "ctx.sessionManager",
+        "piApi.sendUserMessage",
+        'deliverAs: "steer"',
+        "piCtx.isIdle()",
+        "piApi.sendUserMessage(text);",
+        "function capture(",
+        "piCtx = ctx",
+    )
 
 
-def test_session_before_compact_scaffold():
-    """The pre-compact hook is registered as a no-op scaffold for v1."""
-    assert "session_before_compact" in PLUGIN_CONTENT
-
-
-def test_turn_end_flushes_pending():
-    """turn_end is the canonical finalize event for pi pending queries."""
-    assert "turn_end" in PLUGIN_CONTENT
-    assert "flushPending" in PLUGIN_CONTENT
-    assert 'turn_state = status === "busy" ? "working"' in PLUGIN_CONTENT
-
-
-def test_message_update_buffers_text_deltas():
-    """Streaming text_deltas (not thinking_deltas) buffer into the pending query."""
-    assert "message_update" in PLUGIN_CONTENT
-    assert "assistantMessageEvent" in PLUGIN_CONTENT
-    assert 'ame.type === "text_delta"' in PLUGIN_CONTENT
-    assert "pending.buffer.push(ame.delta)" in PLUGIN_CONTENT
-
-
-def test_message_update_captures_stream_errors():
-    """assistantMessageEvent type 'error' surfaces as a query error."""
-    assert 'ame.type === "error"' in PLUGIN_CONTENT
-    assert "pending.hasError = true" in PLUGIN_CONTENT
-
-
-def test_session_id_from_session_manager():
-    """Session id is read from ctx.sessionManager.getSessionId, not the event payload."""
-    assert "getSessionId" in PLUGIN_CONTENT
-    assert "ctx.sessionManager" in PLUGIN_CONTENT
-
-
-def test_soft_inject_uses_send_user_message():
-    """Inbound asks/notify/broadcast surface via pi.sendUserMessage with steer."""
-    assert "piApi.sendUserMessage" in PLUGIN_CONTENT
-    assert 'deliverAs: "steer"' in PLUGIN_CONTENT
-
-
-def test_soft_inject_branches_on_idle_state():
-    """When agent is idle, omit deliverAs; while streaming, use steer."""
-    assert "piCtx.isIdle()" in PLUGIN_CONTENT
-    # Idle branch sends bare text; streaming branch passes deliverAs steer.
-    assert "piApi.sendUserMessage(text);" in PLUGIN_CONTENT
-
-
-def test_typebox_schema_for_tools():
+def test_tool_schema_surface():
     """Tool parameters use TypeBox Type.Object, not bare JSON-Schema."""
-    assert 'from "@sinclair/typebox"' in PLUGIN_CONTENT
-    assert "Type.Object({" in PLUGIN_CONTENT
-    assert "Type.String(" in PLUGIN_CONTENT
-    assert "Type.Optional(" in PLUGIN_CONTENT
-
-
-def test_ctx_capture_for_isidle():
-    """Event handlers capture ctx so soft-inject can branch on isIdle()."""
-    assert "function capture(" in PLUGIN_CONTENT
-    assert "piCtx = ctx" in PLUGIN_CONTENT
-
-
-def test_caller_peer_uses_session_manager():
-    """callerPeer reads active session from ctx.sessionManager.getSessionId for attribution."""
-    assert "sessionManager" in PLUGIN_CONTENT
-    assert "getSessionId" in PLUGIN_CONTENT
+    assert_contains_all(
+        'from "@sinclair/typebox"',
+        "Type.Object({",
+        "Type.String(",
+        "Type.Optional(",
+    )
 
 
 def test_tools_have_label_field():

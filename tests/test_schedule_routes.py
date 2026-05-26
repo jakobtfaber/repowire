@@ -3,68 +3,34 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
 
-from repowire.config.models import Config
-from repowire.daemon.ask_tracker import AskTracker
-from repowire.daemon.deps import cleanup_deps, init_deps
-from repowire.daemon.message_router import MessageRouter
-from repowire.daemon.peer_registry import PeerRegistry
-from repowire.daemon.query_tracker import QueryTracker
+from repowire.daemon.deps import cleanup_deps
 from repowire.daemon.routes import schedules
 from repowire.daemon.schedule_store import ScheduleStore
-from repowire.daemon.websocket_transport import WebSocketTransport
+
+from .conftest import async_client_for, make_daemon_app
 
 
-def _make_app(tmp_path: Path):
-    cfg = Config()
-    transport = WebSocketTransport()
-    qt = QueryTracker()
-    at = AskTracker(ttl_hours=24.0)
-    router = MessageRouter(transport=transport, query_tracker=qt)
-    registry = PeerRegistry(
-        config=cfg,
-        message_router=router,
-        query_tracker=qt,
-        transport=transport,
-        persistence_path=tmp_path / "sessions.json",
-        ask_tracker=at,
-    )
-
+def _make_app(tmp_path):
     store = ScheduleStore(tmp_path / "schedules.json")
     # Mock scheduler — routes only need .notify_changed()
     scheduler = MagicMock()
     scheduler.notify_changed = MagicMock()
-
-    state = SimpleNamespace(
-        config=cfg,
-        transport=transport,
-        query_tracker=qt,
-        ask_tracker=at,
-        message_router=router,
-        peer_registry=registry,
-        schedule_store=store,
-        scheduler=scheduler,
-        relay_mode=False,
+    harness = make_daemon_app(
+        tmp_path,
+        (schedules.router,),
+        state_overrides={"schedule_store": store, "scheduler": scheduler},
     )
-    init_deps(cfg, registry, state)
-
-    app = FastAPI()
-    app.include_router(schedules.router)
-    return app, store, scheduler
+    return harness.app, store, scheduler
 
 
 @pytest.fixture
 async def env(tmp_path):
     app, store, scheduler = _make_app(tmp_path)
-    t = ASGITransport(app=app)
-    async with AsyncClient(transport=t, base_url="http://test") as c:
+    async with async_client_for(app) as c:
         yield c, store, scheduler
     cleanup_deps()
 

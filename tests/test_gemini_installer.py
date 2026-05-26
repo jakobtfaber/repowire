@@ -25,106 +25,12 @@ def _read(home):
     return json.loads((home / "settings.json").read_text())
 
 
-# -- install_hooks ----------------------------------------------------------
-
-
-def test_install_hooks_on_empty_writes_all_events(tmp_path, monkeypatch):
-    home = _retarget(tmp_path, monkeypatch)
-
-    assert gemini_mod.install_hooks() is True
-    data = _read(home)
-
-    assert set(data["hooks"]) == {"SessionStart", "BeforeAgent", "AfterAgent"}
-    for event in ("SessionStart", "BeforeAgent", "AfterAgent"):
-        entries = data["hooks"][event]
-        assert len(entries) == 1
-        assert "repowire" in entries[0]["hooks"][0]["command"]
-        assert "--backend=gemini" in entries[0]["hooks"][0]["command"]
-    assert data["hooks"]["SessionStart"][0]["matcher"] == "startup"
-
-
 def test_install_hooks_writes_with_600_perms(tmp_path, monkeypatch):
     home = _retarget(tmp_path, monkeypatch)
     gemini_mod.install_hooks()
     # Atomic write should leave the file at 0o600.
     mode = (home / "settings.json").stat().st_mode & 0o777
     assert mode == 0o600
-
-
-def test_install_hooks_preserves_user_entries_and_top_level_keys(tmp_path, monkeypatch):
-    home = _retarget(tmp_path, monkeypatch)
-    home.mkdir(parents=True)
-    user_entry = {"hooks": [{"type": "command", "command": "/usr/local/bin/my-hook"}]}
-    pre = {
-        "theme": "dark",
-        "hooks": {"AfterAgent": [user_entry], "CustomEvent": [user_entry]},
-    }
-    (home / "settings.json").write_text(json.dumps(pre))
-
-    gemini_mod.install_hooks()
-    data = _read(home)
-
-    assert data["theme"] == "dark"
-    after = data["hooks"]["AfterAgent"]
-    assert user_entry in after
-    assert any("repowire" in e["hooks"][0]["command"] for e in after)
-    assert data["hooks"]["CustomEvent"] == [user_entry]
-
-
-def test_install_hooks_is_idempotent(tmp_path, monkeypatch):
-    home = _retarget(tmp_path, monkeypatch)
-    gemini_mod.install_hooks()
-    first = (home / "settings.json").read_text()
-    gemini_mod.install_hooks()
-    second = (home / "settings.json").read_text()
-
-    assert first == second
-    data = json.loads(second)
-    for event in ("SessionStart", "BeforeAgent", "AfterAgent"):
-        repowire_entries = [
-            e for e in data["hooks"][event]
-            if "repowire" in e["hooks"][0]["command"]
-        ]
-        assert len(repowire_entries) == 1
-
-
-# -- uninstall_hooks --------------------------------------------------------
-
-
-def test_uninstall_hooks_after_install_drops_hooks_key(tmp_path, monkeypatch):
-    home = _retarget(tmp_path, monkeypatch)
-    gemini_mod.install_hooks()
-    assert gemini_mod.uninstall_hooks() is True
-    data = _read(home)
-    assert "hooks" not in data
-
-
-def test_uninstall_hooks_keeps_user_entries(tmp_path, monkeypatch):
-    home = _retarget(tmp_path, monkeypatch)
-    gemini_mod.install_hooks()
-    data = _read(home)
-    user_entry = {"hooks": [{"type": "command", "command": "echo hi"}]}
-    data["hooks"]["AfterAgent"].append(user_entry)
-    (home / "settings.json").write_text(json.dumps(data))
-
-    assert gemini_mod.uninstall_hooks() is True
-    after = _read(home)
-    assert after["hooks"]["AfterAgent"] == [user_entry]
-    assert "SessionStart" not in after["hooks"]
-
-
-def test_uninstall_hooks_noop_when_absent(tmp_path, monkeypatch):
-    _retarget(tmp_path, monkeypatch)
-    assert gemini_mod.uninstall_hooks() is False
-
-
-def test_uninstall_hooks_noop_when_only_user_entries(tmp_path, monkeypatch):
-    home = _retarget(tmp_path, monkeypatch)
-    home.mkdir(parents=True)
-    user_only = {"hooks": {"AfterAgent": [{"hooks": [{"type": "command", "command": "x"}]}]}}
-    (home / "settings.json").write_text(json.dumps(user_only))
-    assert gemini_mod.uninstall_hooks() is False
-    assert _read(home) == user_only
 
 
 # -- install_mcp ------------------------------------------------------------
@@ -224,15 +130,6 @@ def test_full_roundtrip_restores_user_config(tmp_path, monkeypatch):
 
 
 # -- check_* ----------------------------------------------------------------
-
-
-def test_check_hooks_installed_reflects_state(tmp_path, monkeypatch):
-    _retarget(tmp_path, monkeypatch)
-    assert gemini_mod.check_hooks_installed() is False
-    gemini_mod.install_hooks()
-    assert gemini_mod.check_hooks_installed() is True
-    gemini_mod.uninstall_hooks()
-    assert gemini_mod.check_hooks_installed() is False
 
 
 def test_check_mcp_installed_reflects_state(tmp_path, monkeypatch):

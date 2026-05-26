@@ -1,7 +1,5 @@
 """Tests for daemon HTTP routes (peers, messages, events)."""
 
-import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,58 +7,20 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from repowire.config.models import AgentType, Config
-from repowire.daemon.deps import cleanup_deps, get_peer_registry, init_deps
-from repowire.daemon.message_router import MessageRouter
-from repowire.daemon.peer_registry import PeerRegistry
-from repowire.daemon.query_tracker import QueryTracker
+from repowire.daemon.deps import cleanup_deps, get_peer_registry
 from repowire.daemon.routes import health, messages, peers
 from repowire.daemon.routes import spawn as spawn_routes
-from repowire.daemon.websocket_transport import WebSocketTransport
 
+from .conftest import async_client_for, make_daemon_app
 
-def _make_test_app(tmp_path: Path):
-    """Build minimal app with deps initialized (no lifespan needed)."""
-    cfg = Config()
-    transport = WebSocketTransport()
-    tracker = QueryTracker()
-    router = MessageRouter(transport=transport, query_tracker=tracker)
-    registry = PeerRegistry(
-        config=cfg,
-        message_router=router,
-        query_tracker=tracker,
-        transport=transport,
-        persistence_path=tmp_path / "sessions.json",
-    )
-    # Override events path to avoid loading real events
-    registry._events_path = tmp_path / "events.json"
-    registry._events.clear()
-    # Disable lazy_repair's demote logic (no WS in tests would mark all peers offline)
-    registry._last_repair = time.monotonic() + 3600
-
-    app_state = SimpleNamespace(
-        config=cfg,
-        transport=transport,
-        query_tracker=tracker,
-        message_router=router,
-        peer_registry=registry,
-        relay_mode=False,
-    )
-    init_deps(cfg, registry, app_state)
-
-    app = FastAPI()
-    app.include_router(health.router)
-    app.include_router(peers.router)
-    app.include_router(messages.router)
-    app.include_router(spawn_routes.router)
-    return app
+ROUTERS = (health.router, peers.router, messages.router, spawn_routes.router)
 
 
 @pytest.fixture
 async def client(tmp_path):
     """Async HTTP test client with deps initialized."""
-    app = _make_test_app(tmp_path)
-    t = ASGITransport(app=app)
-    async with AsyncClient(transport=t, base_url="http://test") as c:
+    harness = make_daemon_app(tmp_path, ROUTERS)
+    async with async_client_for(harness.app) as c:
         yield c
     cleanup_deps()
 

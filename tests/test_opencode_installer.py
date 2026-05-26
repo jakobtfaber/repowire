@@ -10,51 +10,43 @@ from __future__ import annotations
 from repowire.installers.opencode import PLUGIN_CONTENT
 
 
-def test_uses_promptasync_for_queries():
-    """Queries fire promptAsync (non-blocking) rather than the old prompt+poll."""
-    assert "session.promptAsync" in PLUGIN_CONTENT
+def assert_contains_all(*needles: str) -> None:
+    for needle in needles:
+        assert needle in PLUGIN_CONTENT
+
+
+def test_prompt_and_injection_surface():
+    """Queries and notifications use the non-blocking OpenCode APIs."""
+    assert_contains_all(
+        "session.promptAsync",
+        "tui.prompt.append",
+        "tui/publish",
+    )
     assert "session.message({" not in PLUGIN_CONTENT
     assert "while (Date.now() - start < maxWait)" not in PLUGIN_CONTENT
-
-
-def test_notifications_use_soft_inject():
-    """Notify and broadcast publish a tui.prompt.append event, not session.prompt."""
-    assert "tui.prompt.append" in PLUGIN_CONTENT
-    assert "tui/publish" in PLUGIN_CONTENT
 
 
 def test_query_correlation_via_pending_map():
     """Pending queries correlate by userMessageId, with assistant ID discovered
     from message.updated parentID.
     """
-    assert "pendingQueries" in PLUGIN_CONTENT
-    assert "messageID: userMessageId" in PLUGIN_CONTENT
-    assert "pendingByAssistantId" in PLUGIN_CONTENT
-    assert "trackAssistantMessage" in PLUGIN_CONTENT
-    # Finalization is driven by session.status idle, deferred to handle the
-    # part.updated/session.status publish-order race.
-    assert "scheduleFlush" in PLUGIN_CONTENT
-    assert "flushPendingNow" in PLUGIN_CONTENT
-    # Parts arrive on message.part.* events, not on message.updated.
-    assert "message.part.updated" in PLUGIN_CONTENT
-    assert "message.part.delta" in PLUGIN_CONTENT
-    assert "applyPartUpdated" in PLUGIN_CONTENT
-    assert "applyPartDelta" in PLUGIN_CONTENT
-    # delta event carries new chunk in `delta`, discriminated by field === "text".
-    assert 'props.field !== "text"' in PLUGIN_CONTENT
-    # Reasoning deltas also use field "text" — filter by tracked text partIDs.
-    assert "textPartIds" in PLUGIN_CONTENT
-
-
-def test_authoritative_busy_idle_via_session_status():
-    """session.status is the authoritative busy/idle source (not message.updated heuristic)."""
-    assert '"session.status"' in PLUGIN_CONTENT
-    assert 'turn_state = status === "busy" ? "working"' in PLUGIN_CONTENT
-
-
-def test_permission_relay_uses_correct_field_names():
-    """permission.ask payload uses `permission` (not `tool`) and canonical sessionID."""
-    assert "payload.permission" in PLUGIN_CONTENT
+    assert_contains_all(
+        "pendingQueries",
+        "messageID: userMessageId",
+        "pendingByAssistantId",
+        "trackAssistantMessage",
+        "scheduleFlush",
+        "flushPendingNow",
+        "message.part.updated",
+        "message.part.delta",
+        "applyPartUpdated",
+        "applyPartDelta",
+        'props.field !== "text"',
+        "textPartIds",
+        '"session.status"',
+        'turn_state = status === "busy" ? "working"',
+        "payload.permission",
+    )
 
 
 def test_signal_handlers_exit():
@@ -64,24 +56,20 @@ def test_signal_handlers_exit():
     assert "process.exit(130)" in PLUGIN_CONTENT
 
 
-def test_per_session_peer_registry():
-    """Each root session has its own PeerConn (no global primarySessionId singleton)."""
-    assert "peerBySession" in PLUGIN_CONTENT
-    assert "interface PeerConn" in PLUGIN_CONTENT
-    assert "ensurePeer" in PLUGIN_CONTENT
-    assert "removePeer" in PLUGIN_CONTENT
-    # Old singleton state must be gone.
+def test_per_session_registry_and_dispatch():
+    """Session events route by sessionID to the matching PeerConn."""
+    assert_contains_all(
+        "peerBySession",
+        "interface PeerConn",
+        "ensurePeer",
+        "removePeer",
+        "session.created",
+        "session.deleted",
+        "info.parentID == null",
+        "peerBySession.get(info.sessionID)",
+    )
     assert "let primarySessionId" not in PLUGIN_CONTENT
     assert "resolvePrimarySession" not in PLUGIN_CONTENT
-
-
-def test_session_events_dispatch_by_session_id():
-    """Session and message events route by sessionID to the matching PeerConn."""
-    assert "session.created" in PLUGIN_CONTENT
-    assert "session.deleted" in PLUGIN_CONTENT
-    assert "info.parentID == null" in PLUGIN_CONTENT
-    # Inbound message events must look up the peer by sessionID.
-    assert "peerBySession.get(info.sessionID)" in PLUGIN_CONTENT
 
 
 def test_concurrency_guard_per_peer():
@@ -99,30 +87,19 @@ def test_query_timeout_resets_busy():
     assert timeout_idx < reset_idx < idle_idx
 
 
-def test_per_session_peer_id_cache():
-    """peer_id cache is keyed by (projectPath, sessionId), not just projectPath."""
-    assert "opencode-peer-ids.json" in PLUGIN_CONTENT
-    assert "cacheKey" in PLUGIN_CONTENT
-    assert "${projectPath}#${sessionId}" in PLUGIN_CONTENT
-
-
-def test_tools_use_session_context_for_attribution():
-    """Tool callbacks use ctx.sessionID to attribute from_peer to the calling session."""
-    assert "callerPeer" in PLUGIN_CONTENT
-    assert "ctx.sessionID" in PLUGIN_CONTENT
-    # ask_peer/notify_peer must pass the per-session peer name as from_peer.
-    assert "from_peer: me.peerName" in PLUGIN_CONTENT
-
-
-def test_system_prompt_names_per_session_identity():
-    """experimental.chat.system.transform tells each session its peer name."""
-    assert "experimental.chat.system.transform" in PLUGIN_CONTENT
-    assert 'You are peer "' in PLUGIN_CONTENT
-
-
-def test_inbound_notify_prefix_disambiguates_target():
-    """Notify/broadcast soft-inject prefixes with target peer name (TUI has one prompt)."""
-    assert "@${fromPeer} → ${conn.peerName}:" in PLUGIN_CONTENT
+def test_session_identity_surfaces():
+    """Peer-id cache, tools, prompt context, and notifications use session identity."""
+    assert_contains_all(
+        "opencode-peer-ids.json",
+        "cacheKey",
+        "${projectPath}#${sessionId}",
+        "callerPeer",
+        "ctx.sessionID",
+        "from_peer: me.peerName",
+        "experimental.chat.system.transform",
+        'You are peer "',
+        "@${fromPeer} → ${conn.peerName}:",
+    )
 
 
 def test_no_session_id_hash_override():
