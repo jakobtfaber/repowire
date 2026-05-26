@@ -14,7 +14,7 @@ Skills are the detailed procedure layer. This file is only the always-loaded ope
 
 ## Request Triage
 
-For each user request, briefly consider the right context and execution surface before acting. This is a checklist, not ceremony:
+For each user request, consider the right context and execution surface before acting. This is a checklist, not ceremony:
 
 - Memory: is there likely relevant durable memory or a prior correction to retrieve before deciding?
 - Skill: should an existing skill be loaded for the procedure, or did this expose a reusable procedure worth adding/updating?
