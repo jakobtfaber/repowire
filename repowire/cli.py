@@ -2246,7 +2246,10 @@ def jobs() -> None:
 @click.option("--profile", help="Spawn profile")
 @click.option("--due-at", help="Schedule due time (ISO-8601)")
 @click.option("--cron", help="Recurring cron expression or alias")
-@click.option("--result-surface", help="Metadata-only result surface")
+@click.option(
+    "--result-surface",
+    help="Per-run output hint; included in worker prompt, not auto-delivered",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
 def jobs_create_cmd(
     title: str,

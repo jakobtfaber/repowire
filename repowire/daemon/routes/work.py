@@ -43,7 +43,13 @@ class WorkCreateRequest(BaseModel):
     profile: str | None = Field(None, description="Optional backend profile")
     due_at: str | None = Field(None, description="Optional scheduled due time")
     cron: str | None = Field(None, description="Optional recurring cron expression")
-    result_surface: str | None = Field(None, description="Metadata-only result surface")
+    result_surface: str | None = Field(
+        None,
+        description=(
+            "Per-run output hint stored as metadata; included in the worker "
+            "prompt, not auto-delivered"
+        ),
+    )
 
 
 class WorkCancelRequest(BaseModel):
