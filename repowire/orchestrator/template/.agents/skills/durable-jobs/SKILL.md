@@ -15,7 +15,7 @@ repowire agents create <name> --backend <runtime>
 
 Then create jobs targeting the folder's absolute path with `--path <abs-path> --backend <runtime>`. The folder's `AGENTS.md` is the source of truth; `CLAUDE.md` is only a shim for Claude Code. Other supported runtimes load `AGENTS.md` directly.
 
-`--result-surface` is metadata only until delivery routing exists. Do not claim jobs send Telegram, email, or dashboard notifications automatically. Workers must update job results explicitly.
+Standing I/O policy belongs in the agent folder's `AGENTS.md`: tool expectations, privacy boundaries, output format, and whether/when to notify a human or bot. `--result-surface` is a per-run output hint stored as metadata and included in the worker prompt; it does not make the daemon send Telegram, email, or dashboard notifications automatically. Workers must update job results explicitly.
 
 ## Daily email brief
 
@@ -29,11 +29,11 @@ repowire jobs create "Daily email brief" \
   --path "$(pwd)/.repowire/agents/daily-email-brief" \
   --backend codex \
   --cron "0 8 * * *" \
-  --prompt "Prepare today's email brief. Use the job_id and attempt_id from this prompt when updating lifecycle state." \
+  --prompt "Prepare today's email brief. Use the job_id and attempt_id from this prompt when updating lifecycle state. Follow this folder's AGENTS.md I/O policy for whether to notify Telegram." \
   --result-surface telegram
 ```
 
-Put standing worker guidance in `.repowire/agents/daily-email-brief/AGENTS.md`: email tool expectations, privacy boundaries, what counts as important, and output format. Keep credentials outside the folder and outside job records.
+Put standing worker guidance in `.repowire/agents/daily-email-brief/AGENTS.md`: email tool expectations, privacy boundaries, what counts as important, output format, and whether Telegram should be notified. Keep credentials outside the folder and outside job records.
 
 ## One-time durable task
 

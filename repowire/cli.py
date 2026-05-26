@@ -2045,6 +2045,14 @@ Describe the standing job this worker owns.
 - Prefer explicit progress updates over silent work.
 - Store secrets outside this folder and outside Repowire job records.
 
+## I/O Policy
+
+Standing worker input/output rules belong here: what tools to use, what result
+format to produce, what surfaces are appropriate, and when to notify a human or
+bot. A job prompt may include per-run output hints such as `result_surface`, but
+Repowire does not automatically deliver results to that surface. Always update the
+durable job result for the current attempt.
+
 ## Durable Job Protocol
 
 When Repowire dispatches a job here, the prompt includes `job_id` and

@@ -377,12 +377,28 @@ class JobRunner:
     def _build_prompt(work: TrackedWork, attempt_id: str) -> str:
         execution = (work.request or {}).get("execution") or {}
         prompt = execution.get("prompt") or {}
+        delivery = execution.get("delivery") or {}
         body = prompt.get("body") or work.title
+        output_hint = ""
+        result_surface = delivery.get("result_surface")
+        if result_surface:
+            output_hint = (
+                "\n\n"
+                "[Output/routing hint]\n"
+                f"result_surface: {result_surface}\n"
+                "Repowire stores this as metadata only; the daemon will not "
+                "automatically deliver the result to that surface. Follow this "
+                "agent folder's AGENTS.md and the job prompt for I/O policy. "
+                "Always update the durable job result. Notify or use the named "
+                "surface only when the standing instructions or this prompt make "
+                "that appropriate."
+            )
         return (
             f"[Repowire durable job]\n"
             f"job_id: {work.work_id}\n"
             f"attempt_id: {attempt_id}\n\n"
-            f"{body}\n\n"
+            f"{body}"
+            f"{output_hint}\n\n"
             "First, immediately PATCH /jobs/{job_id} to state=running with this "
             "attempt_id before doing longer work. When complete, PATCH /jobs/{job_id} "
             "with a terminal state and the same attempt_id. Ack only confirms receipt."

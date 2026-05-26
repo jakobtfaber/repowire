@@ -90,8 +90,13 @@ from jobs:
 
 ```bash
 repowire agents create daily-brief --backend codex
-repowire jobs create "Daily brief" --path .repowire/agents/daily-brief --backend codex --cron "@daily" --prompt "Prepare the brief."
+repowire jobs create "Daily brief" --path .repowire/agents/daily-brief --backend codex --cron "@daily" --prompt "Prepare the brief and update the job result."
 ```
+
+Put standing input/output policy in the agent folder's `AGENTS.md`. Job
+metadata such as `--result-surface` is only an output hint in the worker prompt;
+the daemon does not automatically deliver results to Telegram, email, or the
+dashboard.
 
 Full docs: [docs.repowire.io](https://docs.repowire.io).
 

@@ -329,7 +329,40 @@ async def test_manual_run_future_due_dispatches_once_and_records_correlation(tmp
     assert len(delivery.calls) == 1
     assert delivery.calls[0]["to_peer"] == peer_id
     assert "attempt_id:" in delivery.calls[0]["text"]
+    assert "[Output/routing hint]" not in delivery.calls[0]["text"]
     assert store.get(work.work_id).correlation_id == "ask-test"
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_result_surface_is_included_as_metadata_only_output_hint(tmp_path):
+    _cfg, registry, db, store, _calendar, delivery, _spawn, runner = _env(tmp_path)
+    peer_id = await _register_peer(registry)
+    work = store.create(
+        title="brief",
+        assigned_peer_id=peer_id,
+        circle="default",
+        request={
+            "execution": {
+                "prompt": {"body": "prepare the brief", "source": "inline"},
+                "target": {"assigned_peer_id": peer_id},
+                "delivery": {"kind": "ask", "result_surface": "telegram"},
+            }
+        },
+    )
+
+    ran = await runner.run_job(work.work_id)
+
+    assert ran.state == "delivered"
+    text = delivery.calls[0]["text"]
+    assert "[Output/routing hint]" in text
+    assert "result_surface: telegram" in text
+    assert "daemon will not automatically deliver the result" in text
+    assert "Follow this agent folder's AGENTS.md" in text
+    assert "Always update the durable job result" in text
+    assert "job_id:" in text
+    assert "attempt_id:" in text
     db.close()
     cleanup_deps()
 

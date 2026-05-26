@@ -25,6 +25,11 @@ def test_agents_create_uses_repo_local_default(tmp_path: Path, monkeypatch) -> N
     assert (target / "CLAUDE.md").readlink() == Path("AGENTS.md")
     assert not (target / "CODEX.md").exists()
     assert not (target / "GEMINI.md").exists()
+    agents_md = (target / "AGENTS.md").read_text(encoding="utf-8")
+    assert "## I/O Policy" in agents_md
+    assert "result_surface" in agents_md
+    assert "does not automatically deliver results" in agents_md
+    assert "Always update the durable job result" in " ".join(agents_md.split())
     assert "repowire jobs create" in result.output
     assert "--backend codex" in result.output
 

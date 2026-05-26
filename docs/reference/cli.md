@@ -168,9 +168,11 @@ complete with a terminal update using the same attempt id.
 Agent folders are a convention, not a registry. For standing workers such as a
 daily brief, create a folder with runtime instructions (`AGENTS.md` for Codex,
 `CLAUDE.md` for Claude Code, or both via symlink/copy), then target it with
-`--path <folder> --backend <runtime>`. `--result-surface` is metadata only in
-this slice; the daemon does not automatically send email, Telegram, or
-dashboard notifications from it.
+`--path <folder> --backend <runtime>`. Standing I/O policy belongs in the
+folder's `AGENTS.md`: tools, output format, privacy boundaries, and when to
+notify a human or bot. `--result-surface` is a per-run output hint stored as
+metadata only; the daemon includes it in the worker prompt but does not
+automatically send email, Telegram, or dashboard notifications from it.
 
 Jobs commands are script-safe: daemon connection failures, missing jobs, and
 HTTP errors exit non-zero. Pass `--json` when scripts need the status, list, or
@@ -195,6 +197,9 @@ suggested jobs command. The scaffold path is absolute in the output so daemon
 spawn does not depend on the daemon's current directory. If `.repowire/` is
 git-ignored or the folder is outside `daemon.spawn.allowed_paths`, the command
 prints a warning but does not edit repository ignore rules or Repowire config.
+Scaffolded `AGENTS.md` includes an I/O Policy section. Put standing worker
+rules there rather than relying on job metadata to deliver results. Jobs always
+need an explicit terminal `repowire jobs update` for the current attempt.
 
 ## `repowire orchestrator persona`
 

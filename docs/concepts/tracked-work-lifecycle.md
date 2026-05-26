@@ -278,6 +278,13 @@ Other supported runtimes load `AGENTS.md` directly. Store credentials outside
 the job record and folder instructions; a job only spawns and prompts the
 worker.
 
+Standing I/O policy belongs in the agent folder's `AGENTS.md`: tool access,
+output format, privacy boundaries, and whether/when to notify a human or bot.
+Per-run job metadata such as `result_surface` is an output hint only. The daemon
+includes it in the worker prompt for context, but it does not automatically
+deliver results to that surface. The worker must still update the durable job
+result for the current attempt.
+
 The store should have an explicit retention policy for terminal work. Retention
 cleanup must follow Repowire's lazy-repair philosophy and should be triggered by
 user-visible requests, startup/shutdown, or bounded maintenance hooks, not a new
