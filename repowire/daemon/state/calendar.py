@@ -248,6 +248,32 @@ class SQLiteCalendarStore:
             )
         return self.get(calendar_id)
 
+    def update_runtime_binding(
+        self,
+        calendar_id: str,
+        *,
+        binding: dict[str, Any],
+    ) -> CalendarEntry | None:
+        existing = self.get(calendar_id)
+        if existing is None:
+            return None
+        provenance = dict(existing.provenance)
+        history = list(provenance.get("runtime_binding_history") or [])
+        history.append(binding)
+        provenance["runtime_binding"] = binding
+        provenance["runtime_binding_history"] = history[-10:]
+        now = now_iso()
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE calendar_entries
+                SET provenance_json = ?, updated_at = ?
+                WHERE calendar_id = ?
+                """,
+                (json_dumps(provenance), now, calendar_id),
+            )
+        return self.get(calendar_id)
+
     def seconds_until_next_due(self, now: datetime | None = None) -> float | None:
         row = self._conn.execute(
             """

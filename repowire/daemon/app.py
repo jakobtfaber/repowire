@@ -316,6 +316,7 @@ def create_app(
             peer_registry=peer_registry,
             peer_delivery=peer_delivery,
             spawn_service=spawn_service,
+            session_binding_store=session_binding_store,
         )
         app.state.job_runner = job_runner
         scheduler = Scheduler(

@@ -414,6 +414,7 @@ class SQLiteWorkStore:
         tmux: dict[str, Any] | None = None,
         correlation_id: str | None = None,
         delivery_state: str | None = None,
+        resume_plan: dict[str, Any] | None = None,
         error: dict[str, Any] | None = None,
     ) -> TrackedWork | None:
         with self._conn:
@@ -443,6 +444,8 @@ class SQLiteWorkStore:
                     attempt["correlation_id"] = correlation_id
                 if delivery_state is not None:
                     attempt["delivery_state"] = delivery_state
+                if resume_plan is not None:
+                    attempt["resume_plan"] = resume_plan
                 if error is not None:
                     attempt["error"] = error
                 if status in {"delivered", "failed", "unavailable", "interrupted", "cancelled"}:

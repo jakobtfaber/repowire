@@ -13,7 +13,8 @@ from fastapi import HTTPException
 from repowire.config.models import AgentType, Config
 from repowire.daemon.peer_delivery import PeerDeliveryService
 from repowire.daemon.peer_registry import PeerRegistry
-from repowire.daemon.spawn_service import SpawnService
+from repowire.daemon.spawn_service import RuntimeResumePlan, SpawnService
+from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 from repowire.daemon.work_store import TrackedWork, now_iso
 from repowire.protocol.peers import Peer, PeerStatus
 
@@ -47,6 +48,7 @@ class JobRunner:
         peer_registry: PeerRegistry,
         peer_delivery: PeerDeliveryService,
         spawn_service: SpawnService,
+        session_binding_store: SQLiteSessionBindingStore | None = None,
         runner_owner_id: str = "daemon-job-runner",
         lease_seconds: int = 300,
         poll_interval: float | None = None,
@@ -57,6 +59,7 @@ class JobRunner:
         self._registry = peer_registry
         self._delivery = peer_delivery
         self._spawn = spawn_service
+        self._session_bindings = session_binding_store
         self._runner_owner_id = runner_owner_id
         self._lease_seconds = lease_seconds
         self._task: asyncio.Task | None = None
@@ -232,7 +235,7 @@ class JobRunner:
             attempt_id=attempt_id,
             phase="delivery",
             assigned_peer_id=peer.peer_id,
-            assigned_peer_info=self._peer_info(peer),
+            assigned_peer_info=self._peer_info(peer, work=work),
             tmux={"tmux_session": peer.tmux_session, "pane_id": peer.pane_id},
             delivery_state="pending",
         )
@@ -286,7 +289,10 @@ class JobRunner:
                 attempt_id=attempt_id,
                 phase="resolved_peer",
                 assigned_peer_id=resolved.peer_id,
+                assigned_peer_info=self._peer_info(resolved, work=work),
+                tmux={"tmux_session": resolved.tmux_session, "pane_id": resolved.pane_id},
             )
+            self._record_runtime_binding(work, resolved, source="assigned_peer")
             return resolved
 
         path = target.get("path")
@@ -308,14 +314,16 @@ class JobRunner:
                 attempt_id=attempt_id,
                 phase="reused_peer",
                 assigned_peer_id=reusable.peer_id,
-                assigned_peer_info=self._peer_info(reusable),
+                assigned_peer_info=self._peer_info(reusable, work=work),
                 tmux={"tmux_session": reusable.tmux_session, "pane_id": reusable.pane_id},
             )
+            self._record_runtime_binding(work, reusable, source="reused_peer")
             return reusable
         warmup = (
             "Repowire spawned this session for a durable job. "
             "Please register with the mesh; the job request will arrive as an ask."
         )
+        resume_plan = self._resume_plan_for(work, path=str(path), backend=backend)
         try:
             spawn_result = self._spawn.spawn(
                 path=str(path),
@@ -323,6 +331,7 @@ class JobRunner:
                 profile=target.get("profile"),
                 circle=work.circle or "default",
                 message=warmup,
+                resume_plan=resume_plan,
             )
         except HTTPException as e:
             return self._store.update_attempt(
@@ -343,8 +352,9 @@ class JobRunner:
         self._store.update_attempt(
             work.work_id,
             attempt_id=attempt_id,
-            phase="spawned",
+            phase="resume_spawned" if resume_plan is not None else "spawned",
             tmux={"tmux_session": spawn_result.tmux_session, "pane_id": spawn_result.pane_id},
+            resume_plan=self._resume_plan_info(resume_plan),
         )
         resolved = await self._await_spawned_peer(
             spawn_result.display_name,
@@ -355,10 +365,17 @@ class JobRunner:
         self._store.update_attempt(
             work.work_id,
             attempt_id=attempt_id,
-            phase="spawned_peer_registered",
+            phase="resumed_peer_registered"
+            if resume_plan is not None
+            else "spawned_peer_registered",
             assigned_peer_id=resolved.peer_id,
-            assigned_peer_info=self._peer_info(resolved),
+            assigned_peer_info=self._peer_info(resolved, work=work),
             tmux={"tmux_session": resolved.tmux_session, "pane_id": resolved.pane_id},
+        )
+        self._record_runtime_binding(
+            work,
+            resolved,
+            source="backend_resume" if resume_plan is not None else "spawned_peer",
         )
         return resolved
 
@@ -405,21 +422,158 @@ class JobRunner:
                 return None
             await asyncio.sleep(0.25)
 
+    def _resume_plan_for(
+        self,
+        work: TrackedWork,
+        *,
+        path: str,
+        backend: AgentType,
+    ) -> RuntimeResumePlan | None:
+        if self._calendar is None or work.source_kind != "calendar" or not work.source_id:
+            return None
+        entry = self._calendar.get(work.source_id)
+        if entry is None:
+            return None
+        binding = (entry.provenance or {}).get("runtime_binding") or {}
+        if not isinstance(binding, dict):
+            return None
+        if binding.get("backend") != backend.value:
+            return None
+        if self._normalize_path(binding.get("path")) != self._normalize_path(path):
+            return None
+        circle = work.circle or "default"
+        if binding.get("circle") and binding.get("circle") != circle:
+            return None
+        runtime_session_id = binding.get("runtime_session_id")
+        if not isinstance(runtime_session_id, str) or not runtime_session_id:
+            return None
+        capability = binding.get("resume_capability") or {}
+        if not self._can_resume_backend(backend, capability):
+            return None
+        repowire_session_id = binding.get("repowire_session_id")
+        return RuntimeResumePlan(
+            backend=backend,
+            runtime_session_id=runtime_session_id,
+            repowire_session_id=(
+                repowire_session_id if isinstance(repowire_session_id, str) else None
+            ),
+            capability=capability if isinstance(capability, dict) else {},
+        )
+
+    @staticmethod
+    def _can_resume_backend(backend: AgentType, capability: Any) -> bool:
+        if backend != AgentType.CODEX or not isinstance(capability, dict):
+            return False
+        if capability.get("strategy") == "codex_resume":
+            return True
+        if capability.get("supported") is True or capability.get("can_resume") is True:
+            return True
+        return capability.get("status") in {"supported", "available", "resume_available"}
+
+    @staticmethod
+    def _resume_plan_info(plan: RuntimeResumePlan | None) -> dict[str, Any] | None:
+        if plan is None:
+            return None
+        return {
+            "backend": plan.backend.value,
+            "runtime_session_id": plan.runtime_session_id,
+            "repowire_session_id": plan.repowire_session_id,
+            "capability": plan.capability or {},
+        }
+
+    def _record_runtime_binding(
+        self,
+        work: TrackedWork,
+        peer: Peer,
+        *,
+        source: str,
+    ) -> None:
+        binding = self._runtime_binding_for_peer(peer, work=work)
+        if not binding:
+            return
+        binding["source"] = source
+        binding["recorded_at"] = now_iso()
+        if self._calendar is not None and work.source_kind == "calendar" and work.source_id:
+            self._calendar.update_runtime_binding(work.source_id, binding=binding)
+
+    def _runtime_binding_for_peer(
+        self,
+        peer: Peer,
+        *,
+        work: TrackedWork | None = None,
+    ) -> dict[str, Any]:
+        runtime_session_id = self._runtime_session_id_for_peer(peer)
+        session_binding = None
+        if self._session_bindings is not None:
+            if runtime_session_id:
+                session_binding = self._session_bindings.get_by_runtime_session(
+                    runtime_session_id,
+                    backend=peer.backend,
+                    project_path=peer.path,
+                )
+            if session_binding is None:
+                bindings = self._session_bindings.list_by_peer(peer.peer_id)
+                if bindings:
+                    session_binding = bindings[0]
+        binding: dict[str, Any] = {
+            "peer_id": peer.peer_id,
+            "display_name": peer.display_name,
+            "backend": peer.backend.value,
+            "path": peer.path,
+            "circle": peer.circle,
+            "status": peer.status.value,
+            "tmux": {"tmux_session": peer.tmux_session, "pane_id": peer.pane_id},
+        }
+        if work is not None:
+            binding["work_id"] = work.work_id
+        if runtime_session_id:
+            binding["runtime_session_id"] = runtime_session_id
+        if peer.metadata:
+            binding["metadata"] = dict(peer.metadata)
+        if session_binding is not None:
+            binding.update(
+                {
+                    "repowire_session_id": session_binding.repowire_session_id,
+                    "runtime_session_id": session_binding.runtime_session_id
+                    or binding.get("runtime_session_id"),
+                    "runtime_source_uri": session_binding.runtime_source_uri,
+                    "source_cursor": session_binding.source_cursor,
+                    "resume_capability": session_binding.resume_capability,
+                    "binding_status": session_binding.status,
+                }
+            )
+        return binding
+
+    @staticmethod
+    def _runtime_session_id_for_peer(peer: Peer) -> str | None:
+        metadata = peer.metadata or {}
+        for key in ("runtime_session_id", "hook_session_id", "session_id"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
     @staticmethod
     def _normalize_path(path: str | None) -> str:
         if not path:
             return ""
         return str(Path(path).expanduser().resolve())
 
-    @staticmethod
-    def _peer_info(peer: Peer) -> dict[str, Any]:
-        return {
+    def _peer_info(self, peer: Peer, *, work: TrackedWork | None = None) -> dict[str, Any]:
+        info: dict[str, Any] = {
             "peer_id": peer.peer_id,
             "display_name": peer.display_name,
             "backend": peer.backend.value,
             "path": peer.path,
             "status": peer.status.value,
         }
+        if peer.metadata:
+            # Preserve runtime-provided session handles for future resume support.
+            info["metadata"] = dict(peer.metadata)
+        runtime_binding = self._runtime_binding_for_peer(peer, work=work)
+        if runtime_binding:
+            info["runtime_binding"] = runtime_binding
+        return info
 
     def _mark_unavailable(
         self,

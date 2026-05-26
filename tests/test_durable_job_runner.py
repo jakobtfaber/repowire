@@ -18,9 +18,10 @@ from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import work as work_routes
-from repowire.daemon.spawn_service import SpawnService, SpawnServiceResult
+from repowire.daemon.spawn_service import RuntimeResumePlan, SpawnService, SpawnServiceResult
 from repowire.daemon.state.calendar import SQLiteCalendarStore
 from repowire.daemon.state.database import StateDatabase
+from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 from repowire.daemon.state.work import SQLiteWorkStore
 from repowire.daemon.websocket_transport import WebSocketTransport
 from repowire.protocol.peers import PeerRole, PeerStatus
@@ -73,6 +74,7 @@ def _env(tmp_path: Path):
     db = StateDatabase(tmp_path / "state.db")
     store = SQLiteWorkStore(db)
     calendar = SQLiteCalendarStore(db, store)
+    session_bindings = SQLiteSessionBindingStore(db)
     delivery = FakeDelivery()
     spawn = FakeSpawn()
     runner = JobRunner(
@@ -82,6 +84,7 @@ def _env(tmp_path: Path):
         peer_registry=registry,
         peer_delivery=delivery,  # type: ignore[arg-type]
         spawn_service=spawn,  # type: ignore[arg-type]
+        session_binding_store=session_bindings,
         poll_interval=0.01,
     )
     state = SimpleNamespace(
@@ -93,11 +96,12 @@ def _env(tmp_path: Path):
         peer_registry=registry,
         work_store=store,
         calendar_store=calendar,
+        session_binding_store=session_bindings,
         job_runner=runner,
         relay_mode=False,
     )
     init_deps(cfg, registry, state)
-    return cfg, registry, db, store, calendar, delivery, spawn, runner
+    return cfg, registry, db, store, calendar, session_bindings, delivery, spawn, runner
 
 
 async def _register_peer(
@@ -108,6 +112,7 @@ async def _register_peer(
     path: str = "/tmp/project",
     pane_id: str | None = None,
     tmux_session: str | None = None,
+    metadata: dict | None = None,
     status=PeerStatus.ONLINE,
 ):
     pid, _ = await registry.allocate_and_register(
@@ -116,6 +121,7 @@ async def _register_peer(
         path=path,
         pane_id=pane_id,
         tmux_session=tmux_session,
+        metadata=metadata,
         peer_id=peer_id,
         initial_status=status,
         role=PeerRole.AGENT,
@@ -124,7 +130,9 @@ async def _register_peer(
 
 
 def test_atomic_acquire_prevents_double_dispatch(tmp_path):
-    _cfg, _registry, db, store, _calendar, _delivery, _spawn, _runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _session_bindings, _delivery, _spawn, _runner = _env(
+        tmp_path
+    )
     work = store.create(title="job")
 
     first = store.acquire_for_dispatch(
@@ -146,7 +154,9 @@ def test_atomic_acquire_prevents_double_dispatch(tmp_path):
 
 
 def test_startup_recovery_marks_stale_dispatching_unavailable(tmp_path):
-    _cfg, _registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
     work = store.create(title="job")
     store.acquire_for_dispatch(
         work.work_id,
@@ -166,7 +176,9 @@ def test_startup_recovery_marks_stale_dispatching_unavailable(tmp_path):
 
 
 def test_startup_recovery_marks_stale_delivered_unavailable(tmp_path):
-    _cfg, _registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
     work = store.create(title="job")
     acquired = store.acquire_for_dispatch(
         work.work_id,
@@ -192,7 +204,9 @@ def test_startup_recovery_marks_stale_delivered_unavailable(tmp_path):
 
 @pytest.mark.anyio
 async def test_live_runner_recovers_delivered_after_lease_without_restart(tmp_path):
-    _cfg, _registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
     work = store.create(title="job")
     acquired = store.acquire_for_dispatch(
         work.work_id,
@@ -221,7 +235,9 @@ async def test_live_runner_recovers_delivered_after_lease_without_restart(tmp_pa
 
 
 def test_running_heartbeat_avoids_delivered_lease_recovery(tmp_path):
-    _cfg, _registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
     work = store.create(title="job")
     acquired = store.acquire_for_dispatch(
         work.work_id,
@@ -248,7 +264,9 @@ def test_running_heartbeat_avoids_delivered_lease_recovery(tmp_path):
 
 @pytest.mark.anyio
 async def test_wake_set_during_deadline_computation_is_not_lost(tmp_path, monkeypatch):
-    _cfg, _registry, db, _store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, _store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
     calls = 0
 
     async def fake_run_due_once():
@@ -275,7 +293,9 @@ async def test_wake_set_during_deadline_computation_is_not_lost(tmp_path, monkey
 
 
 def test_runner_waits_indefinitely_when_no_due_or_lease_deadline(tmp_path):
-    _cfg, _registry, db, _store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, _store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
 
     assert runner._seconds_until_next_deadline() is None  # noqa: SLF001
 
@@ -284,7 +304,9 @@ def test_runner_waits_indefinitely_when_no_due_or_lease_deadline(tmp_path):
 
 
 def test_due_at_offset_is_compared_by_instant_not_string(tmp_path):
-    _cfg, _registry, db, store, _calendar, _delivery, _spawn, _runner = _env(tmp_path)
+    _cfg, _registry, db, store, _calendar, _session_bindings, _delivery, _spawn, _runner = _env(
+        tmp_path
+    )
     # Lexicographically less than a UTC now string on many days, but far in the future by instant.
     future = (datetime.now(timezone.utc) + timedelta(days=1)).astimezone(
         timezone(timedelta(hours=-10))
@@ -308,7 +330,9 @@ def test_due_at_offset_is_compared_by_instant_not_string(tmp_path):
 
 @pytest.mark.anyio
 async def test_manual_run_future_due_dispatches_once_and_records_correlation(tmp_path):
-    _cfg, registry, db, store, _calendar, delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, _session_bindings, delivery, _spawn, runner = _env(
+        tmp_path
+    )
     peer_id = await _register_peer(registry)
     future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
     work = store.create(
@@ -342,7 +366,9 @@ async def test_manual_run_future_due_dispatches_once_and_records_correlation(tmp
 
 @pytest.mark.anyio
 async def test_path_backend_job_reuses_live_matching_peer_without_spawning(tmp_path):
-    _cfg, registry, db, store, _calendar, delivery, spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, _session_bindings, delivery, spawn, runner = _env(
+        tmp_path
+    )
     worker_path = str(tmp_path / "daily-email-brief")
     peer_id = await _register_peer(
         registry,
@@ -351,7 +377,21 @@ async def test_path_backend_job_reuses_live_matching_peer_without_spawning(tmp_p
         path=worker_path,
         pane_id="%42",
         tmux_session="default:daily-email-brief",
+        metadata={"hook_session_id": "codex-session-1"},
         status=PeerStatus.ONLINE,
+    )
+    _session_bindings.upsert_observation(
+        peer_id=peer_id,
+        backend="codex",
+        project_path=worker_path,
+        runtime_session_id="codex-session-1",
+        resume_capability={
+            "supported": True,
+            "strategy": "codex_resume",
+            "runtime_session_id_arg": "codex-session-1",
+        },
+        status="active",
+        metadata={"hook_session_id": "codex-session-1"},
     )
     work = store.create(
         title="daily brief",
@@ -373,6 +413,9 @@ async def test_path_backend_job_reuses_live_matching_peer_without_spawning(tmp_p
     attempt = result.provenance["runner"]["attempts"][0]
     assert attempt["assigned_peer_id"] == peer_id
     assert attempt["assigned_peer_info"]["path"] == worker_path
+    runtime_binding = attempt["assigned_peer_info"]["runtime_binding"]
+    assert runtime_binding["runtime_session_id"] == "codex-session-1"
+    assert runtime_binding["resume_capability"]["strategy"] == "codex_resume"
     assert attempt["tmux"] == {"tmux_session": "default:daily-email-brief", "pane_id": "%42"}
     db.close()
     cleanup_deps()
@@ -380,7 +423,9 @@ async def test_path_backend_job_reuses_live_matching_peer_without_spawning(tmp_p
 
 @pytest.mark.anyio
 async def test_spawned_peer_wait_tolerates_delayed_codex_registration(tmp_path):
-    _cfg, registry, db, store, _calendar, delivery, spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, _session_bindings, delivery, spawn, runner = _env(
+        tmp_path
+    )
     worker_path = str(tmp_path / "daily-email-brief")
     work = store.create(
         title="daily brief",
@@ -405,8 +450,22 @@ async def test_spawned_peer_wait_tolerates_delayed_codex_registration(tmp_path):
             peer_id="repow-default-spawned",
             pane_id="%655",
             tmux_session="default:daily-email-brief",
+            metadata={"hook_session_id": "codex-session-2"},
             initial_status=PeerStatus.ONLINE,
             role=PeerRole.AGENT,
+        )
+        _session_bindings.upsert_observation(
+            peer_id=peer_id,
+            backend="codex",
+            project_path=worker_path,
+            runtime_session_id="codex-session-2",
+            resume_capability={
+                "supported": True,
+                "strategy": "codex_resume",
+                "runtime_session_id_arg": "codex-session-2",
+            },
+            status="active",
+            metadata={"hook_session_id": "codex-session-2"},
         )
         registry._peers[peer_id].display_name = "worker"  # noqa: SLF001
         registered["peer_id"] = peer_id
@@ -423,6 +482,9 @@ async def test_spawned_peer_wait_tolerates_delayed_codex_registration(tmp_path):
     attempt = result.provenance["runner"]["attempts"][0]
     assert attempt["assigned_peer_id"] == registered["peer_id"]
     assert attempt["assigned_peer_info"]["display_name"] == "worker"
+    assert (
+        attempt["assigned_peer_info"]["runtime_binding"]["runtime_session_id"] == "codex-session-2"
+    )
     assert attempt["tmux"] == {"tmux_session": "default:daily-email-brief", "pane_id": "%655"}
     db.close()
     cleanup_deps()
@@ -430,7 +492,9 @@ async def test_spawned_peer_wait_tolerates_delayed_codex_registration(tmp_path):
 
 @pytest.mark.anyio
 async def test_cancel_during_acquired_before_delivery_records_cancelled(tmp_path):
-    _cfg, registry, db, store, _calendar, delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, _session_bindings, delivery, _spawn, runner = _env(
+        tmp_path
+    )
     peer_id = await _register_peer(registry)
     work = store.create(
         title="cancel",
@@ -456,7 +520,9 @@ async def test_cancel_during_acquired_before_delivery_records_cancelled(tmp_path
 
 @pytest.mark.anyio
 async def test_retry_preserves_attempts_and_stale_update_conflicts(tmp_path):
-    _cfg, registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
     peer_id = await _register_peer(registry)
     work = store.create(
         title="retry",
@@ -502,7 +568,9 @@ async def test_retry_preserves_attempts_and_stale_update_conflicts(tmp_path):
 
 @pytest.mark.anyio
 async def test_retry_from_delivered_creates_new_attempt(tmp_path):
-    _cfg, registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
     peer_id = await _register_peer(registry)
     work = store.create(
         title="retry delivered",
@@ -524,7 +592,9 @@ async def test_retry_from_delivered_creates_new_attempt(tmp_path):
 
 @pytest.mark.anyio
 async def test_offline_explicit_peer_becomes_unavailable(tmp_path):
-    _cfg, registry, db, store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
     peer_id = await _register_peer(registry, status=PeerStatus.OFFLINE)
     work = store.create(
         title="offline",
@@ -543,7 +613,9 @@ async def test_offline_explicit_peer_becomes_unavailable(tmp_path):
 
 @pytest.mark.anyio
 async def test_create_ambiguous_display_name_returns_409(tmp_path):
-    _cfg, registry, db, _store, _calendar, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, _store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
     peer_a, _ = await registry.allocate_and_register(
         circle="default",
         backend=AgentType.CLAUDE_CODE,
@@ -573,7 +645,9 @@ async def test_create_ambiguous_display_name_returns_409(tmp_path):
 
 
 def test_calendar_materializes_one_child_and_advances_next_due(tmp_path):
-    _cfg, _registry, db, store, calendar, _delivery, _spawn, runner = _env(tmp_path)
+    _cfg, _registry, db, store, calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
     base = datetime(2026, 5, 25, 8, 0, tzinfo=timezone.utc)
     entry = calendar.create(
         title="daily brief",
@@ -599,8 +673,39 @@ def test_calendar_materializes_one_child_and_advances_next_due(tmp_path):
     cleanup_deps()
 
 
+def test_calendar_records_latest_runtime_binding(tmp_path):
+    _cfg, _registry, db, _store, calendar, _session_bindings, _delivery, _spawn, _runner = _env(
+        tmp_path
+    )
+    entry = calendar.create(
+        title="daily brief",
+        kind="brief",
+        cron="@daily",
+        now=datetime(2026, 5, 25, 8, 0, tzinfo=timezone.utc),
+    )
+
+    updated = calendar.update_runtime_binding(
+        entry.calendar_id,
+        binding={
+            "peer_id": "repow-default-daily",
+            "backend": "codex",
+            "path": "/repo",
+            "circle": "default",
+            "runtime_session_id": "codex-runtime-1",
+            "resume_capability": {"supported": True, "strategy": "codex_resume"},
+        },
+    )
+
+    assert updated.provenance["runtime_binding"]["runtime_session_id"] == "codex-runtime-1"
+    assert updated.provenance["runtime_binding_history"][0]["peer_id"] == "repow-default-daily"
+    db.close()
+    cleanup_deps()
+
+
 def test_calendar_missed_runs_coalesce_to_one_occurrence(tmp_path):
-    _cfg, _registry, db, store, calendar, _delivery, _spawn, _runner = _env(tmp_path)
+    _cfg, _registry, db, store, calendar, _session_bindings, _delivery, _spawn, _runner = _env(
+        tmp_path
+    )
     entry = calendar.create(
         title="hourly",
         kind="brief",
@@ -608,9 +713,7 @@ def test_calendar_missed_runs_coalesce_to_one_occurrence(tmp_path):
         now=datetime(2026, 5, 25, 0, 0, tzinfo=timezone.utc),
     )
 
-    materialized = calendar.materialize_due(
-        now=datetime(2026, 5, 25, 5, 30, tzinfo=timezone.utc)
-    )
+    materialized = calendar.materialize_due(now=datetime(2026, 5, 25, 5, 30, tzinfo=timezone.utc))
 
     assert len(materialized) == 1
     assert len(store.list_all()) == 1
@@ -622,7 +725,9 @@ def test_calendar_missed_runs_coalesce_to_one_occurrence(tmp_path):
 
 
 def test_calendar_cancel_prevents_future_materialization(tmp_path):
-    _cfg, _registry, db, store, calendar, _delivery, _spawn, _runner = _env(tmp_path)
+    _cfg, _registry, db, store, calendar, _session_bindings, _delivery, _spawn, _runner = _env(
+        tmp_path
+    )
     entry = calendar.create(
         title="cancel recurring",
         kind="brief",
@@ -631,9 +736,7 @@ def test_calendar_cancel_prevents_future_materialization(tmp_path):
     )
 
     cancelled = calendar.cancel(entry.calendar_id, reason="user_requested")
-    materialized = calendar.materialize_due(
-        now=datetime(2026, 5, 25, 2, 0, tzinfo=timezone.utc)
-    )
+    materialized = calendar.materialize_due(now=datetime(2026, 5, 25, 2, 0, tzinfo=timezone.utc))
 
     assert cancelled.state == "cancelled"
     assert materialized == []
@@ -644,7 +747,9 @@ def test_calendar_cancel_prevents_future_materialization(tmp_path):
 
 @pytest.mark.anyio
 async def test_runner_materializes_and_dispatches_due_calendar_child(tmp_path):
-    _cfg, registry, db, store, calendar, delivery, _spawn, runner = _env(tmp_path)
+    _cfg, registry, db, store, calendar, _session_bindings, delivery, _spawn, runner = _env(
+        tmp_path
+    )
     peer_id = await _register_peer(registry)
     calendar.create(
         title="daily brief",
@@ -667,11 +772,104 @@ async def test_runner_materializes_and_dispatches_due_calendar_child(tmp_path):
     cleanup_deps()
 
 
+@pytest.mark.anyio
+async def test_recurring_job_uses_recorded_codex_resume_binding(tmp_path):
+    _cfg, registry, db, store, calendar, _session_bindings, delivery, spawn, runner = _env(tmp_path)
+    worker_path = str(tmp_path / "daily-email-brief")
+    entry = calendar.create(
+        title="daily brief",
+        kind="brief",
+        cron="*/2 * * * *",
+        circle="default",
+        request={"execution": {"target": {"path": worker_path, "backend": "codex"}}},
+        provenance={
+            "runtime_binding": {
+                "peer_id": "repow-default-old",
+                "backend": "codex",
+                "path": worker_path,
+                "circle": "default",
+                "runtime_session_id": "codex-runtime-old",
+                "resume_capability": {
+                    "supported": True,
+                    "strategy": "codex_resume",
+                    "runtime_session_id_arg": "codex-runtime-old",
+                },
+            }
+        },
+        now=datetime(2026, 5, 25, 8, 0, tzinfo=timezone.utc),
+    )
+    [child] = calendar.materialize_due(now=datetime(2026, 5, 25, 8, 2, tzinfo=timezone.utc))
+    resumed: dict[str, str] = {}
+
+    async def register_after_resume_spawn() -> None:
+        while not spawn.calls:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        peer_id, _name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CODEX,
+            path=worker_path,
+            peer_id="repow-default-resumed",
+            pane_id="%656",
+            tmux_session="default:daily-email-brief",
+            metadata={"hook_session_id": "codex-runtime-old"},
+            initial_status=PeerStatus.ONLINE,
+            role=PeerRole.AGENT,
+        )
+        resumed["peer_id"] = peer_id
+        _session_bindings.upsert_observation(
+            peer_id=peer_id,
+            backend="codex",
+            project_path=worker_path,
+            runtime_session_id="codex-runtime-old",
+            resume_capability={
+                "supported": True,
+                "strategy": "codex_resume",
+                "runtime_session_id_arg": "codex-runtime-old",
+            },
+            status="active",
+            metadata={"hook_session_id": "codex-runtime-old"},
+        )
+        registry._peers[peer_id].display_name = "worker"  # noqa: SLF001
+
+    task = asyncio.create_task(register_after_resume_spawn())
+    try:
+        result = await runner.run_job(child.work_id)
+    finally:
+        await task
+
+    assert result.state == "delivered"
+    assert spawn.calls[0]["resume_plan"].runtime_session_id == "codex-runtime-old"
+    attempt = result.provenance["runner"]["attempts"][0]
+    assert attempt["phase"] == "delivered"
+    assert attempt["resume_plan"]["runtime_session_id"] == "codex-runtime-old"
+    updated_entry = calendar.get(entry.calendar_id)
+    assert updated_entry.provenance["runtime_binding"]["peer_id"] == resumed["peer_id"]
+    assert delivery.calls[0]["to_peer"] == resumed["peer_id"]
+    assert len(store.list_all()) == 1
+    db.close()
+    cleanup_deps()
+
+
 def _parse_iso_for_test(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def test_spawn_service_builds_codex_resume_command() -> None:
+    command = SpawnService.resume_command(
+        "codex --dangerously-bypass-approvals-and-sandbox",
+        backend=AgentType.CODEX,
+        resume_plan=RuntimeResumePlan(
+            backend=AgentType.CODEX,
+            runtime_session_id="codex-runtime-1",
+            capability={"supported": True, "strategy": "codex_resume"},
+        ),
+    )
+
+    assert command == "codex --dangerously-bypass-approvals-and-sandbox resume codex-runtime-1"
 
 
 @pytest.mark.anyio

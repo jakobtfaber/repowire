@@ -7,7 +7,9 @@ create-run-retry-cancel surfaces, and a daemon `JobRunner` that dispatches work
 via `ask`. Recurring durable jobs are represented as internal calendar
 templates that materialize normal tracked-work child jobs. Dashboard workflows,
 MCP mirroring of run/retry/recurrence, ACP/channel health handling beyond the
-narrow cancel hook, and backend resume execution remain future slices.
+narrow cancel hook, and broader backend resume execution remain future slices.
+Recurring Codex jobs can reuse a recorded runtime session when the daemon has
+observed compatible resume metadata for the same calendar/path/backend context.
 
 ## Problem
 
@@ -92,8 +94,11 @@ advances the template to the next future fire.
 
 Executor selection is deliberately small: an exact assigned peer id wins; an
 ambiguous display name is rejected before create/run; otherwise `path` +
-`backend` + optional `profile` spawns a new peer through the shared spawn
-guardrails. Delivery uses `ask` and records a correlation id. Ack confirms only receipt.
+`backend` + optional `profile` first reuses a live peer for the same
+path/backend/circle, then may use a recorded backend-native resume binding for
+the same recurring calendar context, and otherwise spawns a new peer through
+the shared spawn guardrails. Delivery uses `ask` and records a correlation id.
+Ack confirms only receipt.
 The worker prompt requires an immediate `state=running` update with the current
 attempt id before longer work, then a terminal lifecycle update with the same
 attempt id on completion. If a delivered job never sends that start heartbeat
@@ -277,6 +282,15 @@ Repowire does not maintain an agent registry in this slice. Use
 Other supported runtimes load `AGENTS.md` directly. Store credentials outside
 the job record and folder instructions; a job only spawns and prompts the
 worker.
+
+For recurring Codex jobs, each occurrence records executor provenance including
+the peer id, backend, path, circle, tmux handles, runtime session id when the
+runtime exposes one, and any observed Repowire session binding. The calendar
+keeps the latest runtime binding plus a bounded history. On a later occurrence,
+the runner reuses an already-live matching peer first; if none exists and the
+latest binding advertises a compatible Codex resume capability, it launches
+`codex resume <runtime-session-id>` through the normal spawn guardrails. Job
+history remains audit/fallback context, not the primary resume mechanism.
 
 The store should have an explicit retention policy for terminal work. Retention
 cleanup must follow Repowire's lazy-repair philosophy and should be triggered by

@@ -155,15 +155,19 @@ materializes each due calendar template into a normal child `work-` job and
 then dispatches that child through the same runner. Missed recurring fires
 coalesce into one child occurrence before the next future fire; Repowire does
 not backfill a flood of missed runs. Cancel a `cal-` id to stop future child
-creation. Existing child jobs are not cancelled automatically.
+creation. Existing child jobs are not cancelled automatically. Recurring Codex
+jobs preserve the latest observed runtime binding for the same calendar/path
+and can launch `codex resume <runtime-session-id>` when compatible resume
+metadata exists; otherwise the runner falls back to normal spawn behavior.
 
 Use `--assigned-peer` for an exact peer id/name. Ambiguous display names are
 rejected before persistence. Without an assigned peer, pass `--path` and
-`--backend` (plus optional `--profile`) so the daemon can spawn a worker through
-the same guardrails as `/spawn`. Delivery is an `ask`; ack is only receipt, and
-workers should first mark receipt/start with the current attempt id, for example
-`repowire jobs update JOB_ID --state running --attempt-id ATTEMPT_ID`, then
-complete with a terminal update using the same attempt id.
+`--backend` (plus optional `--profile`) so the daemon can reuse a live matching
+worker, resume a recorded Codex runtime when available, or spawn a worker
+through the same guardrails as `/spawn`. Delivery is an `ask`; ack is only
+receipt, and workers should first mark receipt/start with the current attempt
+id, for example `repowire jobs update JOB_ID --state running --attempt-id
+ATTEMPT_ID`, then complete with a terminal update using the same attempt id.
 
 Agent folders are a convention, not a registry. For standing workers such as a
 daily brief, create a folder with runtime instructions (`AGENTS.md` for Codex,
