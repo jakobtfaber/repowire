@@ -369,6 +369,32 @@ async def test_test_app_wires_session_binding_store_and_observes_hooks(tmp_path:
             assert validated.status_code == 200
             assert validated.json()["peer_id"] == peer_id
 
+            codex_reg = await client.post(
+                "/peers",
+                json={
+                    "name": "daily-email-brief",
+                    "path": "/repo/daily-email-brief",
+                    "circle": "default",
+                    "backend": "codex",
+                    "pane_id": "%78",
+                    "metadata": {
+                        "hook_session_id": "codex-runtime-1",
+                    },
+                },
+            )
+            assert codex_reg.status_code == 200
+            codex_binding = app.state.session_binding_store.get_by_runtime_session(
+                "codex-runtime-1",
+                backend="codex",
+                project_path="/repo/daily-email-brief",
+            )
+            assert codex_binding is not None
+            assert codex_binding.resume_capability == {
+                "supported": True,
+                "strategy": "codex_resume",
+                "runtime_session_id_arg": "codex-runtime-1",
+            }
+
             app.state.peer_registry._peers.clear()
             rehydrated = await client.post(
                 "/peers/identity/validate",

@@ -62,6 +62,24 @@ def _binding_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     return {key: metadata[key] for key in allowed_keys if metadata.get(key) is not None}
 
 
+def _resume_capability_for_registration(
+    backend: AgentType,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if backend != AgentType.CODEX:
+        return {}
+    if not metadata:
+        return {}
+    runtime_session_id = metadata.get("hook_session_id")
+    if not isinstance(runtime_session_id, str) or not runtime_session_id:
+        return {}
+    return {
+        "supported": True,
+        "strategy": "codex_resume",
+        "runtime_session_id_arg": runtime_session_id,
+    }
+
+
 class PeerInfo(BaseModel):
     """Peer information for API responses."""
 
@@ -407,6 +425,10 @@ async def _register_peer_impl(
                     "runtime_session_id": request.metadata.get("hook_session_id"),
                     "observed_by_peer_id": peer_id,
                 },
+                resume_capability=_resume_capability_for_registration(
+                    request.backend,
+                    request.metadata,
+                ),
                 status="active",
                 metadata=_binding_metadata(request.metadata),
             )

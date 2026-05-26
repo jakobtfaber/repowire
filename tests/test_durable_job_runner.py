@@ -931,6 +931,50 @@ def test_spawn_service_builds_codex_resume_command() -> None:
 
 
 @pytest.mark.anyio
+async def test_spawn_service_passes_codex_resume_command_to_spawn(tmp_path, monkeypatch):
+    cfg = Config()
+    cfg.daemon.spawn.commands[AgentType.CODEX] = "codex --dangerously-bypass-approvals-and-sandbox"
+    cfg.daemon.spawn.allowed_paths = [str(tmp_path)]
+    tasks: set[asyncio.Task] = set()
+    spawn_impl = Mock(
+        return_value=SimpleNamespace(
+            display_name="daily-email-brief",
+            tmux_session="default:daily-email-brief",
+            pane_id="%661",
+            message="warm",
+        )
+    )
+    monkeypatch.setattr("repowire.daemon.spawn_service.record_spawn_ownership", Mock())
+
+    async def warmup(*_args, **_kwargs):
+        return None
+
+    service = SpawnService(
+        config=cfg,
+        spawned_pane_ids=set(),
+        background_tasks=tasks,
+        spawn_impl=spawn_impl,
+        warmup_impl=warmup,
+    )
+
+    service.spawn(
+        path=str(tmp_path),
+        backend=AgentType.CODEX,
+        message="warm",
+        resume_plan=RuntimeResumePlan(
+            backend=AgentType.CODEX,
+            runtime_session_id="codex-runtime-1",
+            capability={"supported": True, "strategy": "codex_resume"},
+        ),
+    )
+
+    spawn_config = spawn_impl.call_args.args[0]
+    assert spawn_config.command == (
+        "codex --dangerously-bypass-approvals-and-sandbox resume codex-runtime-1"
+    )
+
+
+@pytest.mark.anyio
 async def test_spawn_service_records_ownership_and_warmup(tmp_path, monkeypatch):
     cfg = Config()
     cfg.daemon.spawn.commands[AgentType.CLAUDE_CODE] = "claude"
