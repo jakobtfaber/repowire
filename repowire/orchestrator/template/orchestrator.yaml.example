@@ -23,8 +23,5 @@
 # to fall back to the global TELEGRAM_CHAT_ID from ~/.repowire/config.yaml.
 # telegram_chat_id: ""
 
-# Release cadence preference: "auto" | "bundle" | "ask"
-# release_cadence: bundle
-
 # Two-model critique threshold: "architectural" | "size" | "never"
 # critique_threshold: architectural

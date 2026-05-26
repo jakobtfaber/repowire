@@ -60,10 +60,12 @@ def test_diff_says_uptodate_after_fresh_init(tmp_workspace: Path) -> None:
 def test_diff_shows_diff_after_edit(tmp_workspace: Path) -> None:
     runner = CliRunner()
     runner.invoke(main, ["orchestrator", "init"])
-    (tmp_workspace / "patterns" / "mesh-roundup.md").write_text("LOCALLY EDITED")
+    (tmp_workspace / ".agents" / "skills" / "coordination" / "SKILL.md").write_text(
+        "LOCALLY EDITED"
+    )
     result = runner.invoke(main, ["orchestrator", "diff"])
     assert result.exit_code == 0
-    assert "differs" in result.output.lower() or "mesh-roundup" in result.output.lower()
+    assert "differs" in result.output.lower() or "coordination" in result.output.lower()
 
 
 def test_diff_refuses_when_not_initialized(tmp_workspace: Path) -> None:

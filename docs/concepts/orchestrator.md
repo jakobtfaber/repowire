@@ -12,7 +12,7 @@ A typical orchestrator runs a loop like:
 2. **Dispatch** to the right project peer with `notify_peer(peer, brief)`; flip the board item to `In Progress`.
 3. **Track** as the peer reports via `ask`/`notify` back. `set_description` on each peer keeps the dashboard honest.
 4. **Review** completed work. `review_queue()` surfaces PRs the peer has touched that you still owe a review on; `mark_reviewed(pr_url)` clears them.
-5. **Release** when a batch lands. Tag, push, notify.
+5. **Close out** when work lands: update the board, summarize the impact, and clean up peers/worktrees when they are no longer needed.
 
 For independent work, the orchestrator should fan out instead of serializing
 everything through one session. Split board items by owner and worktree, dispatch
@@ -21,13 +21,13 @@ long-running lanes, and keep the board as the single source of truth.
 
 ## Memory and procedures
 
-The orchestrator workspace is a curated procedure layer, not a complete history store. Keep user communication preferences in `comms.md`, active project scope in `projects.md`, durable operational lessons in `memory/*.md`, and reusable dispatch/review/release procedures in `patterns/*.md`.
+The orchestrator workspace is a curated procedure layer, not a complete history store. Keep user communication preferences in `comms.md`, active project scope in `projects.md`, durable operational lessons in `memory/*.md`, and reusable procedures in local skills under `.agents/skills/`.
 
 Use markdown memory only for rules that should change future behavior. Detailed recall belongs in session history and, as the v0.13 session-native train lands, SQLite-backed session/timeline search. That split keeps prompt context bounded while preserving the ability to audit past decisions.
 
 This memory is orchestrator-scoped. Other peers do not inherit it implicitly; give them the relevant context through explicit briefs, project-local agent files, native runtime skills, or future session/timeline lookup when that is the right surface.
 
-Pattern files are loaded on demand. The top-level orchestrator instructions should act as an index; the full pattern file carries the procedure and may include optional frontmatter such as `name`, `description`, `triggers`, `risk`, and `surfaces` for future tooling.
+Local skills are the on-demand procedure layer. `.agents/skills/` is the canonical cross-runtime location; Claude Code also sees the same skills through `.claude/skills/` symlinks. The top-level orchestrator instructions stay compact and always-loaded.
 
 ## Co-orchestrators
 

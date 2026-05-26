@@ -4,8 +4,9 @@ The workspace at `~/.repowire/orchestrator/` is rendered from a bundled
 template at `repowire/orchestrator/template/`. Init is atomic — if AGENTS.md
 already exists, init is a no-op (use --force to re-render with backup).
 
-Symlinks: CLAUDE.md, CODEX.md, GEMINI.md all point to AGENTS.md so any
-runtime's native context-file convention picks up the same content.
+Symlinks: CLAUDE.md points to AGENTS.md for Claude Code. Other supported
+runtimes load AGENTS.md directly. Claude Code also gets `.claude/skills/*`
+symlinks to the canonical `.agents/skills/*` skill directories.
 """
 
 from __future__ import annotations
@@ -22,25 +23,30 @@ from repowire.config.models import Config
 
 logger = logging.getLogger(__name__)
 
-# Runtime-native filenames that should symlink to AGENTS.md. AGENTS.md is
-# the source-of-truth (cross-runtime convention, native for opencode/codex);
-# the others are symlinks so each runtime's native lookup finds the same
-# content without privileging one filename.
-RUNTIME_SYMLINKS = ("CLAUDE.md", "CODEX.md", "GEMINI.md")
+# Runtime-native filenames that should symlink to AGENTS.md. AGENTS.md is the
+# source of truth; Claude Code gets CLAUDE.md as a compatibility shim.
+RUNTIME_SYMLINKS = ("CLAUDE.md",)
 
 # Source-of-truth filename. Presence is the install marker for atomic detection.
 SOURCE_FILE = "AGENTS.md"
+
+SKILL_NAMES = (
+    "cleanup",
+    "coordination",
+    "delegation",
+    "durable-jobs",
+    "memory",
+)
 
 # Files repowire ships and may update across releases. update_workspace()
 # offers per-file diff prompts for these.
 REPOWIRE_OWNED_FILES = (
     "AGENTS.md",
-    "patterns/active-fanout.md",
-    "patterns/mesh-roundup.md",
-    "patterns/two-model-critique.md",
-    "patterns/release-bundle-decision.md",
-    "patterns/post-merge-cleanup.md",
-    "patterns/spawn-brief-iterate.md",
+    ".agents/skills/cleanup/SKILL.md",
+    ".agents/skills/coordination/SKILL.md",
+    ".agents/skills/delegation/SKILL.md",
+    ".agents/skills/durable-jobs/SKILL.md",
+    ".agents/skills/memory/SKILL.md",
     "orchestrator.yaml.example",
 )
 
@@ -52,6 +58,45 @@ ORCHESTRATOR_OWNED_FILES = (
     "BOOTSTRAP.md",
     "memory/MEMORY.md",
 )
+
+
+def _claude_skill_link_name(name: str) -> str:
+    return f".claude/skills/{name}"
+
+
+def _canonical_skill_dir(ws: Path, name: str) -> Path:
+    return ws / ".agents" / "skills" / name
+
+
+def _backup_path(path: Path) -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup = path.parent / f"{path.name}.bak.{timestamp}"
+    counter = 1
+    while backup.exists():
+        backup = path.parent / f"{path.name}.bak.{timestamp}.{counter}"
+        counter += 1
+    shutil.move(str(path), str(backup))
+    return backup
+
+
+def _ensure_claude_skill_symlinks(ws: Path) -> None:
+    """Expose canonical .agents skills through Claude Code's skill directory."""
+    claude_skills = ws / ".claude" / "skills"
+    claude_skills.mkdir(parents=True, exist_ok=True)
+    for name in SKILL_NAMES:
+        link = claude_skills / name
+        if link.exists() or link.is_symlink():
+            if link.is_dir() and not link.is_symlink():
+                _backup_path(link)
+            else:
+                link.unlink()
+        link.symlink_to(Path("..") / ".." / ".agents" / "skills" / name)
+
+
+def _claude_skill_symlink_broken(ws: Path, name: str) -> bool:
+    link = ws / ".claude" / "skills" / name
+    expected = _canonical_skill_dir(ws, name)
+    return not link.is_symlink() or link.resolve() != expected.resolve()
 
 
 def workspace_path() -> Path:
@@ -123,6 +168,8 @@ def init_workspace(*, force: bool = False) -> tuple[bool, str]:
         # Relative symlink — workspace is portable across mounts
         link.symlink_to(SOURCE_FILE)
 
+    _ensure_claude_skill_symlinks(ws)
+
     return True, f"Orchestrator workspace created at {ws}"
 
 
@@ -134,16 +181,7 @@ def backup_workspace() -> Path:
     ws = workspace_path()
     if not ws.exists():
         raise FileNotFoundError(f"No workspace to back up at {ws}")
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = ws.parent / f"orchestrator.bak.{timestamp}"
-    # If a backup at this timestamp already exists (sub-second collision),
-    # append a counter.
-    counter = 1
-    while backup.exists():
-        backup = ws.parent / f"orchestrator.bak.{timestamp}.{counter}"
-        counter += 1
-    shutil.move(str(ws), str(backup))
-    return backup
+    return _backup_path(ws)
 
 
 def validate_workspace() -> tuple[bool, list[str]]:
@@ -170,6 +208,16 @@ def validate_workspace() -> tuple[bool, list[str]]:
         if target != source.resolve():
             errors.append(
                 f"Symlink {link} points to {target}, expected {source.resolve()}"
+            )
+
+    for name in SKILL_NAMES:
+        skill = _canonical_skill_dir(ws, name) / "SKILL.md"
+        if not skill.is_file():
+            errors.append(f"Skill file missing: {skill}")
+        if _claude_skill_symlink_broken(ws, name):
+            errors.append(
+                f"Expected Claude skill symlink missing or broken: "
+                f"{ws / _claude_skill_link_name(name)}"
             )
 
     return len(errors) == 0, errors
@@ -209,5 +257,9 @@ def update_workspace() -> list[tuple[str, str]]:
         link = ws / name
         if not link.is_symlink() or link.resolve() != source.resolve():
             report.append((name, "symlink-broken"))
+
+    for name in SKILL_NAMES:
+        if _claude_skill_symlink_broken(ws, name):
+            report.append((_claude_skill_link_name(name), "symlink-broken"))
 
     return report

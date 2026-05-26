@@ -31,23 +31,47 @@ def test_init_creates_workspace_with_all_files(tmp_workspace: Path) -> None:
     assert (tmp_workspace / "BOOTSTRAP.md").is_file()
     assert (tmp_workspace / "orchestrator.yaml.example").is_file()
     assert (tmp_workspace / "memory" / "MEMORY.md").is_file()
-    for pattern in (
-        "mesh-roundup.md",
-        "two-model-critique.md",
-        "release-bundle-decision.md",
-        "post-merge-cleanup.md",
-        "spawn-brief-iterate.md",
+    for skill in (
+        "cleanup",
+        "coordination",
+        "delegation",
+        "durable-jobs",
+        "memory",
     ):
-        assert (tmp_workspace / "patterns" / pattern).is_file()
+        assert (tmp_workspace / ".agents" / "skills" / skill / "SKILL.md").is_file()
 
 
 def test_init_creates_symlinks_pointing_at_agents_md(tmp_workspace: Path) -> None:
     workspace.init_workspace()
     source = tmp_workspace / "AGENTS.md"
-    for name in ("CLAUDE.md", "CODEX.md", "GEMINI.md"):
-        link = tmp_workspace / name
-        assert link.is_symlink(), f"{name} should be a symlink"
-        assert link.resolve() == source.resolve()
+    link = tmp_workspace / "CLAUDE.md"
+    assert link.is_symlink(), "CLAUDE.md should be a symlink"
+    assert link.resolve() == source.resolve()
+    assert not (tmp_workspace / "CODEX.md").exists()
+    assert not (tmp_workspace / "GEMINI.md").exists()
+
+
+def test_init_creates_claude_skill_symlinks(tmp_workspace: Path) -> None:
+    workspace.init_workspace()
+    for skill in workspace.SKILL_NAMES:
+        link = tmp_workspace / ".claude" / "skills" / skill
+        target = tmp_workspace / ".agents" / "skills" / skill
+        assert link.is_symlink(), f"{skill} should be a Claude skill symlink"
+        assert link.resolve() == target.resolve()
+
+
+def test_init_backs_up_conflicting_claude_skill_directory(tmp_workspace: Path) -> None:
+    conflict = tmp_workspace / ".claude" / "skills" / "coordination"
+    conflict.mkdir(parents=True)
+    (conflict / "custom.txt").write_text("custom")
+
+    workspace.init_workspace()
+
+    link = tmp_workspace / ".claude" / "skills" / "coordination"
+    assert link.is_symlink()
+    backups = list(link.parent.glob("coordination.bak.*"))
+    assert len(backups) == 1
+    assert (backups[0] / "custom.txt").read_text() == "custom"
 
 
 def test_init_is_atomic_idempotent_no_force(tmp_workspace: Path) -> None:
@@ -114,15 +138,17 @@ def test_update_reports_identical_after_fresh_init(tmp_workspace: Path) -> None:
     # All repowire-owned files should be identical to shipped
     statuses = dict(report)
     assert statuses.get("AGENTS.md") == "identical"
-    assert statuses.get("patterns/mesh-roundup.md") == "identical"
+    assert statuses.get(".agents/skills/coordination/SKILL.md") == "identical"
 
 
 def test_update_reports_differs_when_repowire_owned_edited(tmp_workspace: Path) -> None:
     workspace.init_workspace()
-    (tmp_workspace / "patterns" / "mesh-roundup.md").write_text("USER EDITED")
+    (tmp_workspace / ".agents" / "skills" / "coordination" / "SKILL.md").write_text(
+        "USER EDITED"
+    )
     report = workspace.update_workspace()
     statuses = dict(report)
-    assert statuses["patterns/mesh-roundup.md"] == "differs"
+    assert statuses[".agents/skills/coordination/SKILL.md"] == "differs"
 
 
 def test_update_ignores_orchestrator_owned_files(tmp_workspace: Path) -> None:
@@ -142,6 +168,14 @@ def test_update_reports_symlink_broken(tmp_workspace: Path) -> None:
     report = workspace.update_workspace()
     statuses = dict(report)
     assert statuses["CLAUDE.md"] == "symlink-broken"
+
+
+def test_update_reports_claude_skill_symlink_broken(tmp_workspace: Path) -> None:
+    workspace.init_workspace()
+    (tmp_workspace / ".claude" / "skills" / "coordination").unlink()
+    report = workspace.update_workspace()
+    statuses = dict(report)
+    assert statuses[".claude/skills/coordination"] == "symlink-broken"
 
 
 def test_backup_workspace_raises_if_no_workspace(tmp_workspace: Path) -> None:

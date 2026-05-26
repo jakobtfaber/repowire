@@ -51,17 +51,7 @@ Ask: "Are you primarily on phone (Telegram) or laptop (dashboard) when reaching 
 - **Laptop (dashboard)** → set primary to dashboard.
 - **Both** → default to dashboard, escalate to telegram when the message is urgent or short.
 
-### 3. Release cadence preference
-
-Ask: "For PR merges in your projects, what's your default release pattern?"
-
-- **auto-tag-each-merge** — tag a release every time a PR lands on main
-- **hold-for-bundles + always-ask** *(default)* — accumulate multiple merges, propose tagging when a bundle makes sense, but **never tag without explicit user confirmation, even when the bundle looks ready**
-- **ask-each-time** — same as above without the bundling
-
-Default is **hold-for-bundles + always-ask**. Tags are release decisions, not merge decisions; the bundle-readiness signal is yours to propose, the tag itself is the user's to call. Record the user's choice in `orchestrator.yaml`.
-
-### 4. Two-model critique threshold
+### 3. Two-model critique threshold
 
 Ask: "For architectural-but-bounded changes (single PR, <500 LoC, but touches multiple layers), should I run a two-model critique by default?"
 
@@ -71,7 +61,7 @@ Ask: "For architectural-but-bounded changes (single PR, <500 LoC, but touches mu
 
 Default: **always for architectural** (this is where two-model catches the most blind spots).
 
-### 5. Explicit dislikes
+### 4. Explicit dislikes
 
 Ask: "Anything I should explicitly avoid in how I communicate?" Pre-check these defaults from the lived practice:
 

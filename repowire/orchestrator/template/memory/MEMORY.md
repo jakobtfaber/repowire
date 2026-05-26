@@ -42,7 +42,7 @@ _(no memories yet; this index grows as the orchestrator learns)_
 ## When NOT to add a memory
 
 - One-off events with no forward-applicable lesson → log in commit / bd note instead
-- Things that are already documented in the codebase (in AGENTS.md, patterns/, or the project's own docs) → reference, don't duplicate
+- Things that are already documented in the codebase (in AGENTS.md, local skills, or the project's own docs) → reference, don't duplicate
 - Counts, status updates, recent work — that's ephemeral, not durable knowledge
 
 ## Maintenance
