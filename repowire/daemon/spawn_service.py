@@ -80,7 +80,7 @@ class SpawnService:
         command = self._config.daemon.spawn.commands.get(backend)
         if not command:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail={
                     "error": "command_unavailable",
                     "hint": (
@@ -94,7 +94,7 @@ class SpawnService:
             selected_profile = self._config.daemon.spawn.profiles.get(backend, {}).get(profile)
             if selected_profile is None:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail={
                         "error": "profile_unavailable",
                         "hint": (
@@ -179,9 +179,11 @@ class SpawnService:
         resume_plan: RuntimeResumePlan,
     ) -> str:
         """Return a backend-native resume command for a recorded runtime session."""
+        # The configured Codex command is expected to be the binary plus global
+        # flags only; the backend subcommand and session id are appended here.
         if backend != AgentType.CODEX:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail={
                     "error": "backend_resume_unavailable",
                     "backend": backend.value,
@@ -190,7 +192,7 @@ class SpawnService:
             )
         if resume_plan.backend != backend:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail={
                     "error": "resume_backend_mismatch",
                     "backend": backend.value,
