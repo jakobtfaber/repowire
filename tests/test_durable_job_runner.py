@@ -104,12 +104,18 @@ async def _register_peer(
     registry: PeerRegistry,
     *,
     peer_id: str = "repow-default-worker",
+    backend: AgentType = AgentType.CLAUDE_CODE,
+    path: str = "/tmp/project",
+    pane_id: str | None = None,
+    tmux_session: str | None = None,
     status=PeerStatus.ONLINE,
 ):
     pid, _ = await registry.allocate_and_register(
         circle="default",
-        backend=AgentType.CLAUDE_CODE,
-        path="/tmp/project",
+        backend=backend,
+        path=path,
+        pane_id=pane_id,
+        tmux_session=tmux_session,
         peer_id=peer_id,
         initial_status=status,
         role=PeerRole.AGENT,
@@ -330,6 +336,94 @@ async def test_manual_run_future_due_dispatches_once_and_records_correlation(tmp
     assert delivery.calls[0]["to_peer"] == peer_id
     assert "attempt_id:" in delivery.calls[0]["text"]
     assert store.get(work.work_id).correlation_id == "ask-test"
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_path_backend_job_reuses_live_matching_peer_without_spawning(tmp_path):
+    _cfg, registry, db, store, _calendar, delivery, spawn, runner = _env(tmp_path)
+    worker_path = str(tmp_path / "daily-email-brief")
+    peer_id = await _register_peer(
+        registry,
+        peer_id="repow-default-daily",
+        backend=AgentType.CODEX,
+        path=worker_path,
+        pane_id="%42",
+        tmux_session="default:daily-email-brief",
+        status=PeerStatus.ONLINE,
+    )
+    work = store.create(
+        title="daily brief",
+        circle="default",
+        request={
+            "execution": {
+                "prompt": {"body": "prepare brief", "source": "inline"},
+                "target": {"path": worker_path, "backend": "codex"},
+                "delivery": {"kind": "ask"},
+            }
+        },
+    )
+
+    result = await runner.run_job(work.work_id)
+
+    assert result.state == "delivered"
+    assert spawn.calls == []
+    assert delivery.calls[0]["to_peer"] == peer_id
+    attempt = result.provenance["runner"]["attempts"][0]
+    assert attempt["assigned_peer_id"] == peer_id
+    assert attempt["assigned_peer_info"]["path"] == worker_path
+    assert attempt["tmux"] == {"tmux_session": "default:daily-email-brief", "pane_id": "%42"}
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_spawned_peer_wait_tolerates_delayed_codex_registration(tmp_path):
+    _cfg, registry, db, store, _calendar, delivery, spawn, runner = _env(tmp_path)
+    worker_path = str(tmp_path / "daily-email-brief")
+    work = store.create(
+        title="daily brief",
+        circle="default",
+        request={
+            "execution": {
+                "target": {"path": worker_path, "backend": "codex"},
+                "delivery": {"kind": "ask"},
+            }
+        },
+    )
+    registered: dict[str, str] = {}
+
+    async def register_after_spawn() -> None:
+        while not spawn.calls:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        peer_id, _name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CODEX,
+            path=worker_path,
+            peer_id="repow-default-spawned",
+            pane_id="%655",
+            tmux_session="default:daily-email-brief",
+            initial_status=PeerStatus.ONLINE,
+            role=PeerRole.AGENT,
+        )
+        registry._peers[peer_id].display_name = "worker"  # noqa: SLF001
+        registered["peer_id"] = peer_id
+
+    task = asyncio.create_task(register_after_spawn())
+    try:
+        result = await runner.run_job(work.work_id)
+    finally:
+        await task
+
+    assert result.state == "delivered"
+    assert len(spawn.calls) == 1
+    assert delivery.calls[0]["to_peer"] == registered["peer_id"]
+    attempt = result.provenance["runner"]["attempts"][0]
+    assert attempt["assigned_peer_id"] == registered["peer_id"]
+    assert attempt["assigned_peer_info"]["display_name"] == "worker"
+    assert attempt["tmux"] == {"tmux_session": "default:daily-email-brief", "pane_id": "%655"}
     db.close()
     cleanup_deps()
 

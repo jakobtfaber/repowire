@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -17,6 +18,8 @@ from repowire.daemon.work_store import TrackedWork, now_iso
 from repowire.protocol.peers import Peer, PeerStatus
 
 logger = logging.getLogger(__name__)
+
+SPAWN_REGISTRATION_TIMEOUT_SECONDS = 45.0
 
 
 def _parse_due(value: str | None) -> datetime | None:
@@ -229,13 +232,7 @@ class JobRunner:
             attempt_id=attempt_id,
             phase="delivery",
             assigned_peer_id=peer.peer_id,
-            assigned_peer_info={
-                "peer_id": peer.peer_id,
-                "display_name": peer.display_name,
-                "backend": peer.backend.value,
-                "path": peer.path,
-                "status": peer.status.value,
-            },
+            assigned_peer_info=self._peer_info(peer),
             tmux={"tmux_session": peer.tmux_session, "pane_id": peer.pane_id},
             delivery_state="pending",
         )
@@ -300,6 +297,21 @@ class JobRunner:
             backend = AgentType(str(backend_raw))
         except ValueError:
             return self._mark_unavailable(work, attempt_id, "invalid_backend")
+        reusable = await self._find_reusable_peer(
+            path=str(path),
+            backend=backend,
+            circle=work.circle or "default",
+        )
+        if reusable is not None:
+            self._store.update_attempt(
+                work.work_id,
+                attempt_id=attempt_id,
+                phase="reused_peer",
+                assigned_peer_id=reusable.peer_id,
+                assigned_peer_info=self._peer_info(reusable),
+                tmux={"tmux_session": reusable.tmux_session, "pane_id": reusable.pane_id},
+            )
+            return reusable
         warmup = (
             "Repowire spawned this session for a durable job. "
             "Please register with the mesh; the job request will arrive as an ask."
@@ -334,17 +346,55 @@ class JobRunner:
             phase="spawned",
             tmux={"tmux_session": spawn_result.tmux_session, "pane_id": spawn_result.pane_id},
         )
-        resolved = await self._await_spawned_peer(spawn_result.display_name, work.circle)
+        resolved = await self._await_spawned_peer(
+            spawn_result.display_name,
+            work.circle or "default",
+        )
         if resolved is None:
             return self._mark_unavailable(work, attempt_id, "spawned_peer_not_registered")
+        self._store.update_attempt(
+            work.work_id,
+            attempt_id=attempt_id,
+            phase="spawned_peer_registered",
+            assigned_peer_id=resolved.peer_id,
+            assigned_peer_info=self._peer_info(resolved),
+            tmux={"tmux_session": resolved.tmux_session, "pane_id": resolved.pane_id},
+        )
         return resolved
+
+    async def _find_reusable_peer(
+        self,
+        *,
+        path: str,
+        backend: AgentType,
+        circle: str,
+    ) -> Peer | None:
+        target_path = self._normalize_path(path)
+        candidates: list[Peer] = []
+        for peer in await self._registry.get_all_peers():
+            if peer.status not in (PeerStatus.ONLINE, PeerStatus.BUSY):
+                continue
+            if peer.circle != circle or peer.backend != backend:
+                continue
+            if self._normalize_path(peer.path) != target_path:
+                continue
+            candidates.append(peer)
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda peer: (
+                peer.status == PeerStatus.ONLINE,
+                peer.last_seen or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+        )
 
     async def _await_spawned_peer(
         self,
         display_name: str,
         circle: str | None,
         *,
-        timeout_seconds: float = 10.0,
+        timeout_seconds: float = SPAWN_REGISTRATION_TIMEOUT_SECONDS,
     ) -> Peer | None:
         deadline = _utcnow() + timedelta(seconds=timeout_seconds)
         while True:
@@ -354,6 +404,22 @@ class JobRunner:
             if _utcnow() >= deadline:
                 return None
             await asyncio.sleep(0.25)
+
+    @staticmethod
+    def _normalize_path(path: str | None) -> str:
+        if not path:
+            return ""
+        return str(Path(path).expanduser().resolve())
+
+    @staticmethod
+    def _peer_info(peer: Peer) -> dict[str, Any]:
+        return {
+            "peer_id": peer.peer_id,
+            "display_name": peer.display_name,
+            "backend": peer.backend.value,
+            "path": peer.path,
+            "status": peer.status.value,
+        }
 
     def _mark_unavailable(
         self,
