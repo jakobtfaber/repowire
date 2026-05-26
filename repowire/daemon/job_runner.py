@@ -359,6 +359,9 @@ class JobRunner:
         resolved = await self._await_spawned_peer(
             spawn_result.display_name,
             work.circle or "default",
+            path=str(path),
+            backend=backend,
+            pane_id=spawn_result.pane_id,
         )
         if resolved is None:
             return self._mark_unavailable(work, attempt_id, "spawned_peer_not_registered")
@@ -411,16 +414,57 @@ class JobRunner:
         display_name: str,
         circle: str | None,
         *,
+        path: str,
+        backend: AgentType,
+        pane_id: str | None,
         timeout_seconds: float = SPAWN_REGISTRATION_TIMEOUT_SECONDS,
     ) -> Peer | None:
+        target_path = self._normalize_path(path)
         deadline = _utcnow() + timedelta(seconds=timeout_seconds)
         while True:
+            if pane_id:
+                pane_peer = await self._registry.get_peer_by_pane(pane_id)
+                if pane_peer is not None and pane_peer.status != PeerStatus.OFFLINE:
+                    return pane_peer
             resolved = await self._registry.resolve_peer_strict(display_name, circle=circle)
-            if not isinstance(resolved, list):
+            if not isinstance(resolved, list) and resolved.status != PeerStatus.OFFLINE:
                 return resolved
+            path_peer = await self._find_registered_spawned_peer(
+                path=target_path,
+                backend=backend,
+                circle=circle or "default",
+            )
+            if path_peer is not None:
+                return path_peer
             if _utcnow() >= deadline:
                 return None
             await asyncio.sleep(0.25)
+
+    async def _find_registered_spawned_peer(
+        self,
+        *,
+        path: str,
+        backend: AgentType,
+        circle: str,
+    ) -> Peer | None:
+        candidates: list[Peer] = []
+        for peer in await self._registry.get_all_peers():
+            if peer.status not in (PeerStatus.ONLINE, PeerStatus.BUSY):
+                continue
+            if peer.circle != circle or peer.backend != backend:
+                continue
+            if self._normalize_path(peer.path) != path:
+                continue
+            candidates.append(peer)
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda peer: (
+                bool(peer.pane_id),
+                peer.last_seen or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+        )
 
     def _resume_plan_for(
         self,

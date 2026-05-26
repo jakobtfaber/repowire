@@ -44,15 +44,18 @@ class FakeSpawn:
     def __init__(self) -> None:
         self.calls: list[dict] = []
         self.fail: Exception | None = None
+        self.display_name = "worker"
+        self.tmux_session = "jobs:worker"
+        self.pane_id = "%9"
 
     def spawn(self, **kwargs):
         self.calls.append(kwargs)
         if self.fail:
             raise self.fail
         return SpawnServiceResult(
-            display_name="worker",
-            tmux_session="jobs:worker",
-            pane_id="%9",
+            display_name=self.display_name,
+            tmux_session=self.tmux_session,
+            pane_id=self.pane_id,
             message=kwargs.get("message"),
         )
 
@@ -486,6 +489,61 @@ async def test_spawned_peer_wait_tolerates_delayed_codex_registration(tmp_path):
         attempt["assigned_peer_info"]["runtime_binding"]["runtime_session_id"] == "codex-session-2"
     )
     assert attempt["tmux"] == {"tmux_session": "default:daily-email-brief", "pane_id": "%655"}
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_spawned_peer_wait_matches_pane_when_display_name_differs(tmp_path):
+    _cfg, registry, db, store, _calendar, _session_bindings, delivery, spawn, runner = _env(
+        tmp_path
+    )
+    worker_path = str(tmp_path / "daily-email-brief")
+    spawn.display_name = "daily-email-brief-2"
+    spawn.tmux_session = "default:daily-email-brief-2"
+    spawn.pane_id = "%777"
+    work = store.create(
+        title="daily brief",
+        circle="default",
+        request={
+            "execution": {
+                "target": {"path": worker_path, "backend": "codex"},
+                "delivery": {"kind": "ask"},
+            }
+        },
+    )
+    registered: dict[str, str] = {}
+
+    async def register_with_path_name() -> None:
+        while not spawn.calls:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        peer_id, display_name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CODEX,
+            path=worker_path,
+            pane_id="%777",
+            tmux_session="default:daily-email-brief-2",
+            metadata={"hook_session_id": "codex-session-3"},
+            initial_status=PeerStatus.ONLINE,
+            role=PeerRole.AGENT,
+        )
+        registered["peer_id"] = peer_id
+        registered["display_name"] = display_name
+
+    task = asyncio.create_task(register_with_path_name())
+    try:
+        result = await runner.run_job(work.work_id)
+    finally:
+        await task
+
+    assert result.state == "delivered"
+    assert registered["display_name"] != spawn.display_name
+    assert delivery.calls[0]["to_peer"] == registered["peer_id"]
+    attempt = result.provenance["runner"]["attempts"][0]
+    assert attempt["assigned_peer_id"] == registered["peer_id"]
+    assert attempt["assigned_peer_info"]["display_name"] == registered["display_name"]
+    assert attempt["tmux"] == {"tmux_session": "default:daily-email-brief-2", "pane_id": "%777"}
     db.close()
     cleanup_deps()
 
