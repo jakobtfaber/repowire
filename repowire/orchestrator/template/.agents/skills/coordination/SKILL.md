@@ -1,18 +1,18 @@
 ---
 name: coordination
-description: Use when orchestrating complex or multi-lane work, decomposing tasks across peers, choosing status/board surfaces, running mesh roundups, or keeping high-level progress visible without doing implementation work yourself.
+description: Use when orchestrating complex or multi-lane work, decomposing tasks across peers, choosing status/board surfaces, running mesh roundups, or keeping high-level progress visible.
 ---
 
 # Coordination
 
-Coordinate the work shape; peers do the implementation.
+Coordinate the work shape. Prefer delegation for substantive repo work; small reversible chores may be handled directly when that is the lightest path.
 
 ## Core loop
 
 1. Clarify objective, success criteria, owner, and deadline when missing.
 2. Split complex work into independent lanes by repo, worktree, risk, or review concern.
 3. Pick the lightest status surface that will survive the work: existing board, GitHub issue/project, Linear/Jira, Beads, a repo checklist, or a simple markdown board.
-4. Assign each lane to a peer, worktree, or durable job. Avoid overlapping write scopes; make one lane review-only if two peers would edit the same files.
+4. Assign each lane to a peer, worktree, or durable job. Use the worktree-isolation skill when concurrent implementation could overlap files or branches.
 5. Track only high-level state: owner, status, blocker, next action. Keep transcript details in session history, not the board.
 6. Round up by impact and blocker, not activity count.
 
@@ -29,6 +29,6 @@ When the user asks where things stand, use `list_peers()` and ask relevant peers
 ## Anti-patterns
 
 - Serializing independent lanes behind the orchestrator.
-- Letting the orchestrator drift into implementation.
+- Letting the orchestrator drift into implementation when a peer should own the lane.
 - Writing board or memory updates just because a turn ended.
 - Count-leading summaries that reward volume over impact.

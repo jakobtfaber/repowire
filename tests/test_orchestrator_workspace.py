@@ -31,13 +31,7 @@ def test_init_creates_workspace_with_all_files(tmp_workspace: Path) -> None:
     assert (tmp_workspace / "BOOTSTRAP.md").is_file()
     assert (tmp_workspace / "orchestrator.yaml.example").is_file()
     assert (tmp_workspace / "memory" / "MEMORY.md").is_file()
-    for skill in (
-        "cleanup",
-        "coordination",
-        "delegation",
-        "durable-jobs",
-        "memory",
-    ):
+    for skill in workspace.SKILL_NAMES:
         assert (tmp_workspace / ".agents" / "skills" / skill / "SKILL.md").is_file()
 
 

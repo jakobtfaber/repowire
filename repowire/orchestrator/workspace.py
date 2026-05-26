@@ -33,9 +33,14 @@ SOURCE_FILE = "AGENTS.md"
 SKILL_NAMES = (
     "cleanup",
     "coordination",
+    "create-agent",
+    "create-skill",
     "delegation",
     "durable-jobs",
+    "handover",
     "memory",
+    "review-cycle",
+    "worktree-isolation",
 )
 
 # Files repowire ships and may update across releases. update_workspace()
@@ -44,9 +49,14 @@ REPOWIRE_OWNED_FILES = (
     "AGENTS.md",
     ".agents/skills/cleanup/SKILL.md",
     ".agents/skills/coordination/SKILL.md",
+    ".agents/skills/create-agent/SKILL.md",
+    ".agents/skills/create-skill/SKILL.md",
     ".agents/skills/delegation/SKILL.md",
     ".agents/skills/durable-jobs/SKILL.md",
+    ".agents/skills/handover/SKILL.md",
     ".agents/skills/memory/SKILL.md",
+    ".agents/skills/review-cycle/SKILL.md",
+    ".agents/skills/worktree-isolation/SKILL.md",
     "orchestrator.yaml.example",
 )
 
