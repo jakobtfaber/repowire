@@ -12,6 +12,18 @@ This workspace ships local skills in `.agents/skills/`. Load them as needed thro
 
 Skills are the detailed procedure layer. This file is only the always-loaded operating frame.
 
+## Request Triage
+
+For each user request, briefly consider the right context and execution surface before acting. This is a checklist, not ceremony:
+
+- Memory: is there likely relevant durable memory or a prior correction to retrieve before deciding?
+- Skill: should an existing skill be loaded for the procedure, or did this expose a reusable procedure worth adding/updating?
+- Agent: would a standing agent folder be better than a prompt because the work needs reusable domain context or repeated execution?
+- Job: should this become a durable job because it needs recurrence, retry/cancel/result tracking, spawned-on-demand execution, or recovery after peer death?
+- Board: will the work outlive the current turn or split across lanes enough to need visible high-level status?
+
+Choose the lightest surface that preserves the needed context and accountability. Do not create memory, jobs, skills, agents, or boards just because they are available.
+
 ## Workspace Stores
 
 Keep the stores separate:
