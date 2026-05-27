@@ -33,6 +33,75 @@ export interface OrchestratorStatus {
   stale_after?: string | null;
 }
 
+export interface JobStatus {
+  job_id?: string;
+  work_id?: string;
+  title?: string;
+  kind?: string;
+  state?: string;
+  state_reason?: string | null;
+  phase?: string | null;
+  progress?: Record<string, unknown>;
+  progress_events?: { note?: string; at?: string; timestamp?: string; [key: string]: unknown }[];
+  owner_peer_id?: string | null;
+  assigned_peer_id?: string | null;
+  repowire_session_id?: string | null;
+  correlation_id?: string | null;
+  circle?: string | null;
+  created_by_peer_id?: string | null;
+  source_kind?: string | null;
+  source_id?: string | null;
+  scope?: string | null;
+  visibility?: string;
+  created_at?: string;
+  updated_at?: string;
+  deadline_at?: string | null;
+  expires_at?: string | null;
+  result_summary?: string | null;
+  cancel_requested?: boolean;
+  cancellation_reason?: string | null;
+  request?: Record<string, unknown>;
+  execution?: {
+    prompt?: { body?: string; source?: string; source_path?: string };
+    target?: { path?: string; backend?: string; profile?: string; assigned_peer_id?: string };
+    schedule?: { due_at?: string };
+    delivery?: { kind?: string; result_surface?: string };
+    [key: string]: unknown;
+  };
+  runner?: Record<string, unknown>;
+  due_at?: string | null;
+  links?: Record<string, unknown>;
+}
+
+export interface RecurringJobStatus {
+  calendar_id: string;
+  recurring_id?: string;
+  title?: string;
+  kind?: string;
+  state?: string;
+  cron?: string;
+  next_due_at?: string;
+  owner_peer_id?: string | null;
+  assigned_peer_id?: string | null;
+  circle?: string | null;
+  created_by_peer_id?: string | null;
+  source_kind?: string | null;
+  source_id?: string | null;
+  scope?: string | null;
+  visibility?: string;
+  request?: Record<string, unknown>;
+  execution?: JobStatus["execution"];
+  last_occurrence_work_id?: string | null;
+  last_materialized_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface JobsResponse {
+  work: JobStatus[];
+  recurring: RecurringJobStatus[];
+}
+
 export interface AttachmentRef {
   id?: string | null;
   path?: string | null;

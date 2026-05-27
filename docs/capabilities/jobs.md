@@ -8,6 +8,7 @@ Jobs are durable tracked work records. They let agents and humans create work, i
 
 - CLI: `repowire jobs ...`
 - MCP: `job_create`, `job_list`, `job_status`, `job_show`, `job_update`, `job_result`, `job_cancel`
+- Dashboard: Jobs view for listing durable work and recurring templates, then running, retrying, or cancelling eligible records.
 
 ## Common flows
 

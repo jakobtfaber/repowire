@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "./lib/utils";
 import { useEventStream } from "./lib/useEventStream";
 import { SettingsDialog, SpawnDialog } from "./components/DashboardDialogs";
+import { JobsView } from "./components/JobsView";
 import { MeshFeed } from "./components/MeshFeed";
 import { MobileTabs, type MobileTab } from "./components/MobileTabs";
 import { PeerRoster } from "./components/PeerRoster";
@@ -39,6 +40,8 @@ function DashboardInner() {
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [mobileTab, setMobileTab] = useState<MobileTab>("peers");
+  const [mainView, setMainView] = useState<"mesh" | "jobs">("mesh");
+  const [refreshSignal, setRefreshSignal] = useState(0);
   const [showSpawn, setShowSpawn] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const eventIdsRef = useRef<Set<string>>(new Set());
@@ -140,6 +143,7 @@ function DashboardInner() {
   const refreshData = useCallback(async () => {
     setIsRefreshing(true);
     await Promise.all([fetchPeers(), fetchEvents()]);
+    setRefreshSignal((value) => value + 1);
     setIsRefreshing(false);
   }, [fetchEvents, fetchPeers]);
 
@@ -199,12 +203,34 @@ function DashboardInner() {
 
   const selectPeer = useCallback((peer: Peer) => {
     setSelectedPeerId(peer.peer_id);
+    setMainView("mesh");
     setMobileTab("mesh");
   }, []);
 
   const closePeer = useCallback(() => {
     setSelectedPeerId(null);
+    setMainView("mesh");
     setMobileTab("peers");
+  }, []);
+
+  const openJobs = useCallback(() => {
+    setSelectedPeerId(null);
+    setMainView("jobs");
+    setMobileTab("jobs");
+  }, []);
+
+  const openMesh = useCallback(() => {
+    setSelectedPeerId(null);
+    setMainView("mesh");
+    setMobileTab("mesh");
+  }, []);
+
+  const handleMobileTab = useCallback((tab: MobileTab) => {
+    setMobileTab(tab);
+    if (tab === "mesh" || tab === "jobs") {
+      setSelectedPeerId(null);
+      setMainView(tab);
+    }
   }, []);
 
   return (
@@ -214,7 +240,10 @@ function DashboardInner() {
           counts={counts}
           connection={connection}
           isRefreshing={isRefreshing}
+          activeView={mainView}
           onRefresh={refreshData}
+          onMesh={openMesh}
+          onJobs={openJobs}
           onSpawn={() => setShowSpawn(true)}
           onSettings={() => setShowSettings(true)}
         />
@@ -235,7 +264,7 @@ function DashboardInner() {
           </div>
         )}
 
-        <div className={cn("min-h-0 flex-1 md:block", selectedPeer || mobileTab === "mesh" ? "hidden" : "block")}>
+        <div className={cn("min-h-0 flex-1 md:block", selectedPeer || mobileTab !== "peers" ? "hidden" : "block")}>
           <PeerRoster
             peers={filteredPeers}
             allCount={visiblePeers.length}
@@ -256,6 +285,11 @@ function DashboardInner() {
               onClose={closePeer}
               onSent={refreshData}
             />
+          ) : mainView === "jobs" ? (
+            <JobsView
+              apiBase={API_BASE}
+              refreshSignal={refreshSignal}
+            />
           ) : (
             <MeshFeed
               events={events}
@@ -271,7 +305,7 @@ function DashboardInner() {
             activeTab={mobileTab}
             counts={counts}
             eventCount={events.length}
-            onChange={setMobileTab}
+            onChange={handleMobileTab}
           />
         )}
       </div>

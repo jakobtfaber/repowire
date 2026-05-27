@@ -1,5 +1,5 @@
 import Image from "next/image";
-import { Plus, RefreshCw, Settings } from "lucide-react";
+import { BriefcaseBusiness, Plus, RefreshCw, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { ConnectionState } from "../lib/useEventStream";
 
@@ -7,14 +7,20 @@ export function TopBar({
   counts,
   connection,
   isRefreshing,
+  activeView,
   onRefresh,
+  onMesh,
+  onJobs,
   onSpawn,
   onSettings,
 }: {
   counts: Record<"online" | "busy" | "offline", number>;
   connection: ConnectionState;
   isRefreshing: boolean;
+  activeView: "mesh" | "jobs";
   onRefresh: () => void;
+  onMesh: () => void;
+  onJobs: () => void;
   onSpawn: () => void;
   onSettings: () => void;
 }) {
@@ -46,6 +52,29 @@ export function TopBar({
         <span className="sm:hidden">{badge.short}</span>
       </div>
 
+      <div className="hidden overflow-hidden rounded border border-border md:flex">
+        <button
+          onClick={onMesh}
+          aria-pressed={activeView === "mesh"}
+          className={cn(
+            "h-8 px-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.12em] transition-colors",
+            activeView === "mesh" ? "bg-surface-container-high text-on-surface" : "text-outline hover:bg-surface-container-high hover:text-on-surface",
+          )}
+        >
+          Mesh
+        </button>
+        <button
+          onClick={onJobs}
+          aria-pressed={activeView === "jobs"}
+          className={cn(
+            "inline-flex h-8 items-center gap-1.5 border-l border-border px-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.12em] transition-colors",
+            activeView === "jobs" ? "bg-surface-container-high text-on-surface" : "text-outline hover:bg-surface-container-high hover:text-on-surface",
+          )}
+        >
+          <BriefcaseBusiness className="h-3.5 w-3.5" />
+          Jobs
+        </button>
+      </div>
       <button
         onClick={onSpawn}
         className="inline-flex h-8 items-center gap-1.5 rounded bg-primary px-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-on-primary transition-[filter,transform] hover:brightness-110 active:scale-[0.98] md:px-3"

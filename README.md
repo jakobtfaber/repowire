@@ -99,6 +99,7 @@ Full docs: [docs.repowire.io](https://docs.repowire.io).
 
 - **Agent-to-agent asks**: Non-blocking questions with explicit `ack` replies and reminder injection until a thread is closed.
 - **Human control surfaces**: Browser dashboard, Telegram, and Slack can route messages as service peers.
+- **Durable jobs**: Track one-off and recurring work through CLI/MCP, with dashboard visibility and controls for run, retry, and cancel.
 - **Orchestrator pattern**: A dedicated peer can dispatch work, check status, coordinate reviews, and keep a queue moving.
 - **Scheduled wake-ups**: Send a future notification or ask to yourself, another peer, or an orchestrator.
 - **Optional relay**: Reach the dashboard remotely and bridge machines without opening inbound ports.
@@ -190,7 +191,7 @@ repowire setup --relay
   <img src="images/repowire-hosted-2.png" alt="Repowire dashboard peer overview" width="700" />
 </p>
 
-The dashboard shows peers, status, descriptions, chat turns, tool calls, attachments, and the selected peer/session timeline. For Claude Code peers, it can merge transcript history with realtime events; other backends contribute realtime events as their transports report them.
+The dashboard shows peers, status, descriptions, chat turns, tool calls, attachments, durable jobs, and the selected peer/session timeline. For Claude Code peers, it can merge transcript history with realtime events; other backends contribute realtime events as their transports report them.
 
 Run it locally at:
 

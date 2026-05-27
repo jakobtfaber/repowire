@@ -6,6 +6,7 @@ The dashboard is a Next.js UI served by the daemon at `http://localhost:8377/das
 
 - **Peer overview** — every peer's status (`online` / `busy` / `offline`), description, project path, circle, backend.
 - **Live mesh log** — `mesh.log`, a chronological event stream of asks, acks, notifications, and broadcasts.
+- **Jobs view** — inspect durable work and recurring job templates from the daemon's `/jobs` surface, then run, retry, or cancel eligible jobs without leaving the dashboard.
 - **Per-peer chat** — selecting a peer replaces the live log with that peer's selected-session timeline. For Claude Code, Codex, and Codex ACP peers, the chat view merges supported persisted local history with realtime `chat_turn` and `chat_turn_delta` events; backends without a supported local history source contribute realtime events and report that degraded state in the timeline response. User and `@dashboard` messages align right; peer messages align left. Tool calls collapse behind a disclosure.
 - **Conversation search** — the peer chat view can search the normalized timeline and jump to a matching turn. Results carry the session/turn cursor used by the timeline, so jumping can switch to the matched session before scrolling. If only the daemon's realtime event ring is searchable because persisted local history is unavailable or unsupported, the dashboard shows that degraded state beside the results.
 - **Compose bar** — send a plain-text ask to any peer. The dashboard registers as the `dashboard` peer so it shows up in `list_peers` and message routing. This remains the default path for conversational requests and attachments.
@@ -29,7 +30,7 @@ The daemon route details for timeline, transcript, search, and session-control p
 
 ## Mobile
 
-The dashboard is mobile-responsive: hamburger menu for the peer list, touch-friendly compose bar, sticky bottom switcher between peer roster and mesh log. You don't need the Telegram or Slack bot to drive the mesh from a phone — though those surfaces are often more convenient than the mobile dashboard.
+The dashboard is mobile-responsive: hamburger menu for the peer list, touch-friendly compose bar, sticky bottom switcher between peer roster, mesh log, and jobs. You don't need the Telegram or Slack bot to drive the mesh from a phone — though those surfaces are often more convenient than the mobile dashboard.
 
 ## Build and deploy
 
@@ -46,5 +47,6 @@ This produces a static export served by the daemon directly. The relay serves th
 - [Concepts: control surfaces](../concepts/control-surfaces.md) for the "surfaces are peers" framing.
 - [Session-native roadmap](../concepts/session-native-roadmap.md) for the dashboard/session direction.
 - [Attachments](attachments.md) for upload behavior and limits.
+- [Jobs](jobs.md) for durable work behavior and limits.
 - [Spawning](spawning.md) for backend/profile-controlled peer launch.
 - [Relay access](relay-access.md) for the remote-dashboard tunneling model.
