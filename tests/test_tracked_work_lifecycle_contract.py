@@ -4,9 +4,12 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT = ROOT / "docs" / "concepts" / "tracked-work-lifecycle.md"
+CONTRACT = ROOT / "docs" / "contributing" / "design-notes" / "tracked-work-lifecycle.md"
 CONCEPT_INDEX = ROOT / "docs" / "concepts" / "index.md"
-MESH_COMMAND_CONTRACT = ROOT / "docs" / "concepts" / "mesh-command-ux.md"
+DESIGN_NOTES_INDEX = ROOT / "docs" / "contributing" / "design-notes" / "index.md"
+MESH_COMMAND_CONTRACT = (
+    ROOT / "docs" / "contributing" / "design-notes" / "mesh-command-ux.md"
+)
 
 
 def _contract_text() -> str:
@@ -130,7 +133,8 @@ def test_tracked_work_contract_keeps_related_work_out_of_scope() -> None:
 
 
 def test_concept_docs_link_tracked_work_contract() -> None:
-    assert "[Tracked work lifecycle](tracked-work-lifecycle.md)" in CONCEPT_INDEX.read_text()
+    assert "[Jobs and schedules](jobs-and-schedules.md)" in CONCEPT_INDEX.read_text()
+    assert "[Tracked work lifecycle](tracked-work-lifecycle.md)" in DESIGN_NOTES_INDEX.read_text()
     assert (
         "[tracked-work lifecycle](tracked-work-lifecycle.md)"
         in MESH_COMMAND_CONTRACT.read_text()

@@ -5,8 +5,10 @@ from pathlib import Path
 from repowire.mcp.server import create_mcp_server
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT = ROOT / "docs" / "concepts" / "mesh-command-ux.md"
-PLUGIN_PACKAGING = ROOT / "docs" / "concepts" / "claude-code-plugin-packaging.md"
+CONTRACT = ROOT / "docs" / "contributing" / "design-notes" / "mesh-command-ux.md"
+PLUGIN_PACKAGING = (
+    ROOT / "docs" / "contributing" / "design-notes" / "claude-code-plugin-packaging.md"
+)
 WEB_CONCEPTS = ROOT / "web" / "app" / "docs" / "concepts" / "page.tsx"
 
 
