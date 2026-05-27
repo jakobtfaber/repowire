@@ -29,7 +29,7 @@ export default function Hero() {
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <Link
-              href="https://docs.repowire.io/quickstart/"
+              href="https://docs.repowire.io/start/"
               className="inline-flex items-center justify-center gap-2 rounded bg-primary px-5 py-3 font-mono text-xs font-bold uppercase tracking-[0.12em] text-on-primary transition-[filter,transform] hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-primary-fixed focus:ring-offset-2 focus:ring-offset-surface active:scale-[0.98]"
             >
               Start in 5 minutes

@@ -1,4 +1,8 @@
+import httpx
+import pytest
+
 from repowire.relay.auth import APIKey, _token_registry, register_token, validate_api_key
+from repowire.relay.server import create_app
 
 
 class TestRelayAuth:
@@ -49,3 +53,30 @@ class TestRelayAuth:
         api_key = register_token("user1")
         # rw_ prefix + 32 chars of base64url
         assert len(api_key.key) > 20
+
+
+class TestRelayLanding:
+    @pytest.mark.asyncio
+    async def test_auth_invalid_key_returns_landing_error(self):
+        app = create_app()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://relay.test") as client:
+            response = await client.post(
+                "/auth",
+                data={"token": "not-a-relay-key"},
+                follow_redirects=True,
+            )
+
+        assert response.status_code == 200
+        assert "That relay key was not recognized." in response.text
+        assert '{"detail"' not in response.text
+
+    @pytest.mark.asyncio
+    async def test_auth_missing_key_returns_landing_error(self):
+        app = create_app()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://relay.test") as client:
+            response = await client.post("/auth", data={"token": ""}, follow_redirects=True)
+
+        assert response.status_code == 200
+        assert "Enter your relay key." in response.text

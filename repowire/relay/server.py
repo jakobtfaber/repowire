@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import logging
 import os
 from dataclasses import dataclass, field
@@ -267,7 +268,7 @@ _LANDING_HTML = """\
     font-size: 0.9rem;
   }
   button:hover { background: #22223a; border-color: #4a4a6a; }
-  .error { color: #e05050; font-size: 0.8rem; margin-top: 0.6rem; display: none; }
+  .error { color: #e05050; font-size: 0.8rem; margin-top: 0.6rem; }
   .setup { color: #4a4a5a; font-size: 0.75rem; margin-top: 1rem; }
   .setup code { color: #7a7a8a; background: #14141f; padding: 0.15rem 0.4rem;
     border-radius: 3px; }
@@ -290,7 +291,7 @@ _LANDING_HTML = """\
     <input name="token" type="text" placeholder="rw_..." autocomplete="off" spellcheck="false">
     <button type="submit">Go</button>
   </form>
-  <p id="err" class="error"></p>
+  {error_html}
   <p class="setup">Run <code>repowire setup --relay</code> to get your key</p>
   <div class="links">
     <a href="https://docs.repowire.io/">Docs</a>
@@ -302,6 +303,20 @@ _LANDING_HTML = """\
 </body>
 </html>
 """
+
+_LANDING_ERRORS = {
+    "missing_token": "Enter your relay key.",
+    "invalid_key": "That relay key was not recognized.",
+    "no_daemon": "No daemon is connected for that relay key.",
+}
+
+
+def _landing_html(error: str | None = None) -> str:
+    message = _LANDING_ERRORS.get(error or "")
+    error_html = ""
+    if message:
+        error_html = f'<p id="err" class="error">{html.escape(message)}</p>'
+    return _LANDING_HTML.replace("{error_html}", error_html)
 
 # ---------------------------------------------------------------------------
 # WebSocket message handlers
@@ -465,11 +480,14 @@ def create_app() -> FastAPI:
     # -- Landing page --
 
     @app.get("/", response_class=HTMLResponse)
-    async def landing(rw_token: str | None = Cookie(default=None)) -> Response:
+    async def landing(
+        error: str | None = None,
+        rw_token: str | None = Cookie(default=None),
+    ) -> Response:
         # If user already has a valid cookie, redirect to dashboard
         if rw_token and validate_api_key(rw_token):
             return RedirectResponse(url="/dashboard", status_code=302)
-        return HTMLResponse(_LANDING_HTML)
+        return HTMLResponse(_landing_html(error))
 
     # -- Auth (sets cookie, redirects to dashboard) --
 
@@ -478,15 +496,15 @@ def create_app() -> FastAPI:
         form = await request.form()
         token = str(form.get("token", "")).strip()
         if not token:
-            raise HTTPException(status_code=400, detail="Missing token")
+            return RedirectResponse(url="/?error=missing_token", status_code=303)
 
         api_key = validate_api_key(token)
         if not api_key:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+            return RedirectResponse(url="/?error=invalid_key", status_code=303)
 
         conn = _get_any_daemon(api_key.user_id)
         if not conn:
-            raise HTTPException(status_code=502, detail="No daemon connected")
+            return RedirectResponse(url="/?error=no_daemon", status_code=303)
 
         response = RedirectResponse(url="/dashboard", status_code=303)
         response.set_cookie(

@@ -14,6 +14,8 @@ repowire setup --relay
 
 Then use `https://repowire.io/dashboard` for remote dashboard access.
 
+The relay landing page accepts the relay key from setup and redirects to the dashboard when the matching daemon is connected. Missing, invalid, or disconnected keys return to the landing page with an inline error.
+
 ## Self-hosted relay
 
 Self-hosting runs the same relay server under your own deployment and points the daemon at your relay URL.
