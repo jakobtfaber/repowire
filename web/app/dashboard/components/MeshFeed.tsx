@@ -91,6 +91,9 @@ function EventRow({
       ? "text-tertiary-fixed-dim"
       : "text-accent";
   const to = event.type === "broadcast" ? "* (all)" : event.to || "—";
+  const fromLabel = event.from || "unknown";
+  const fromClickable = Boolean(event.from);
+  const toClickable = Boolean(event.to);
 
   if (event.type === "status_change") {
     return (
@@ -107,19 +110,46 @@ function EventRow({
     <div className="border-b border-border-faint/70 py-1.5 font-mono text-xs leading-5 md:grid md:grid-cols-[62px_minmax(70px,120px)_18px_minmax(70px,120px)_1fr] md:gap-3">
       <div className="flex items-center gap-2 md:contents">
         <span className="shrink-0 text-outline tabular-nums">{formatTime(event.timestamp)}</span>
-        <button onClick={() => onPickPeer(event.from)} className={cn("min-w-0 truncate text-left", color)}>
-          {event.from || "unknown"}
-        </button>
+        <ActorLabel
+          label={fromLabel}
+          clickable={fromClickable}
+          className={color}
+          onClick={() => onPickPeer(event.from)}
+        />
         <span className="shrink-0 text-center text-outline">{route}</span>
-        <button onClick={() => onPickPeer(event.to)} className="min-w-0 truncate text-left text-primary-fixed">
-          {to}
-        </button>
+        <ActorLabel
+          label={to}
+          clickable={toClickable}
+          className="text-primary-fixed"
+          onClick={() => onPickPeer(event.to)}
+        />
       </div>
       <span className={cn("mt-0.5 block min-w-0 break-words [overflow-wrap:anywhere] md:mt-0", event.status === "error" ? "text-error" : "text-on-surface-variant")}>
         {event.text}
         <AttachmentChips attachments={event.attachments} apiBase={apiBase} />
       </span>
     </div>
+  );
+}
+
+function ActorLabel({
+  label,
+  clickable,
+  className,
+  onClick,
+}: {
+  label: string;
+  clickable: boolean;
+  className: string;
+  onClick: () => void;
+}) {
+  if (!clickable) {
+    return <span className="min-w-0 truncate text-left text-outline">{label}</span>;
+  }
+  return (
+    <button onClick={onClick} className={cn("min-w-0 truncate text-left", className)}>
+      {label}
+    </button>
   );
 }
 
