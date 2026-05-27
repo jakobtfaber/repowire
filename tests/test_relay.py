@@ -1,6 +1,8 @@
 import httpx
 import pytest
+from fastapi.responses import PlainTextResponse
 
+from repowire.relay import server as relay_server
 from repowire.relay.auth import APIKey, _token_registry, register_token, validate_api_key
 from repowire.relay.server import create_app
 
@@ -80,3 +82,29 @@ class TestRelayLanding:
 
         assert response.status_code == 200
         assert "Enter your relay key." in response.text
+
+    @pytest.mark.asyncio
+    async def test_jobs_paths_are_tunneled(self, monkeypatch):
+        api_key = register_token("user1")
+        seen: dict[str, str] = {}
+
+        async def fake_tunnel(conn, method, path, request):
+            seen["method"] = method
+            seen["path"] = path
+            return PlainTextResponse("ok")
+
+        monkeypatch.setattr(relay_server, "_get_any_daemon", lambda user_id: object())
+        monkeypatch.setattr(relay_server, "_tunnel_request", fake_tunnel)
+
+        app = create_app()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://relay.test",
+            cookies={"rw_token": api_key.key},
+        ) as client:
+            response = await client.get("/jobs?state=queued")
+
+        assert response.status_code == 200
+        assert response.text == "ok"
+        assert seen == {"method": "GET", "path": "/jobs"}
