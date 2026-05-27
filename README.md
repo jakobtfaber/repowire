@@ -295,14 +295,14 @@ If service management fails, use `repowire service status` first. Raw `launchctl
 
 ## References
 
-- [Quickstart](https://docs.repowire.io/quickstart/)
-- [Architecture](https://docs.repowire.io/reference/architecture/)
+- [Start](https://docs.repowire.io/start/)
+- [Architecture](https://docs.repowire.io/operations/architecture/)
 - [MCP tools](https://docs.repowire.io/reference/mcp-tools/)
 - [CLI](https://docs.repowire.io/reference/cli/)
-- [Agent setup](https://docs.repowire.io/agents/)
-- [Control surfaces](https://docs.repowire.io/surfaces/)
+- [Guides](https://docs.repowire.io/guides/)
+- [Capabilities](https://docs.repowire.io/capabilities/)
 - [Troubleshooting](https://docs.repowire.io/troubleshooting/)
-- [Comparisons](https://docs.repowire.io/comparisons/)
+- [Compare](https://docs.repowire.io/start/compare/)
 
 ## Uninstall
 

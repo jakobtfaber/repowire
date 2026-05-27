@@ -54,6 +54,6 @@ Send a photo or document in the Telegram chat. The bot downloads it, uploads it 
 
 ## See also
 
-- [Telegram bot](../surfaces/telegram.md) — full surface details.
-- [Slack bot](../surfaces/slack.md) — same pattern, different surface.
-- [Web dashboard](../surfaces/dashboard.md) — for when you want the full UI on mobile.
+- [Telegram bot](../capabilities/telegram.md) — full surface details.
+- [Slack bot](../capabilities/slack.md) — same pattern, different surface.
+- [Web dashboard](../capabilities/dashboard.md) — for when you want the full UI on mobile.

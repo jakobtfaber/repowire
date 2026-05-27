@@ -14,8 +14,9 @@ strict: true
 
 # Internal docs that live under docs/ but should not be published.
 exclude_docs: |
-  design-system.md
   ia-proposal.md
+  reference/registry-route-split-plan.md
+  reference/sqlite-state-expansion-plan.md
   overrides/
 
 
@@ -94,44 +95,48 @@ extra:
 
 nav:
   - Home: index.md
-  - Quickstart:
-      - quickstart/index.md
-      - Install: quickstart/install.md
-      - Setup: quickstart/setup.md
-      - First ask: quickstart/first-ask.md
+  - Start:
+      - start/index.md
+      - Install: start/install.md
+      - Setup: start/setup.md
+      - First ask: start/first-ask.md
+      - Compare:
+          - start/compare/index.md
+          - vs Happy: start/compare/happy.md
+          - vs cloud coding services: start/compare/cloud-coding.md
+          - vs Memory Bank: start/compare/memory-bank.md
+          - vs Claude Squad: start/compare/claude-squad.md
+          - vs Gastown: start/compare/gastown.md
   - Concepts:
       - concepts/index.md
       - Peers and circles: concepts/peers-and-circles.md
+      - Sessions: concepts/sessions.md
+      - Agent backends: concepts/agent-backends.md
+      - Transports: concepts/transports.md
       - Message types: concepts/message-types.md
-      - Mesh command UX contract: concepts/mesh-command-ux.md
-      - Tracked work lifecycle: concepts/tracked-work-lifecycle.md
-      - Persona routing: concepts/persona-routing.md
+      - Jobs and schedules: concepts/jobs-and-schedules.md
       - Personas: concepts/personas.md
-      - Mesh memory: concepts/mesh-memory.md
-      - Claude Code plugin packaging: concepts/claude-code-plugin-packaging.md
       - Peer identity lifecycle: concepts/peer-identity-lifecycle.md
-      - Session binding contract: concepts/session-binding-contract.md
       - Lazy repair: concepts/lazy-repair.md
       - Control surfaces: concepts/control-surfaces.md
       - Orchestrator pattern: concepts/orchestrator.md
       - Session-native roadmap: concepts/session-native-roadmap.md
-  - Setup per agent:
-      - agents/index.md
-      - Claude Code: agents/claude-code.md
-      - Codex: agents/codex.md
-      - Gemini CLI: agents/gemini.md
-      - Antigravity CLI: agents/antigravity.md
-      - OpenCode: agents/opencode.md
-  - Control surfaces:
-      - surfaces/index.md
-      - Web dashboard: surfaces/dashboard.md
-      - Telegram bot: surfaces/telegram.md
-      - Slack bot: surfaces/slack.md
-  - Relay:
-      - relay/index.md
-      - Hosted relay: relay/hosted.md
-      - Self-hosting: relay/self-hosting.md
-      - Security posture: relay/security.md
+  - Guides:
+      - guides/index.md
+      - Connect Claude Code: guides/connect-claude-code.md
+      - Connect Codex: guides/connect-codex.md
+      - Connect Gemini CLI: guides/connect-gemini.md
+      - Connect Antigravity CLI: guides/connect-antigravity.md
+      - Connect OpenCode: guides/connect-opencode.md
+      - Use the dashboard: guides/use-dashboard.md
+      - Use Telegram: guides/use-telegram.md
+      - Use Slack: guides/use-slack.md
+      - Send files and images: guides/send-files.md
+      - Spawn another peer: guides/spawn-peer.md
+      - Schedule work: guides/schedule-work.md
+      - Run jobs: guides/run-jobs.md
+      - Run the remote dashboard: guides/run-remote-dashboard.md
+      - Self-host the relay: guides/self-host-relay.md
   - Patterns:
       - patterns/index.md
       - Multi-repo coordination: patterns/multi-repo.md
@@ -141,14 +146,36 @@ nav:
       - Mobile mesh management: patterns/mobile-mesh.md
       - Infrastructure-as-peer: patterns/infra-as-peer.md
       - Overnight autonomy: patterns/overnight-autonomy.md
+  - Capabilities:
+      - capabilities/index.md
+      - Dashboard: capabilities/dashboard.md
+      - Telegram: capabilities/telegram.md
+      - Slack: capabilities/slack.md
+      - Attachments: capabilities/attachments.md
+      - Scheduling: capabilities/scheduling.md
+      - Jobs: capabilities/jobs.md
+      - Spawning: capabilities/spawning.md
+      - Orchestration: capabilities/orchestration.md
+      - Relay access: capabilities/relay-access.md
+      - Memory: capabilities/memory.md
+  - Operations:
+      - operations/index.md
+      - Architecture: operations/architecture.md
+      - Daemon: operations/daemon.md
+      - Relay: operations/relay.md
+      - Transports: operations/transports.md
+      - State and storage: operations/state-and-storage.md
+      - Auth and security: operations/security.md
+      - Deployment: operations/deployment.md
   - Reference:
       - reference/index.md
       - MCP tools: reference/mcp-tools.md
       - Python client: reference/python-client.md
       - CLI: reference/cli.md
       - Configuration: reference/configuration.md
-      - Architecture: reference/architecture.md
-      - Adding a backend: reference/adding-a-backend.md
+      - HTTP API: reference/http-api.md
+      - WebSocket events: reference/websocket-events.md
+      - Hook payloads: reference/hook-payloads.md
   - Troubleshooting:
       - troubleshooting/index.md
       - Hooks not firing: troubleshooting/hooks.md
@@ -157,16 +184,21 @@ nav:
       - Channel-mode auth: troubleshooting/channel-auth.md
       - Relay key rotation: troubleshooting/relay-keys.md
       - Diagnostic commands: troubleshooting/diagnostics.md
-  - Comparisons:
-      - comparisons/index.md
-      - vs Happy: comparisons/happy.md
-      - vs cloud coding services: comparisons/cloud-coding.md
-      - vs Memory Bank: comparisons/memory-bank.md
-      - vs Claude Squad: comparisons/claude-squad.md
-      - vs Gastown: comparisons/gastown.md
-  - About:
-      - about/index.md
-      - Versioning: about/versioning.md
-      - Pre-PR hygiene: pre-pr-hygiene.md
-      - License: about/license.md
-      - Contributing: about/contributing.md
+  - Contributing:
+      - contributing/index.md
+      - Development setup: contributing/development-setup.md
+      - Running tests: contributing/running-tests.md
+      - Documentation standards: contributing/documentation-standards.md
+      - Release and versioning: contributing/versioning.md
+      - Pre-PR hygiene: contributing/pre-pr-hygiene.md
+      - Adding a backend: contributing/adding-a-backend.md
+      - Design system: contributing/design-system.md
+      - Design notes:
+          - contributing/design-notes/index.md
+          - Mesh command UX contract: contributing/design-notes/mesh-command-ux.md
+          - Tracked work lifecycle: contributing/design-notes/tracked-work-lifecycle.md
+          - Persona routing: contributing/design-notes/persona-routing.md
+          - Mesh memory: contributing/design-notes/mesh-memory.md
+          - Session binding contract: contributing/design-notes/session-binding-contract.md
+          - Claude Code plugin packaging: contributing/design-notes/claude-code-plugin-packaging.md
+      - License: contributing/license.md

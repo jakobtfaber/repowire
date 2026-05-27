@@ -25,5 +25,5 @@ If you're running your own relay (`repowire relay start`), the same flow applies
 
 ## See also
 
-- [Hosted relay](../relay/hosted.md) — what the relay does and how the tunnel works.
-- [Security posture](../relay/security.md) — what the relay can and can't see.
+- [Relay access](../capabilities/relay-access.md) — what the relay does and how the tunnel works.
+- [Security posture](../operations/security.md) — what the relay can and can't see.

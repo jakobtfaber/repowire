@@ -254,9 +254,10 @@ Feature work that changes public behavior must update public docs in the same PR
 - README when the install path, quickstart, supported agents, major features, screenshots, MCP tools, CLI commands, dashboard behavior, relay/security posture, or roadmap positioning changes.
 - `docs/reference/mcp-tools.md` when MCP signatures, return formats, defaults, routing semantics, or lifecycle behavior change.
 - `docs/reference/cli.md` when CLI commands, flags, examples, or output columns change.
-- `docs/agents/*` when per-runtime install/config/hook/plugin behavior changes.
-- `docs/surfaces/*` when dashboard, Telegram, Slack, attachments, or relay behavior changes.
+- `docs/guides/connect-*.md` and `docs/operations/transports.md` when per-runtime install/config/hook/plugin behavior changes.
+- `docs/capabilities/*`, `docs/guides/*`, and `docs/operations/relay.md` when dashboard, Telegram, Slack, attachments, relay, jobs, scheduling, spawning, or orchestration behavior changes.
 - `docs/concepts/*` and `docs/patterns/*` when the recommended workflow or architecture framing changes.
+- `docs/operations/*` when daemon, relay, transport, storage, deployment, or security behavior changes.
 - README screenshots under `images/` when dashboard UI changes materially; use browser-generated screenshots only, not AI-generated UI mockups.
 
 When adding features, explicitly check docs impact before closing the issue. If docs are intentionally deferred, file a Beads follow-up and say why in the PR handoff.

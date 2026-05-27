@@ -13,29 +13,33 @@ Use it when one repo needs a concrete answer from another repo, when you want a 
 ## Explore the docs
 
 <div class="doc-card-grid">
-  <a class="doc-card" href="quickstart/">
-    <strong>Quickstart</strong>
+  <a class="doc-card" href="start/">
+    <strong>Start</strong>
     <span>Install, run setup, and send the first cross-repo ask.</span>
   </a>
   <a class="doc-card" href="concepts/">
     <strong>Concepts</strong>
-    <span>Peers, circles, message types, jobs, memory, and routing.</span>
+    <span>Peers, sessions, backends, transports, messages, jobs, and routing.</span>
   </a>
-  <a class="doc-card" href="agents/">
-    <strong>Agent setup</strong>
-    <span>Claude Code, Codex, Gemini CLI, Antigravity, and OpenCode setup.</span>
-  </a>
-  <a class="doc-card" href="surfaces/">
-    <strong>Control surfaces</strong>
-    <span>Dashboard, Telegram, Slack, attachments, and relay paths.</span>
+  <a class="doc-card" href="guides/">
+    <strong>Guides</strong>
+    <span>Task-focused setup and operating recipes.</span>
   </a>
   <a class="doc-card" href="patterns/">
     <strong>Patterns</strong>
-    <span>Multi-repo coordination, mobile dispatch, worktrees, and orchestrators.</span>
+    <span>Reusable playbooks for multi-agent work.</span>
+  </a>
+  <a class="doc-card" href="capabilities/">
+    <strong>Capabilities</strong>
+    <span>Dashboard, bots, attachments, schedules, jobs, spawning, and relay access.</span>
+  </a>
+  <a class="doc-card" href="operations/">
+    <strong>Operations</strong>
+    <span>Daemon, relay, transports, state, auth, deployment, and architecture.</span>
   </a>
   <a class="doc-card" href="reference/">
     <strong>Reference</strong>
-    <span>MCP tools, CLI commands, Python client, config, and architecture.</span>
+    <span>MCP tools, CLI commands, Python client, config, HTTP, WebSocket, and hooks.</span>
   </a>
 </div>
 
@@ -77,9 +81,11 @@ Repowire is not a standalone chat UI in this flow. You ask your local agent in n
 
 ## What to read next
 
-- [Quickstart](quickstart/index.md) walks through install, setup, and the first cross-repo ask.
-- [Concepts](concepts/index.md) covers peers, circles, message types, the mesh command UX contract, and the orchestrator pattern.
-- [Control surfaces](surfaces/index.md) explains dashboard, Telegram, Slack, and relay control paths.
+- [Start](start/index.md) walks through install, setup, and the first cross-repo ask.
+- [Concepts](concepts/index.md) covers peers, sessions, backends, transports, messages, jobs, and lazy repair.
+- [Guides](guides/index.md) gives task-first recipes for connecting agents and using surfaces.
 - [Patterns](patterns/index.md) covers multi-repo asks, mobile dispatch, worktree isolation, scheduled wake-ups, and orchestrator coordination.
+- [Capabilities](capabilities/index.md) explains the behavior and limits of each major feature.
+- [Operations](operations/index.md) covers daemon, relay, transports, state, security, deployment, and architecture.
 - [MCP tools reference](reference/mcp-tools.md) is the source of truth for the agent API.
 - [CLI reference](reference/cli.md) covers setup, services, peers, schedules, bots, and diagnostics.

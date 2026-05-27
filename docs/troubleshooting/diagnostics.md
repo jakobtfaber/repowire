@@ -74,4 +74,4 @@ MCP servers run as stdio subprocesses of the agent. Their stderr goes wherever t
 repowire status && repowire peer list
 ```
 
-If both are clean, the install is healthy. From there, route a test ask between two peers (see [first ask](../quickstart/first-ask.md)) to confirm the end-to-end path.
+If both are clean, the install is healthy. From there, route a test ask between two peers (see [first ask](../start/first-ask.md)) to confirm the end-to-end path.
