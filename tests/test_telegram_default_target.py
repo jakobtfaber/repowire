@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -93,6 +94,53 @@ async def test_accepts_busy_orchestrator(
     )
     await bot._seed_default_target_from_orchestrator()
     assert bot._reply_target == "orchestrator"
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_orchestrator_named_workspace_peer(
+    bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_peers: list[dict[str, Any]] = [
+        {
+            "peer_id": "repow-default-live",
+            "name": "orchestrator-claude-code",
+            "display_name": "orchestrator-claude-code",
+            "role": "agent",
+            "status": "online",
+            "circle": "default",
+            "path": "/home/user/.repowire/orchestrator",
+        },
+    ]
+    route = AsyncMock()
+    route.return_value = SimpleNamespace(status_code=200, json=lambda: {"present": False})
+    monkeypatch.setattr(bot._http, "get", route)
+    monkeypatch.setattr(
+        bot, "_fetch_online_peers", AsyncMock(return_value=fake_peers),
+    )
+
+    await bot._seed_default_target_from_orchestrator()
+
+    assert bot._reply_target == "repow-default-live"
+
+
+@pytest.mark.asyncio
+async def test_stale_orchestrator_target_normalizes_before_send(
+    bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot._display_name = "telegram-claude-code"
+    monkeypatch.setattr(
+        bot,
+        "_fetch_orchestrator_status",
+        AsyncMock(return_value=OrchestratorStatus(present=True, peer="repow-live-orch")),
+    )
+    post = AsyncMock()
+    post.return_value.status_code = 200
+    monkeypatch.setattr(bot._http, "post", post)
+
+    await bot._ask("orchestrator-codex", "hello")
+
+    assert bot._reply_target == "repow-live-orch"
+    assert post.await_args.kwargs["json"]["to_peer"] == "repow-live-orch"
 
 
 @pytest.mark.asyncio

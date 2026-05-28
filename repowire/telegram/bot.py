@@ -212,6 +212,34 @@ def parse_notify_command(text: str) -> tuple[str | None, str] | None:
     return (None, body)
 
 
+def _looks_like_orchestrator_target(target: str) -> bool:
+    normalized = target.lstrip("@").lower()
+    return normalized == "orchestrator" or normalized.startswith("orchestrator-")
+
+
+def _orchestrator_peer_from_list(
+    peers: list[dict[str, Any]],
+    *,
+    circle: str,
+) -> str | None:
+    active = [
+        p for p in peers
+        if p.get("status") in ("online", "busy")
+        and p.get("circle", circle) == circle
+    ]
+    role_matches = [p for p in active if p.get("role") == "orchestrator"]
+    heuristic_matches = [
+        p for p in active
+        if str(p.get("display_name") or p.get("name") or "").startswith("orchestrator-")
+        or Path(str(p.get("path") or "")).name == "orchestrator"
+    ]
+    for peer in role_matches + heuristic_matches:
+        target = peer.get("peer_id") or peer.get("display_name") or peer.get("name")
+        if target:
+            return str(target)
+    return None
+
+
 class TelegramPeer:
     """Telegram bot that registers as a repowire peer."""
 
@@ -668,26 +696,19 @@ class TelegramPeer:
                     or data.get("display_name")
                     or data.get("name")
                 )
-                return OrchestratorStatus(
-                    present=bool(data.get("present")),
-                    peer=str(peer) if peer else None,
-                )
+                if data.get("present"):
+                    return OrchestratorStatus(
+                        present=True,
+                        peer=str(peer) if peer else None,
+                    )
         except Exception:
             logger.debug("Failed to fetch orchestrator status route", exc_info=True)
 
         peers = await self._fetch_online_peers(use_cache=use_cache)
-        orchestrators = [
-            p for p in peers
-            if p.get("role") == "orchestrator"
-            and p.get("circle", self._circle) == self._circle
-            and p.get("status") in ("online", "busy")
-        ]
-        if not orchestrators:
+        peer = _orchestrator_peer_from_list(peers, circle=self._circle)
+        if not peer:
             return OrchestratorStatus(present=False)
-
-        target = orchestrators[0]
-        peer = target.get("peer_id") or target.get("name") or target.get("display_name")
-        return OrchestratorStatus(present=True, peer=str(peer) if peer else None)
+        return OrchestratorStatus(present=True, peer=peer)
 
     async def _send_no_orchestrator(self) -> None:
         await self._tg_send(
@@ -801,6 +822,11 @@ class TelegramPeer:
         mode: Literal["ask", "notify"],
         attachments: list[dict[str, Any]] | None = None,
     ) -> None:
+        if _looks_like_orchestrator_target(peer):
+            status = await self._fetch_orchestrator_status(use_cache=False)
+            if status.present and status.peer:
+                peer = status.peer
+                self._reply_target = peer
         endpoint = "ask" if mode == "ask" else "notify"
         body: dict[str, Any] = {
             "from_peer": self._display_name,
