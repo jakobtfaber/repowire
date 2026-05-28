@@ -8,6 +8,7 @@ type JobItem =
   | { type: "recurring"; id: string; status: RecurringJobStatus };
 
 const terminalStates = new Set(["completed", "failed", "cancelled", "expired", "unavailable"]);
+const retryableTerminalStates = new Set(["failed", "unavailable"]);
 
 function itemTitle(item: JobItem): string {
   return item.status.title || item.id;
@@ -108,10 +109,12 @@ export function JobsView({
 
   const activeItems = items.filter((item) => {
     const state = itemState(item);
-    return item.type === "recurring" ? state !== "cancelled" : !terminalStates.has(state);
+    if (item.type === "recurring") return state !== "cancelled";
+    return !terminalStates.has(state);
   });
-  const closedItems = items.filter((item) => !activeItems.includes(item));
-  const selected = items.find((item) => item.id === selectedId) ?? activeItems[0] ?? closedItems[0] ?? null;
+  const attentionItems = items.filter((item) => item.type === "work" && retryableTerminalStates.has(itemState(item)));
+  const closedItems = items.filter((item) => !activeItems.includes(item) && !attentionItems.includes(item));
+  const selected = items.find((item) => item.id === selectedId) ?? activeItems[0] ?? attentionItems[0] ?? closedItems[0] ?? null;
 
   useEffect(() => {
     if (selectedId && !items.some((item) => item.id === selectedId)) {
@@ -155,6 +158,7 @@ export function JobsView({
         </div>
         <div className="flex items-center gap-2">
           <JobMetric label="active" value={activeItems.length} />
+          <JobMetric label="attention" value={attentionItems.length} />
           <JobMetric label="closed" value={closedItems.length} />
           <button
             onClick={() => void fetchJobs()}
@@ -177,6 +181,7 @@ export function JobsView({
           ) : (
             <>
               <JobGroup title="active" items={activeItems} selectedId={selected?.id ?? null} onSelect={selectJob} />
+              <JobGroup title="needs attention" items={attentionItems} selectedId={selected?.id ?? null} onSelect={selectJob} />
               <JobGroup title="closed" items={closedItems} selectedId={selected?.id ?? null} onSelect={selectJob} />
             </>
           )}

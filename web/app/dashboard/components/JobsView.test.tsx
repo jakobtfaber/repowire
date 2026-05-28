@@ -52,6 +52,14 @@ const FAILED_JOB = {
   progress_events: [{ at: "2026-05-01T10:10:00Z", note: "runner failed" }],
 };
 
+const COMPLETED_JOB = {
+  ...QUEUED_JOB,
+  job_id: "work-completed",
+  title: "Ship release",
+  state: "completed",
+  result_summary: "done",
+};
+
 describe("JobsView", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -131,5 +139,22 @@ describe("JobsView", () => {
       );
     });
     await waitFor(() => expect(screen.getAllByText("queued").length).toBeGreaterThan(0));
+  });
+
+  it("separates retryable terminal work from closed jobs", async () => {
+    const payload: JobsResponse = {
+      work: [FAILED_JOB, COMPLETED_JOB],
+      recurring: [],
+    };
+    const fetchMock = vi.fn(async () => jsonResponse(payload));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<JobsView apiBase="http://daemon.test" refreshSignal={0} />);
+
+    expect(await screen.findByText("needs attention")).toBeInTheDocument();
+    expect(screen.getAllByText("closed").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Fix CI").length).toBeGreaterThan(0);
+    expect(screen.getByText("Ship release")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 });
