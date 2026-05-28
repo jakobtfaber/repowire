@@ -130,7 +130,7 @@ Create one-shot or recurring scheduled mesh messages. Without `--cron`, `WHEN_OR
 ## `repowire jobs`
 
 ```bash
-repowire jobs create TITLE [--kind KIND] [--prompt TEXT | --prompt-file PATH] [--assigned-peer PEER] [--path PATH --backend BACKEND] [--profile NAME] [--due-at TIME | --cron EXPR] [--result-surface NAME] [--json]
+repowire jobs create TITLE [--kind KIND] [--prompt TEXT | --prompt-file PATH] [--assigned-peer PEER] [--path PATH --backend BACKEND] [--profile NAME] [--due-at TIME | --cron EXPR] [--process-scope per-fire|persistent] [--continuity resume|fresh] [--result-surface NAME] [--json]
 repowire jobs run JOB_ID [--json]
 repowire jobs retry JOB_ID [--json]
 repowire jobs list [--state STATE] [--owner PEER_ID] [--created-by PEER_ID] [--session SESSION_ID] [--circle CIRCLE] [--json]
@@ -159,6 +159,12 @@ creation. Existing child jobs are not cancelled automatically. Recurring Codex
 jobs preserve the latest observed runtime binding for the same calendar/path
 and can launch `codex resume <runtime-session-id>` when compatible resume
 metadata exists; otherwise the runner falls back to normal spawn behavior.
+Recurring path/backend jobs default to `process_scope=per_fire` and
+`continuity=resume`: each fire runs in a short-lived executor process, terminal
+completion releases that process, and the next fire uses the backend-native
+runtime session id when available. Pass `--continuity fresh` to start each fire
+without backend-native resume, or `--process-scope persistent` for the older
+live-peer reuse behavior.
 
 Use `--assigned-peer` for an exact peer id/name. Ambiguous display names are
 rejected before persistence. Without an assigned peer, pass `--path` and

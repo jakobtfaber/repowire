@@ -317,6 +317,7 @@ class JobRunner:
                     "operation_id": acquisition.operation_id,
                     "strategy": acquisition.strategy,
                     "runtime_binding": acquisition.runtime_binding,
+                    "release_handle": acquisition.release_handle,
                 },
             )
             return peer

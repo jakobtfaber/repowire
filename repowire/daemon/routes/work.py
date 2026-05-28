@@ -12,7 +12,7 @@ from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.schedule_cron import CronExpressionError
-from repowire.daemon.work_store import TrackedWork
+from repowire.daemon.work_store import TrackedWork, is_terminal_state
 
 router = APIRouter(tags=["work"])
 
@@ -44,6 +44,14 @@ class WorkCreateRequest(BaseModel):
     due_at: str | None = Field(None, description="Optional scheduled due time")
     cron: str | None = Field(None, description="Optional recurring cron expression")
     result_surface: str | None = Field(None, description="Metadata-only result surface")
+    process_scope: str | None = Field(
+        None,
+        description="Executor process scope. Use per_fire for short-lived job executors.",
+    )
+    continuity: str | None = Field(
+        None,
+        description="Backend context continuity for per-fire executors: resume or fresh.",
+    )
 
 
 class WorkCancelRequest(BaseModel):
@@ -126,6 +134,11 @@ def _job_runner():
     return runner
 
 
+def _session_control():
+    state = get_app_state()
+    return getattr(state, "session_control", None)
+
+
 def _read_prompt_file(path: str) -> str:
     from pathlib import Path
 
@@ -166,11 +179,126 @@ def _merge_execution_request(
     delivery.setdefault("kind", "ask")
     if request.result_surface is not None:
         delivery["result_surface"] = request.result_surface
+    process_scope = request.process_scope or execution.get("process_scope")
+    if (
+        process_scope is None
+        and request.cron
+        and assigned_peer_id is None
+        and target.get("path")
+        and target.get("backend")
+    ):
+        process_scope = "per_fire"
+    if process_scope is not None:
+        if process_scope == "per-fire":
+            process_scope = "per_fire"
+        if process_scope not in {"per_fire", "persistent"}:
+            raise HTTPException(
+                status_code=400,
+                detail="process_scope must be one of: per_fire, persistent",
+            )
+        execution["process_scope"] = process_scope
+    continuity = request.continuity or execution.get("continuity")
+    if continuity is None and process_scope == "per_fire":
+        continuity = "resume" if request.cron else "fresh"
+    if continuity is not None:
+        if continuity not in {"resume", "fresh"}:
+            raise HTTPException(
+                status_code=400,
+                detail="continuity must be one of: resume, fresh",
+            )
+        execution["continuity"] = continuity
     execution.update(
         {"prompt": prompt, "target": target, "schedule": schedule, "delivery": delivery}
     )
     body["execution"] = execution
     return body
+
+
+def _current_attempt_id(work: TrackedWork) -> str | None:
+    runner = (work.provenance or {}).get("runner") or {}
+    current = runner.get("current_attempt_id")
+    return current if isinstance(current, str) and current else None
+
+
+def _current_attempt(work: TrackedWork) -> dict[str, Any] | None:
+    current = _current_attempt_id(work)
+    runner = (work.provenance or {}).get("runner") or {}
+    for attempt in list(runner.get("attempts") or []):
+        if isinstance(attempt, dict) and attempt.get("attempt_id") == current:
+            return attempt
+    return None
+
+
+def _has_release_handle(work: TrackedWork) -> bool:
+    attempt = _current_attempt(work)
+    acquisition = (attempt or {}).get("acquisition") or {}
+    return isinstance(acquisition.get("release_handle"), dict)
+
+
+def _merge_release_result(
+    work: TrackedWork,
+    release_result: dict[str, Any],
+) -> dict[str, Any]:
+    provenance = dict(work.provenance)
+    runner = dict(provenance.get("runner") or {})
+    attempts = list(runner.get("attempts") or [])
+    current = runner.get("current_attempt_id")
+    for attempt in attempts:
+        if not isinstance(attempt, dict) or attempt.get("attempt_id") != current:
+            continue
+        releases = list(attempt.get("release_results") or [])
+        releases.append(release_result)
+        attempt["release_result"] = release_result
+        attempt["release_results"] = releases[-5:]
+        acquisition = dict(attempt.get("acquisition") or {})
+        release_handle = acquisition.get("release_handle")
+        if isinstance(release_handle, dict) and release_result.get("released_at"):
+            acquisition["release_handle"] = {
+                **release_handle,
+                "released_at": release_result["released_at"],
+            }
+            attempt["acquisition"] = acquisition
+        if release_result.get("reap_error"):
+            attempt["reap_error"] = release_result["reap_error"]
+        break
+    runner["attempts"] = attempts
+    runner["release_result"] = release_result
+    if release_result.get("reap_error"):
+        runner["reap_error"] = release_result["reap_error"]
+    provenance["runner"] = runner
+    return provenance
+
+
+async def _release_executor_if_needed(
+    work: TrackedWork,
+    *,
+    terminal_reason: str,
+    attempt_id: str | None,
+) -> TrackedWork:
+    if not is_terminal_state(work.state) or not _has_release_handle(work):
+        return work
+    session_control = _session_control()
+    if session_control is None or not hasattr(session_control, "release_executor_for_work"):
+        return work
+    release_result = await session_control.release_executor_for_work(
+        work,
+        terminal_reason=terminal_reason,
+    )
+    provenance = _merge_release_result(work, release_result)
+    refreshed = _store().update_state(
+        work.work_id,
+        state=work.state,
+        state_reason=work.state_reason,
+        phase=work.phase,
+        progress=work.progress,
+        result_summary=work.result_summary,
+        result_data=work.result_data,
+        error=work.error,
+        artifacts=work.artifacts,
+        provenance=provenance,
+        attempt_id=attempt_id,
+    )
+    return refreshed or work
 
 
 async def _canonical_assigned_peer(identifier: str | None, circle: str | None) -> str | None:
@@ -423,7 +551,7 @@ def _summary_status(status: dict[str, Any]) -> dict[str, Any]:
         summary["execution"] = {
             key: value
             for key, value in execution.items()
-            if key in {"target", "delivery"}
+            if key in {"target", "delivery", "process_scope", "continuity"}
         }
     return summary
 
@@ -476,6 +604,12 @@ async def update_work(
         raise HTTPException(status_code=400, detail=str(e)) from e
     if work is None:
         raise HTTPException(status_code=404, detail=f"No work: {work_id}")
+    if is_terminal_state(work.state):
+        work = await _release_executor_if_needed(
+            work,
+            terminal_reason=work.state,
+            attempt_id=request.attempt_id,
+        )
     return WorkStatusResponse.from_work(work)
 
 
@@ -582,4 +716,28 @@ async def cancel_work(
         )
         if updated is not None:
             work = updated
+        if _has_release_handle(work):
+            current_attempt = _current_attempt_id(work)
+            released_provenance = work.provenance
+            session_control = _session_control()
+            if (
+                session_control is not None
+                and hasattr(session_control, "release_executor_for_work")
+            ):
+                release_result = await session_control.release_executor_for_work(
+                    work,
+                    terminal_reason="cancel_requested",
+                )
+                released_provenance = _merge_release_result(work, release_result)
+            updated = _store().update_state(
+                work.work_id,
+                state="cancelled",
+                state_reason=request.reason,
+                phase="cancelled",
+                progress=work.progress,
+                provenance=released_provenance,
+                attempt_id=current_attempt,
+            )
+            if updated is not None:
+                work = updated
     return WorkStatusResponse.from_work(work)

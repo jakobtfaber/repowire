@@ -717,6 +717,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         request: dict | None = None,
         deadline_at: str | None = None,
         expires_at: str | None = None,
+        process_scope: str | None = None,
+        continuity: str | None = None,
         provenance: dict | None = None,
     ) -> str:
         """[Repowire mesh] Create a durable tracked work job.
@@ -744,6 +746,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             "scope": scope,
             "deadline_at": deadline_at,
             "expires_at": expires_at,
+            "process_scope": process_scope,
+            "continuity": continuity,
             "provenance": provenance,
         }
         body.update({key: value for key, value in optional.items() if value is not None})

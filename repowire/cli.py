@@ -2110,6 +2110,16 @@ def jobs() -> None:
 @click.option("--due-at", help="Schedule due time (ISO-8601)")
 @click.option("--cron", help="Recurring cron expression or alias")
 @click.option("--result-surface", help="Metadata-only result surface")
+@click.option(
+    "--process-scope",
+    type=click.Choice(["per-fire", "per_fire", "persistent"]),
+    help="Executor process lifetime for path/backend jobs",
+)
+@click.option(
+    "--continuity",
+    type=click.Choice(["resume", "fresh"]),
+    help="Backend-native context continuity between fires",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
 def jobs_create_cmd(
     title: str,
@@ -2131,6 +2141,8 @@ def jobs_create_cmd(
     due_at: str | None,
     cron: str | None,
     result_surface: str | None,
+    process_scope: str | None,
+    continuity: str | None,
     as_json: bool,
 ) -> None:
     """Create a durable job without dispatching it to an executor."""
@@ -2160,6 +2172,8 @@ def jobs_create_cmd(
         "due_at": _parse_schedule_when(due_at) if due_at else None,
         "cron": cron,
         "result_surface": result_surface,
+        "process_scope": process_scope,
+        "continuity": continuity,
     }.items():
         if value:
             body[key] = value

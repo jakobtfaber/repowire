@@ -16,6 +16,12 @@ Create a job:
 repowire jobs create "Daily brief" --path .repowire/agents/daily-brief --backend codex --cron "@daily" --prompt "Prepare the brief."
 ```
 
+Recurring path/backend jobs run with per-fire executors by default: Repowire
+spawns or backend-resumes an executor for the fire, delivers the job ask, and
+releases the executor after a terminal job update. The next fire resumes with
+the backend-native runtime session id when available. Use `--continuity fresh`
+when each fire should start without resume context.
+
 List and inspect jobs:
 
 ```bash

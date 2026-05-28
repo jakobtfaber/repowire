@@ -167,6 +167,8 @@ async def test_jobs_create_with_cron_returns_recurring_calendar(env) -> None:
         "path": "/tmp/brief",
         "backend": "codex",
     }
+    assert body["calendar"]["execution"]["process_scope"] == "per_fire"
+    assert body["calendar"]["execution"]["continuity"] == "resume"
 
 
 async def test_jobs_create_rejects_due_at_and_cron_together(env) -> None:

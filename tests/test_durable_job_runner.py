@@ -198,10 +198,12 @@ def test_startup_recovery_marks_stale_dispatching_unavailable(tmp_path):
     cleanup_deps()
 
 
-def test_startup_recovery_marks_stale_delivered_unavailable(tmp_path):
+def test_startup_recovery_marks_stale_delivered_unavailable(tmp_path, monkeypatch):
     _cfg, _registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
         tmp_path
     )
+    kill_pane = Mock(return_value=True)
+    monkeypatch.setattr("repowire.daemon.session_control.kill_pane", kill_pane)
     work = store.create(title="job")
     acquired = store.acquire_for_dispatch(
         work.work_id,
@@ -215,12 +217,20 @@ def test_startup_recovery_marks_stale_delivered_unavailable(tmp_path):
         status="delivered",
         phase="delivered",
         correlation_id="ask-1",
+        acquisition={
+            "release_handle": {
+                "kind": "tmux_pane",
+                "peer_id": "repow-default-worker",
+                "pane_id": "%900",
+            }
+        },
     )
 
     recovered = runner.recover_stale()
 
     assert [w.work_id for w in recovered] == [work.work_id]
     assert store.get(work.work_id).state == "unavailable"
+    kill_pane.assert_not_called()
     db.close()
     cleanup_deps()
 
@@ -925,6 +935,218 @@ async def test_recurring_job_uses_recorded_codex_resume_binding(tmp_path):
     assert updated_entry.provenance["runtime_binding"]["peer_id"] == resumed["peer_id"]
     assert delivery.calls[0]["to_peer"] == resumed["peer_id"]
     assert len(store.list_all()) == 1
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_per_fire_terminal_update_releases_spawned_executor(
+    tmp_path,
+    monkeypatch,
+):
+    _cfg, registry, db, store, _calendar, _session_bindings, delivery, spawn, runner = _env(
+        tmp_path
+    )
+    worker_path = str(tmp_path / "daily-email-brief")
+    work = store.create(
+        title="daily brief",
+        circle="default",
+        request={
+            "execution": {
+                "process_scope": "per_fire",
+                "continuity": "fresh",
+                "target": {"path": worker_path, "backend": "codex"},
+                "delivery": {"kind": "ask"},
+            }
+        },
+    )
+    killed: list[str] = []
+    monkeypatch.setattr(
+        "repowire.daemon.session_control.kill_pane",
+        lambda pane_id: killed.append(pane_id) or True,
+    )
+    monkeypatch.setattr("repowire.daemon.session_control.forget_spawn_ownership", Mock())
+    registered: dict[str, str] = {}
+
+    async def register_after_spawn() -> None:
+        while not spawn.calls:
+            await asyncio.sleep(0.01)
+        peer_id, _name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CODEX,
+            path=worker_path,
+            peer_id="repow-default-spawned",
+            pane_id="%655",
+            tmux_session="default:daily-email-brief",
+            metadata={"hook_session_id": "codex-session-2"},
+            initial_status=PeerStatus.ONLINE,
+            role=PeerRole.AGENT,
+        )
+        _session_bindings.upsert_observation(
+            peer_id=peer_id,
+            backend="codex",
+            project_path=worker_path,
+            runtime_session_id="codex-session-2",
+            resume_capability={
+                "supported": True,
+                "strategy": "codex_resume",
+                "runtime_session_id_arg": "codex-session-2",
+            },
+            status="active",
+            metadata={"hook_session_id": "codex-session-2"},
+        )
+        registered["peer_id"] = peer_id
+
+    task = asyncio.create_task(register_after_spawn())
+    try:
+        delivered = await runner.run_job(work.work_id)
+    finally:
+        await task
+
+    attempt_id = delivered.provenance["runner"]["current_attempt_id"]
+    assert delivered.provenance["runner"]["attempts"][0]["acquisition"]["release_handle"][
+        "pane_id"
+    ] == "%655"
+
+    app = FastAPI()
+    app.include_router(work_routes.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.patch(
+            f"/jobs/{work.work_id}",
+            json={
+                "state": "completed",
+                "attempt_id": attempt_id,
+                "result_summary": "done",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    status = response.json()["status"]
+    assert status["state"] == "completed"
+    assert killed == ["%655"]
+    release = status["provenance"]["runner"]["release_result"]
+    assert release["status"] == "released"
+    assert release["pane_id"] == "%655"
+    assert await registry.get_peer(registered["peer_id"]) is None
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_per_fire_cancel_releases_delivered_executor(tmp_path, monkeypatch):
+    _cfg, registry, db, store, _calendar, _session_bindings, _delivery, _spawn, runner = _env(
+        tmp_path
+    )
+    peer_id = await _register_peer(
+        registry,
+        peer_id="repow-default-worker",
+        pane_id="%42",
+        tmux_session="default:worker",
+    )
+    work = store.create(
+        title="cancel",
+        assigned_peer_id=peer_id,
+        circle="default",
+        request={
+            "execution": {
+                "process_scope": "per_fire",
+                "target": {"assigned_peer_id": peer_id},
+            }
+        },
+    )
+    killed: list[str] = []
+    monkeypatch.setattr(
+        "repowire.daemon.session_control.probe_tmux_pane",
+        lambda pane_id: object() if pane_id == "%42" else None,
+    )
+    monkeypatch.setattr(
+        "repowire.daemon.session_control.kill_pane",
+        lambda pane_id: killed.append(pane_id) or True,
+    )
+    monkeypatch.setattr("repowire.daemon.session_control.forget_spawn_ownership", Mock())
+
+    delivered = await runner.run_job(work.work_id)
+    assert delivered.state == "delivered"
+
+    app = FastAPI()
+    app.include_router(work_routes.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            f"/jobs/{work.work_id}/cancel",
+            json={"reason": "not_needed"},
+        )
+
+    assert response.status_code == 200, response.text
+    status = response.json()["status"]
+    assert status["state"] == "cancelled"
+    assert killed == ["%42"]
+    assert status["provenance"]["runner"]["release_result"]["status"] == "released"
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_per_fire_fresh_ignores_recorded_resume_binding(tmp_path):
+    _cfg, registry, db, store, calendar, _session_bindings, delivery, spawn, runner = _env(
+        tmp_path
+    )
+    worker_path = str(tmp_path / "daily-email-brief")
+    calendar.create(
+        title="daily brief",
+        kind="brief",
+        cron="*/2 * * * *",
+        circle="default",
+        request={
+            "execution": {
+                "process_scope": "per_fire",
+                "continuity": "fresh",
+                "target": {"path": worker_path, "backend": "codex"},
+            }
+        },
+        provenance={
+            "runtime_binding": {
+                "peer_id": "repow-default-old",
+                "backend": "codex",
+                "path": worker_path,
+                "circle": "default",
+                "runtime_session_id": "codex-runtime-old",
+                "resume_capability": {
+                    "supported": True,
+                    "strategy": "codex_resume",
+                    "runtime_session_id_arg": "codex-runtime-old",
+                },
+            }
+        },
+        now=datetime(2026, 5, 25, 8, 0, tzinfo=timezone.utc),
+    )
+    [child] = calendar.materialize_due(now=datetime(2026, 5, 25, 8, 2, tzinfo=timezone.utc))
+    registered: dict[str, str] = {}
+
+    async def register_after_spawn() -> None:
+        while not spawn.calls:
+            await asyncio.sleep(0.01)
+        peer_id, _name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CODEX,
+            path=worker_path,
+            peer_id="repow-default-fresh",
+            pane_id="%656",
+            tmux_session="default:daily-email-brief",
+            metadata={"hook_session_id": "codex-runtime-new"},
+            initial_status=PeerStatus.ONLINE,
+            role=PeerRole.AGENT,
+        )
+        registered["peer_id"] = peer_id
+
+    task = asyncio.create_task(register_after_spawn())
+    try:
+        result = await runner.run_job(child.work_id)
+    finally:
+        await task
+
+    assert result.state == "delivered"
+    assert spawn.calls[0]["resume_plan"] is None
+    assert delivery.calls[0]["to_peer"] == registered["peer_id"]
     db.close()
     cleanup_deps()
 

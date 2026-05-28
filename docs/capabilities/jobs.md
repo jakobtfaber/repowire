@@ -13,13 +13,17 @@ Jobs are durable tracked work records. They let agents and humans create work, i
 ## Common flows
 
 - Create a one-off job when an orchestrator needs to track a piece of work across turns.
-- Use recurring jobs for durable worker folders such as `.repowire/agents/daily-brief`.
+- Use recurring jobs for durable worker folders such as `.repowire/agents/daily-brief`; path/backend recurring jobs use per-fire executors by default and can resume backend-native context between fires.
 - Update progress while work is running, then record a final result.
 - Cancel stale or superseded jobs instead of leaving them ambiguous.
 
 ## Limits
 
 Jobs complement asks and schedules. Use an ask for a question that needs a reply; use a schedule for a future message; use a job when status and result need to survive across turns.
+
+Per-fire executor cleanup is tied to job lifecycle state, not ask lifecycle.
+Ack only confirms receipt; terminal job updates and compatible cancellation
+paths release the executor.
 
 ## Related
 

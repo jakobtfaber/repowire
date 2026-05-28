@@ -193,10 +193,10 @@ This is a *presence check*, not a snapshot of mesh state.
 ### `job_create`
 
 ```python
-job_create(title: str = "", kind: str = "general", assigned_peer_id: str | None = None, owner_peer_id: str | None = None, repowire_session_id: str | None = None, correlation_id: str | None = None, circle: str | None = None, source_kind: str | None = None, source_id: str | None = None, scope: str | None = None, visibility: str = "circle", request: dict | None = None, deadline_at: str | None = None, expires_at: str | None = None, provenance: dict | None = None) -> str
+job_create(title: str = "", kind: str = "general", assigned_peer_id: str | None = None, owner_peer_id: str | None = None, repowire_session_id: str | None = None, correlation_id: str | None = None, circle: str | None = None, source_kind: str | None = None, source_id: str | None = None, scope: str | None = None, visibility: str = "circle", request: dict | None = None, deadline_at: str | None = None, expires_at: str | None = None, process_scope: str | None = None, continuity: str | None = None, provenance: dict | None = None) -> str
 ```
 
-Create a durable tracked work job through the daemon `/jobs` API. Returns the daemon response as a JSON string with `job_id`, `work_id`, and `status`. The MCP caller's peer ID is sent as `created_by_peer_id` when available.
+Create a durable tracked work job through the daemon `/jobs` API. Returns the daemon response as a JSON string with `job_id`, `work_id`, and `status`. The MCP caller's peer ID is sent as `created_by_peer_id` when available. `process_scope="per_fire"` requests a short-lived executor for each fire; `continuity="resume"` uses backend-native runtime resume between recurring fires, while `continuity="fresh"` starts without resume context.
 
 ### `job_list`
 

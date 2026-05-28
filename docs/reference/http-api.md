@@ -13,6 +13,14 @@ The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and client
 - `/attachments` for upload and download.
 - `/dashboard` for the static dashboard bundle.
 
+## Jobs Execution Policy
+
+`POST /jobs` accepts `process_scope` and `continuity` for path/backend durable
+jobs. Recurring path/backend jobs default to `process_scope=per_fire` and
+`continuity=resume`, so each fire uses a short-lived executor process and the
+next fire resumes backend-native runtime context when a runtime session id is
+available. Use `continuity=fresh` to avoid backend resume.
+
 ## Jobs List Views
 
 `GET /jobs` returns the full durable-work list by default. Dashboard-style clients that only need row data can use:

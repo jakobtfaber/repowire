@@ -94,11 +94,12 @@ advances the template to the next future fire.
 
 Executor selection is deliberately small: an exact assigned peer id wins; an
 ambiguous display name is rejected before create/run; otherwise `path` +
-`backend` + optional `profile` first reuses a live peer for the same
-path/backend/circle, then may use a recorded backend-native resume binding for
-the same recurring calendar context, and otherwise spawns a new peer through
-the shared spawn guardrails. Delivery uses `ask` and records a correlation id.
-Ack confirms only receipt.
+`backend` + optional `profile` follows the execution policy. Persistent jobs
+may reuse a live peer for the same path/backend/circle. Per-fire jobs require
+SessionControl to acquire a releasable executor, may use a recorded
+backend-native resume binding for the same recurring calendar context, and
+release that executor after terminal completion or compatible cancellation.
+Delivery uses `ask` and records a correlation id. Ack confirms only receipt.
 The worker prompt requires an immediate `state=running` update with the current
 attempt id before longer work, then a terminal lifecycle update with the same
 attempt id on completion. If a delivered job never sends that start heartbeat

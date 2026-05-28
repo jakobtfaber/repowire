@@ -18,6 +18,8 @@ from repowire.daemon.state.operations import SQLiteOperationStore
 from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 from repowire.daemon.work_store import TrackedWork, now_iso
 from repowire.protocol.peers import Peer, PeerStatus
+from repowire.spawn import kill_pane
+from repowire.spawn_ownership import forget_spawn_ownership, probe_tmux_pane
 
 SPAWN_REGISTRATION_TIMEOUT_SECONDS = 45.0
 
@@ -33,6 +35,7 @@ class ExecutorAcquisition:
     operation_id: str
     resume_plan: AgentResumePlan | None = None
     runtime_binding: dict[str, Any] | None = None
+    release_handle: dict[str, Any] | None = None
 
 
 class ExecutorAcquisitionUnavailableError(Exception):
@@ -80,6 +83,7 @@ class SessionControlService:
         target: dict[str, Any],
         runner_owner_id: str,
     ) -> ExecutorAcquisition:
+        execution_policy = self._execution_policy(work)
         operation = self._operations.create(
             kind="session.acquire_executor",
             target={
@@ -88,13 +92,20 @@ class SessionControlService:
                 "source_kind": work.source_kind,
                 "source_id": work.source_id,
                 "circle": work.circle,
+                "process_scope": execution_policy["process_scope"],
+                "continuity": execution_policy["continuity"],
                 "target": target,
             },
             provenance={"requested_by": runner_owner_id},
         )
         assigned = target.get("assigned_peer_id") or work.assigned_peer_id
         if assigned:
-            return await self._acquire_assigned_peer(work, operation.operation_id, str(assigned))
+            return await self._acquire_assigned_peer(
+                work,
+                operation.operation_id,
+                str(assigned),
+                process_scope=execution_policy["process_scope"],
+            )
 
         path = target.get("path")
         backend_raw = target.get("backend")
@@ -122,7 +133,10 @@ class SessionControlService:
             )
 
         circle = work.circle or "default"
-        reusable = await self._find_live_peer(path=str(path), backend=backend, circle=circle)
+        if execution_policy["process_scope"] != "per_fire":
+            reusable = await self._find_live_peer(path=str(path), backend=backend, circle=circle)
+        else:
+            reusable = None
         if reusable is not None:
             runtime_binding = self._record_runtime_binding(
                 work, reusable, source="reused_peer"
@@ -147,7 +161,9 @@ class SessionControlService:
                 runtime_binding=runtime_binding,
             )
 
-        resume_plan = self._resume_plan_for(work, path=str(path), backend=backend)
+        resume_plan = None
+        if execution_policy["continuity"] == "resume":
+            resume_plan = self._resume_plan_for(work, path=str(path), backend=backend)
         strategy = "backend_resume" if resume_plan is not None else "spawned_peer"
         self._operations.start_attempt(
             operation.operation_id,
@@ -232,7 +248,29 @@ class SessionControlService:
             work,
             resolved,
             source="backend_resume" if resume_plan is not None else "spawned_peer",
+            operation_id=operation.operation_id,
+            process_scope=execution_policy["process_scope"],
+            continuity=execution_policy["continuity"],
         )
+        release_handle = self._release_handle_for_peer(
+            resolved,
+            process_scope=execution_policy["process_scope"],
+            operation_id=operation.operation_id,
+            strategy=strategy,
+        )
+        if execution_policy["process_scope"] == "per_fire" and release_handle is None:
+            error = {"reason": "release_handle_unavailable", "peer_id": resolved.peer_id}
+            self._operations.fail(
+                operation.operation_id,
+                state="unavailable",
+                strategy=strategy,
+                error=error,
+            )
+            raise ExecutorAcquisitionUnavailableError(
+                "release_handle_unavailable",
+                operation_id=operation.operation_id,
+                error=error,
+            )
         self._operations.complete(
             operation.operation_id,
             strategy=strategy,
@@ -243,6 +281,7 @@ class SessionControlService:
                     "pane_id": resolved.pane_id,
                 },
                 "runtime_binding": runtime_binding,
+                "release_handle": release_handle,
             },
         )
         return ExecutorAcquisition(
@@ -251,6 +290,7 @@ class SessionControlService:
             operation_id=operation.operation_id,
             resume_plan=resume_plan,
             runtime_binding=runtime_binding,
+            release_handle=release_handle,
         )
 
     async def _acquire_assigned_peer(
@@ -258,6 +298,8 @@ class SessionControlService:
         work: TrackedWork,
         operation_id: str,
         assigned: str,
+        *,
+        process_scope: str,
     ) -> ExecutorAcquisition:
         resolved = await self._registry.resolve_peer_strict(assigned, circle=work.circle)
         if isinstance(resolved, list):
@@ -276,22 +318,183 @@ class SessionControlService:
                 assigned_peer_id=resolved.peer_id,
             )
         runtime_binding = self._record_runtime_binding(work, resolved, source="assigned_peer")
+        release_handle = self._release_handle_for_peer(
+            resolved,
+            process_scope=process_scope,
+            operation_id=operation_id,
+            strategy="assigned_peer",
+        )
+        if process_scope == "per_fire" and release_handle is None:
+            error = {"reason": "release_handle_unavailable", "peer_id": resolved.peer_id}
+            self._operations.fail(operation_id, state="unavailable", error=error)
+            raise ExecutorAcquisitionUnavailableError(
+                "release_handle_unavailable",
+                operation_id=operation_id,
+                assigned_peer_id=resolved.peer_id,
+                error=error,
+            )
         self._operations.start_attempt(
             operation_id,
             strategy="assigned_peer",
-            detail={"peer_id": resolved.peer_id},
+            detail={"peer_id": resolved.peer_id, "release_handle": release_handle},
         )
         self._operations.complete(
             operation_id,
             strategy="assigned_peer",
-            result={"peer_id": resolved.peer_id, "runtime_binding": runtime_binding},
+            result={
+                "peer_id": resolved.peer_id,
+                "runtime_binding": runtime_binding,
+                "release_handle": release_handle,
+            },
         )
         return ExecutorAcquisition(
             peer=resolved,
             strategy="assigned_peer",
             operation_id=operation_id,
             runtime_binding=runtime_binding,
+            release_handle=release_handle,
         )
+
+    async def release_executor_for_work(
+        self,
+        work: TrackedWork,
+        *,
+        terminal_reason: str,
+    ) -> dict[str, Any]:
+        """Release the executor acquired for the current job attempt.
+
+        Release is idempotent: a missing or already-dead pane is recorded as an
+        already-released result, while a live mismatched peer fails closed.
+        """
+
+        runner = (work.provenance or {}).get("runner") or {}
+        attempt_id = runner.get("current_attempt_id")
+        attempts = list(runner.get("attempts") or [])
+        attempt = next(
+            (
+                item for item in attempts
+                if isinstance(item, dict) and item.get("attempt_id") == attempt_id
+            ),
+            None,
+        )
+        acquisition = (attempt or {}).get("acquisition") or {}
+        release_handle = acquisition.get("release_handle")
+        if not isinstance(release_handle, dict):
+            return {
+                "status": "skipped",
+                "reason": "no_release_handle",
+                "terminal_reason": terminal_reason,
+            }
+        if release_handle.get("released_at"):
+            return {
+                **release_handle,
+                "status": "already_released",
+                "terminal_reason": terminal_reason,
+            }
+
+        operation = self._operations.create(
+            kind="session.release_executor",
+            target={
+                "work_id": work.work_id,
+                "attempt_id": attempt_id,
+                "terminal_reason": terminal_reason,
+                "release_handle": release_handle,
+            },
+            provenance={"acquire_operation_id": release_handle.get("operation_id")},
+        )
+        self._operations.start_attempt(
+            operation.operation_id,
+            strategy="kill_pane",
+            detail={"release_handle": release_handle},
+        )
+
+        pane_id = release_handle.get("pane_id")
+        peer_id = release_handle.get("peer_id")
+        if not isinstance(pane_id, str) or not pane_id:
+            error = {"reason": "missing_pane_id", "peer_id": peer_id}
+            self._operations.fail(operation.operation_id, strategy="kill_pane", error=error)
+            return {
+                "status": "failed",
+                "reason": "missing_pane_id",
+                "operation_id": operation.operation_id,
+                "terminal_reason": terminal_reason,
+                "reap_error": error,
+            }
+
+        live_peer = await self._registry.get_peer(str(peer_id)) if peer_id else None
+        if live_peer is not None and live_peer.pane_id and live_peer.pane_id != pane_id:
+            error = {
+                "reason": "release_handle_mismatch",
+                "peer_id": peer_id,
+                "expected_pane_id": pane_id,
+                "actual_pane_id": live_peer.pane_id,
+            }
+            self._operations.fail(operation.operation_id, strategy="kill_pane", error=error)
+            return {
+                "status": "failed",
+                "reason": "release_handle_mismatch",
+                "operation_id": operation.operation_id,
+                "terminal_reason": terminal_reason,
+                "reap_error": error,
+            }
+
+        pane_was_live = probe_tmux_pane(pane_id) is not None
+        killed = kill_pane(pane_id)
+        if killed:
+            forget_spawn_ownership(pane_id)
+            if peer_id:
+                await self._registry.unregister_peer(str(peer_id))
+            result = {
+                "status": "released",
+                "reason": "pane_killed",
+                "operation_id": operation.operation_id,
+                "terminal_reason": terminal_reason,
+                "peer_id": peer_id,
+                "pane_id": pane_id,
+                "released_at": now_iso(),
+            }
+            self._operations.complete(
+                operation.operation_id,
+                strategy="kill_pane",
+                result=result,
+            )
+            return result
+
+        if pane_was_live:
+            error = {
+                "reason": "kill_failed",
+                "peer_id": peer_id,
+                "pane_id": pane_id,
+            }
+            self._operations.fail(operation.operation_id, strategy="kill_pane", error=error)
+            return {
+                "status": "failed",
+                "reason": "kill_failed",
+                "operation_id": operation.operation_id,
+                "terminal_reason": terminal_reason,
+                "peer_id": peer_id,
+                "pane_id": pane_id,
+                "reap_error": error,
+            }
+
+        result = {
+            "status": "already_released",
+            "reason": "pane_not_live",
+            "operation_id": operation.operation_id,
+            "terminal_reason": terminal_reason,
+            "peer_id": peer_id,
+            "pane_id": pane_id,
+            "released_at": now_iso(),
+        }
+        forget_spawn_ownership(pane_id)
+        if live_peer is not None and peer_id:
+            await self._registry.unregister_peer(str(peer_id))
+        self._operations.complete(
+            operation.operation_id,
+            strategy="kill_pane",
+            result=result,
+        )
+        return result
 
     async def _find_live_peer(
         self,
@@ -434,10 +637,23 @@ class SessionControlService:
         peer: Peer,
         *,
         source: str,
+        operation_id: str | None = None,
+        process_scope: str | None = None,
+        continuity: str | None = None,
     ) -> dict[str, Any]:
         binding = self.runtime_binding_for_peer(peer, work=work)
         binding["source"] = source
         binding["recorded_at"] = now_iso()
+        if work.source_id:
+            binding["source_id"] = work.source_id
+        if work.source_kind:
+            binding["source_kind"] = work.source_kind
+        if operation_id:
+            binding["acquired_by_operation_id"] = operation_id
+        if process_scope:
+            binding["process_scope"] = process_scope
+        if continuity:
+            binding["continuity"] = continuity
         if self._calendar is not None and work.source_kind == "calendar" and work.source_id:
             self._calendar.update_runtime_binding(work.source_id, binding=binding)
         return binding
@@ -498,6 +714,36 @@ class SessionControlService:
             if isinstance(value, str) and value:
                 return value
         return None
+
+    @staticmethod
+    def _execution_policy(work: TrackedWork) -> dict[str, str]:
+        execution = (work.request or {}).get("execution") or {}
+        process_scope = str(execution.get("process_scope") or "persistent")
+        continuity = str(execution.get("continuity") or "resume")
+        return {"process_scope": process_scope, "continuity": continuity}
+
+    @staticmethod
+    def _release_handle_for_peer(
+        peer: Peer,
+        *,
+        process_scope: str,
+        operation_id: str,
+        strategy: str,
+    ) -> dict[str, Any] | None:
+        if process_scope != "per_fire":
+            return None
+        if not peer.pane_id:
+            return None
+        return {
+            "kind": "tmux_pane",
+            "peer_id": peer.peer_id,
+            "display_name": peer.display_name,
+            "pane_id": peer.pane_id,
+            "tmux_session": peer.tmux_session,
+            "operation_id": operation_id,
+            "strategy": strategy,
+            "created_at": now_iso(),
+        }
 
     @staticmethod
     def _normalize_path(path: str | None) -> str:
