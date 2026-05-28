@@ -198,7 +198,7 @@ def _merge_execution_request(
         execution["process_scope"] = process_scope
     continuity = request.continuity or execution.get("continuity")
     if continuity is None and process_scope == "per_fire":
-        continuity = "resume"
+        continuity = "resume" if request.cron else "fresh"
     if continuity is not None:
         if continuity not in {"resume", "fresh"}:
             raise HTTPException(

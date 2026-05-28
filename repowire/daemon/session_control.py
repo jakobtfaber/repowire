@@ -736,7 +736,7 @@ class SessionControlService:
             process_scope = "per_fire"
         continuity = execution.get("continuity")
         if continuity is None and process_scope == "per_fire":
-            continuity = "resume"
+            continuity = "resume" if work.source_kind == "calendar" else "fresh"
         continuity = str(continuity or "resume")
         return {"process_scope": process_scope, "continuity": continuity}
 

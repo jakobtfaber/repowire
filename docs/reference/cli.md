@@ -159,12 +159,13 @@ creation. Existing child jobs are not cancelled automatically. Recurring Codex
 jobs preserve the latest observed runtime binding for the same calendar/path
 and can launch `codex resume <runtime-session-id>` when compatible resume
 metadata exists; otherwise the runner falls back to normal spawn behavior.
-Unassigned path/backend jobs default to `process_scope=per_fire` and
-`continuity=resume`: each run uses a short-lived executor process, terminal
-completion releases that process, and later runs can use the backend-native
-runtime session id when available. Pass `--continuity fresh` to start without
-backend-native resume, or `--process-scope persistent` for the older live-peer
-reuse behavior.
+Unassigned path/backend jobs default to `process_scope=per_fire`: each run uses
+a short-lived executor process and terminal completion releases that process.
+One-shot jobs default to `continuity=fresh`; recurring jobs default to
+`continuity=resume` so the next fire uses the backend-native runtime session id
+when available. Pass `--continuity fresh` on recurring jobs to start each fire
+without backend-native resume, or `--process-scope persistent` for the older
+live-peer reuse behavior.
 
 Use `--assigned-peer` for an exact peer id/name. Ambiguous display names are
 rejected before persistence. Without an assigned peer, pass `--path` and

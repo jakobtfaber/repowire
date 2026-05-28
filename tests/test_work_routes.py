@@ -186,7 +186,7 @@ async def test_jobs_create_path_backend_defaults_to_per_fire(env) -> None:
     execution = created.json()["status"]["request"]["execution"]
     assert execution["target"] == {"path": "/tmp/brief", "backend": "codex"}
     assert execution["process_scope"] == "per_fire"
-    assert execution["continuity"] == "resume"
+    assert execution["continuity"] == "fresh"
 
 
 async def test_jobs_create_assigned_peer_keeps_persistent_default(env) -> None:
