@@ -94,14 +94,17 @@ async def notify_session(
     state = get_app_state()
     resolution = await _resolve_or_http(state, repowire_session_id)
     if not resolution.has_active_executor or resolution.executor is None:
+        resume_status, capability, message = resume_capability_for(resolution)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "error": "session_executor_unavailable",
                 "repowire_session_id": repowire_session_id,
                 "session_status": resolution.binding.status,
+                "status": resume_status,
                 "executor_peer_id": resolution.executor_peer_id,
-                "capability": "unsupported",
+                "capability": capability,
+                "message": message,
             },
         )
 

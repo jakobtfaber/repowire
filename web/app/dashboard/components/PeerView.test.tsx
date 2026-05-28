@@ -748,9 +748,9 @@ describe("PeerView session controls", () => {
       />,
     );
 
-    expect(await screen.findByText("ready to nudge")).toBeInTheDocument();
-    expect(screen.getByText("Send a nudge to the agent currently running this session.")).toBeInTheDocument();
-    const input = screen.getByPlaceholderText("nudge alice's active session...");
+    expect(await screen.findByText("running agent")).toBeInTheDocument();
+    expect(screen.getByText("This durable session has a running agent attached, so nudges can be sent now.")).toBeInTheDocument();
+    const input = screen.getByPlaceholderText("nudge alice's running agent...");
     fireEvent.change(input, { target: { value: "status please" } });
     fireEvent.click(screen.getByLabelText("Send session nudge"));
 
@@ -858,8 +858,8 @@ describe("PeerView session controls", () => {
     );
 
     expect(await screen.findByText("not resumable")).toBeInTheDocument();
-    expect(screen.getByText("This session is not running and cannot be resumed by this backend.")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("active session unavailable")).toBeDisabled();
+    expect(screen.getByText("This durable session has no running agent and no supported resume path yet.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("nudges need a running agent")).toBeDisabled();
     expect(screen.getByLabelText("Send session nudge")).toBeDisabled();
     expect(await screen.findByText(/no messages with alice/i)).toBeInTheDocument();
 
@@ -876,8 +876,52 @@ describe("PeerView session controls", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByText("no active session")).toBeInTheDocument();
-    expect(screen.getByText("Select a session with a running agent to send it a nudge.")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("active session unavailable")).toBeDisabled();
+    expect(screen.getByText("no selected session")).toBeInTheDocument();
+    expect(screen.getByText("Select a session; nudges require a running agent attached to it.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("nudges need a running agent")).toBeDisabled();
+  });
+
+  it("explains resumable sessions without a running agent", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
+      if (url.includes("/transcript")) {
+        return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
+      }
+      if (url.includes("/controls/resume")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            repowire_session_id: "session-a",
+            session_status: "resumable",
+            status: "resume_available",
+            capability: "supported",
+            message: "Backend resume is available for this runtime session.",
+            backend: "codex",
+            resume_capability: { supported: true },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <PeerView
+        peer={{ ...PEER, backend: "codex", metadata: { hook_session_id: "session-a" } }}
+        events={[]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("resume available")).toBeInTheDocument();
+    expect(
+      screen.getByText("This durable session has resume metadata, but no running agent is attached right now."),
+    ).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("nudges need a running agent")).toBeDisabled();
+    expect(screen.getByLabelText("Send session nudge")).toBeDisabled();
   });
 });

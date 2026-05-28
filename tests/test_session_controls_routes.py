@@ -171,6 +171,39 @@ async def test_session_notify_targets_active_executor(tmp_path):
     ]
 
 
+async def test_session_notify_reports_resume_available_when_no_executor(tmp_path):
+    cfg = Config(experiments={"sqlite_state": True})
+    app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
+
+    async with app.router.lifespan_context(app):
+        binding = app.state.session_binding_store.upsert_observation(
+            peer_id=None,
+            backend="codex",
+            project_path="/repo",
+            runtime_session_id="codex-runtime-1",
+            runtime_source_uri="codex-rollout:repo/codex-runtime-1.jsonl",
+            resume_capability={
+                "supported": True,
+                "strategy": "codex_resume",
+                "runtime_session_id_arg": "codex-runtime-1",
+            },
+            status="resumable",
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                f"/sessions/{binding.repowire_session_id}/controls/notify",
+                json={"from_peer": "dashboard", "text": "continue this work"},
+            )
+
+    assert response.status_code == 409
+    body = response.json()["detail"]
+    assert body["error"] == "session_executor_unavailable"
+    assert body["status"] == "resume_available"
+    assert body["capability"] == "supported"
+    assert "Backend resume is available" in body["message"]
+
+
 async def test_session_controls_report_missing_session_with_legacy_flag_false(tmp_path):
     cfg = Config(experiments={"sqlite_state": False})
     app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")

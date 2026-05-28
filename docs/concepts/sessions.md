@@ -11,7 +11,7 @@ Peer-first routing works well for live asks and notifications, but long-running 
 The stable surface is still peer-oriented: peers, circles, asks, notifications, broadcasts, schedules, and jobs. The dashboard already presents selected peer/session timeline views where transcript history is available, and the first session-targeted routes resolve session bindings to live executors or explicit resume-capability status.
 
 All Repowire sessions should be treated as durable context. The dashboard's
-active-session nudge panel is narrower: it can only send a nudge when that
+session nudge panel is narrower: it can only send a nudge when that
 durable session currently has a running agent attached. If the session has
 history but no running agent, the timeline can still be useful, but nudge
 buttons are disabled until there is an active agent or a future resume path.

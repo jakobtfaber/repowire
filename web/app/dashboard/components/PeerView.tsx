@@ -890,24 +890,24 @@ function SessionCommandPanel({
 
   const canNotifySession = Boolean(activeSessionId && resumeState?.capability === "active_executor");
   const resumeLabel = !activeSessionId
-    ? "no active session"
+    ? "no selected session"
     : loadingCapability
     ? "checking session..."
     : resumeState?.capability === "active_executor"
-    ? "ready to nudge"
+    ? "running agent"
     : resumeState?.capability === "supported"
-    ? "not running"
+    ? "resume available"
     : resumeState
     ? "not resumable"
-    : "active session unavailable";
+    : "session unavailable";
   const controlMessage = !activeSessionId
-    ? "Select a session with a running agent to send it a nudge."
+    ? "Select a session; nudges require a running agent attached to it."
     : resumeState?.capability === "active_executor"
-    ? "Send a nudge to the agent currently running this session."
+    ? "This durable session has a running agent attached, so nudges can be sent now."
     : resumeState?.capability === "supported"
-    ? "This session is not running now; nudges need an active agent."
+    ? "This durable session has resume metadata, but no running agent is attached right now."
     : resumeState?.capability === "unsupported"
-    ? "This session is not running and cannot be resumed by this backend."
+    ? "This durable session has no running agent and no supported resume path yet."
     : capabilityError === "Not Found" || capabilityError === "Error 404"
     ? "No session binding was found for the selected message."
     : capabilityError || "Checking whether this session has a running agent.";
@@ -964,7 +964,7 @@ function SessionCommandPanel({
       <div className="rounded border border-border-faint bg-surface-container-low p-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-outline">
-            active session
+            session nudges
           </span>
           <span
             className={cn(
@@ -1011,7 +1011,7 @@ function SessionCommandPanel({
             onChange={(event) => setNotifyText(event.target.value)}
             disabled={!canNotifySession || notifyPending}
             rows={1}
-            placeholder={canNotifySession ? `nudge ${peerLabel(peer)}'s active session...` : "active session unavailable"}
+            placeholder={canNotifySession ? `nudge ${peerLabel(peer)}'s running agent...` : "nudges need a running agent"}
             className="max-h-20 min-h-8 flex-1 resize-none rounded border border-border-faint bg-surface-container-lowest px-2.5 py-1.5 font-mono text-xs text-on-surface outline-none placeholder:text-outline focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-50"
           />
           <button
