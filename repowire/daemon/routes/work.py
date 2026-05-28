@@ -182,7 +182,6 @@ def _merge_execution_request(
     process_scope = request.process_scope or execution.get("process_scope")
     if (
         process_scope is None
-        and request.cron
         and assigned_peer_id is None
         and target.get("path")
         and target.get("backend")
@@ -199,7 +198,7 @@ def _merge_execution_request(
         execution["process_scope"] = process_scope
     continuity = request.continuity or execution.get("continuity")
     if continuity is None and process_scope == "per_fire":
-        continuity = "resume" if request.cron else "fresh"
+        continuity = "resume"
     if continuity is not None:
         if continuity not in {"resume", "fresh"}:
             raise HTTPException(

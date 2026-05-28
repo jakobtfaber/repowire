@@ -21,10 +21,10 @@ Jobs are durable work records. They are useful when an orchestrator or human nee
 repowire jobs create "Daily brief" --path .repowire/agents/daily-brief --backend codex --cron "@daily" --prompt "Prepare the brief."
 ```
 
-For recurring path/backend jobs, each fire uses a short-lived executor process.
+For unassigned path/backend jobs, each run uses a short-lived executor process.
 `continuity=resume` keeps the backend-native runtime session id as the
-continuity handle for the next fire; `continuity=fresh` starts without that
-resume handle. The process is released after terminal job completion.
+continuity handle for later compatible runs; `continuity=fresh` starts without
+that resume handle. The process is released after terminal job completion.
 
 ## Related
 

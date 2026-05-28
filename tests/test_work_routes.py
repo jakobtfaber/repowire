@@ -171,6 +171,41 @@ async def test_jobs_create_with_cron_returns_recurring_calendar(env) -> None:
     assert body["calendar"]["execution"]["continuity"] == "resume"
 
 
+async def test_jobs_create_path_backend_defaults_to_per_fire(env) -> None:
+    created = await env.post(
+        "/jobs",
+        json={
+            "title": "Manual brief",
+            "prompt": "write the brief",
+            "path": "/tmp/brief",
+            "backend": "codex",
+        },
+    )
+
+    assert created.status_code == 200
+    execution = created.json()["status"]["request"]["execution"]
+    assert execution["target"] == {"path": "/tmp/brief", "backend": "codex"}
+    assert execution["process_scope"] == "per_fire"
+    assert execution["continuity"] == "resume"
+
+
+async def test_jobs_create_assigned_peer_keeps_persistent_default(env) -> None:
+    created = await env.post(
+        "/jobs",
+        json={
+            "title": "Manual assigned",
+            "prompt": "write the brief",
+            "assigned_peer_id": "repow-default-worker",
+        },
+    )
+
+    assert created.status_code == 200
+    execution = created.json()["status"]["request"]["execution"]
+    assert execution["target"] == {"assigned_peer_id": "repow-default-worker"}
+    assert "process_scope" not in execution
+    assert "continuity" not in execution
+
+
 async def test_jobs_create_rejects_due_at_and_cron_together(env) -> None:
     created = await env.post(
         "/jobs",

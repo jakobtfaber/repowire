@@ -16,10 +16,10 @@ The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and client
 ## Jobs Execution Policy
 
 `POST /jobs` accepts `process_scope` and `continuity` for path/backend durable
-jobs. Recurring path/backend jobs default to `process_scope=per_fire` and
-`continuity=resume`, so each fire uses a short-lived executor process and the
-next fire resumes backend-native runtime context when a runtime session id is
-available. Use `continuity=fresh` to avoid backend resume.
+jobs. Unassigned path/backend jobs default to `process_scope=per_fire` and
+`continuity=resume`, so each run uses a short-lived executor process and later
+runs can resume backend-native runtime context when a compatible runtime session
+id is available. Use `continuity=fresh` to avoid backend resume.
 
 ## Jobs List Views
 

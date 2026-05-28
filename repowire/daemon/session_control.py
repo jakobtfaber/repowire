@@ -726,7 +726,6 @@ class SessionControlService:
         target = execution.get("target") or {}
         if (
             process_scope is None
-            and work.source_kind == "calendar"
             and not (target.get("assigned_peer_id") or work.assigned_peer_id)
             and target.get("path")
             and target.get("backend")

@@ -398,7 +398,9 @@ async def test_manual_run_future_due_dispatches_once_and_records_correlation(tmp
 
 
 @pytest.mark.anyio
-async def test_path_backend_job_reuses_live_matching_peer_without_spawning(tmp_path):
+async def test_path_backend_job_persistent_policy_reuses_live_matching_peer_without_spawning(
+    tmp_path,
+):
     _cfg, registry, db, store, _calendar, _session_bindings, delivery, spawn, runner = _env(
         tmp_path
     )
@@ -431,6 +433,7 @@ async def test_path_backend_job_reuses_live_matching_peer_without_spawning(tmp_p
         circle="default",
         request={
             "execution": {
+                "process_scope": "persistent",
                 "prompt": {"body": "prepare brief", "source": "inline"},
                 "target": {"path": worker_path, "backend": "codex"},
                 "delivery": {"kind": "ask"},
@@ -450,6 +453,62 @@ async def test_path_backend_job_reuses_live_matching_peer_without_spawning(tmp_p
     assert runtime_binding["runtime_session_id"] == "codex-session-1"
     assert runtime_binding["resume_capability"]["strategy"] == "codex_resume"
     assert attempt["tmux"] == {"tmux_session": "default:daily-email-brief", "pane_id": "%42"}
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_path_backend_job_defaults_to_per_fire(tmp_path):
+    _cfg, registry, db, store, _calendar, _session_bindings, delivery, spawn, runner = _env(
+        tmp_path
+    )
+    worker_path = str(tmp_path / "daily-email-brief")
+    live_peer_id = await _register_peer(
+        registry,
+        peer_id="repow-default-old-live",
+        backend=AgentType.CODEX,
+        path=worker_path,
+        pane_id="%42",
+        tmux_session="default:old-live",
+        metadata={"hook_session_id": "codex-session-live"},
+        status=PeerStatus.ONLINE,
+    )
+    work = store.create(
+        title="daily brief",
+        circle="default",
+        request={"execution": {"target": {"path": worker_path, "backend": "codex"}}},
+    )
+    registered: dict[str, str] = {}
+
+    async def register_after_spawn() -> None:
+        while not spawn.calls:
+            await asyncio.sleep(0.01)
+        peer_id, _name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CODEX,
+            path=worker_path,
+            peer_id="repow-default-per-fire",
+            pane_id=spawn.pane_id,
+            tmux_session="default:daily-email-brief",
+            metadata={"hook_session_id": "codex-session-new"},
+            initial_status=PeerStatus.ONLINE,
+            role=PeerRole.AGENT,
+        )
+        registered["peer_id"] = peer_id
+
+    task = asyncio.create_task(register_after_spawn())
+    try:
+        result = await runner.run_job(work.work_id)
+    finally:
+        await task
+
+    assert result.state == "delivered"
+    assert len(spawn.calls) == 1
+    assert delivery.calls[0]["to_peer"] == registered["peer_id"]
+    assert delivery.calls[0]["to_peer"] != live_peer_id
+    attempt = result.provenance["runner"]["attempts"][0]
+    assert attempt["acquisition"]["strategy"] == "spawned_peer"
+    assert attempt["acquisition"]["release_handle"]["pane_id"] == spawn.pane_id
     db.close()
     cleanup_deps()
 
