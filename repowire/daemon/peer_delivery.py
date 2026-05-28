@@ -87,6 +87,27 @@ class PeerDeliveryService:
     def _session_id_for_peer(self, peer: Any | None) -> str | None:
         return resolve_repowire_session_id(self._session_binding_store, peer=peer)
 
+    async def _mark_transport_unreachable(
+        self,
+        target: Any,
+        *,
+        operation: str,
+        error: TransportError,
+    ) -> None:
+        metadata = getattr(target, "metadata", None)
+        if isinstance(metadata, dict) and metadata.get("repowire_cli_fallback"):
+            return
+        peer_id = getattr(target, "peer_id", None)
+        if not peer_id:
+            return
+        await self._registry.mark_offline(peer_id)
+        logger.info(
+            "Marked peer %s offline after %s transport failure: %s",
+            peer_id,
+            operation,
+            error,
+        )
+
     async def query(
         self,
         *,
@@ -209,7 +230,12 @@ class PeerDeliveryService:
         )
         try:
             transport_result = await self._router().send_notify(envelope)
-        except TransportError:
+        except TransportError as exc:
+            await self._mark_transport_unreachable(
+                target,
+                operation="notify",
+                error=exc,
+            )
             if self._queued_delivery_store is None:
                 raise
             queued = self._queued_delivery_store.enqueue(
@@ -315,21 +341,29 @@ class PeerDeliveryService:
         from_session_id = self._session_id_for_peer(from_obj)
         to_session_id = self._session_id_for_peer(target)
 
-        await self._router().send_ask(
-            AskEnvelope(
-                from_peer_id=from_peer_id,
-                from_peer_name=from_peer_name,
-                target=target,
-                text=text,
-                correlation_id=correlation_id,
-                reply_to=reply_to,
-                intended_recipient_name=to_peer,
-                attachments=tuple(attachments or ()),
-                from_repowire_session_id=from_session_id,
-                to_repowire_session_id=to_session_id,
-            ),
-            on_acp_complete=completion,
-        )
+        try:
+            await self._router().send_ask(
+                AskEnvelope(
+                    from_peer_id=from_peer_id,
+                    from_peer_name=from_peer_name,
+                    target=target,
+                    text=text,
+                    correlation_id=correlation_id,
+                    reply_to=reply_to,
+                    intended_recipient_name=to_peer,
+                    attachments=tuple(attachments or ()),
+                    from_repowire_session_id=from_session_id,
+                    to_repowire_session_id=to_session_id,
+                ),
+                on_acp_complete=completion,
+            )
+        except TransportError as exc:
+            await self._mark_transport_unreachable(
+                target,
+                operation="ask",
+                error=exc,
+            )
+            raise
 
     async def open_scheduled_ask(
         self,

@@ -7,6 +7,7 @@ import pytest
 from repowire.daemon.deps import cleanup_deps
 from repowire.daemon.routes import asks, peers
 from repowire.daemon.websocket_transport import TransportError
+from repowire.protocol.peers import PeerStatus
 
 from .conftest import async_client_for, make_daemon_app
 
@@ -77,7 +78,7 @@ class TestAsk:
         assert r.status_code == 404
 
     async def test_transport_error_returns_503_and_rolls_back(self, env):
-        client, _, at, msg_router = env
+        client, registry, at, msg_router = env
         await _register_peer(client, "alice")
         bob = await _register_peer(client, "bob")
         msg_router.send_ask.side_effect = TransportError("No connection")
@@ -88,9 +89,12 @@ class TestAsk:
         assert r.status_code == 503
         # No phantom open ask should remain
         assert at.open_count() == 0
+        peer = await registry.get_peer(bob)
+        assert peer is not None
+        assert peer.status == PeerStatus.OFFLINE
 
     async def test_cli_polling_peer_keeps_ask_when_transport_absent(self, env):
-        client, _, at, msg_router = env
+        client, registry, at, msg_router = env
         await _register_peer(client, "alice")
         r = await client.post("/peers", json={
             "name": "agy",
@@ -112,6 +116,9 @@ class TestAsk:
         ask = await at.get(cid)
         assert ask is not None
         assert not ask.closed
+        peer = await registry.get_peer(agy)
+        assert peer is not None
+        assert peer.status == PeerStatus.ONLINE
         pending = await client.get("/asks/pending", params={"peer_id": ask.to_peer_id})
         assert pending.status_code == 200
         assert pending.json()["asks"][0]["correlation_id"] == cid

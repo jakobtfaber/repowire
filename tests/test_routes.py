@@ -10,6 +10,7 @@ from repowire.config.models import AgentType, Config
 from repowire.daemon.deps import cleanup_deps, get_peer_registry
 from repowire.daemon.routes import health, messages, peers
 from repowire.daemon.routes import spawn as spawn_routes
+from repowire.protocol.peers import PeerStatus
 
 from .conftest import async_client_for, make_daemon_app
 
@@ -1172,6 +1173,9 @@ class TestNotify:
         assert body["reason"] == "no_live_transport"
         assert body["delivered"] is False
         assert body["queued"] is False
+        peer = await registry.get_peer(recipient_name)
+        assert peer is not None
+        assert peer.status == PeerStatus.OFFLINE
 
 
 # -- Broadcast --
