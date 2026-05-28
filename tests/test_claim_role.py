@@ -173,6 +173,36 @@ async def test_claim_role_route_returns_clear_conflict(
     assert "already held" in resp.json()["detail"]
 
 
+@pytest.mark.asyncio
+async def test_same_workspace_temp_peer_cannot_claim_over_fresh_orchestrator(
+    client: tuple[AsyncClient, PeerRegistry],
+    tmp_path: Path,
+) -> None:
+    http_client, registry = client
+    orch_dir = tmp_path / "orchestrator"
+    orch_dir.mkdir()
+    real_id = await _register(
+        registry,
+        path=str(orch_dir),
+        role=PeerRole.ORCHESTRATOR,
+    )
+    temp_id = await _register(registry, path=str(orch_dir))
+
+    resp = await http_client.post(
+        "/peers/claim-role",
+        json={"role": "orchestrator", "peer_name": temp_id},
+    )
+
+    assert resp.status_code == 409
+    assert "already held" in resp.json()["detail"]
+    active = await registry.get_orchestrator("ops")
+    assert active is not None
+    assert active.peer_id == real_id
+    temp = await registry.get_peer(temp_id)
+    assert temp is not None
+    assert temp.role == PeerRole.AGENT
+
+
 def _mock_client(monkeypatch: pytest.MonkeyPatch, response: MagicMock) -> MagicMock:
     client = MagicMock()
     client.post.return_value = response

@@ -479,6 +479,50 @@ async def test_non_default_circle_does_not_collapse_other_circle_peer(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_same_workspace_temp_peer_does_not_replace_fresh_orchestrator(tmp_path):
+    """A split-pane temp peer in the orchestrator workspace must not become
+    the active orchestrator while the real holder is fresh."""
+    registry = _make_registry(tmp_path)
+    registry._config.daemon.heartbeat_interval = 30
+    orch_path = str(tmp_path / "orchestrator")
+    Path(orch_path).mkdir()
+    real_id, real_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CODEX,
+        path=orch_path,
+        pane_id="%1",
+        role=PeerRole.ORCHESTRATOR,
+        machine="m",
+    )
+
+    temp_id, temp_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CODEX,
+        path=orch_path,
+        pane_id="%2",
+        role=PeerRole.AGENT,
+        machine="m",
+    )
+
+    assert temp_id != real_id
+    assert temp_name != real_name
+    active = await registry.get_orchestrator("default")
+    assert active is not None
+    assert active.peer_id == real_id
+
+    real = await registry.get_peer(real_id)
+    temp = await registry.get_peer(temp_id)
+    assert real is not None
+    assert temp is not None
+    assert real.role == PeerRole.ORCHESTRATOR
+    assert real.pane_id == "%1"
+    assert temp.role == PeerRole.AGENT
+    assert temp.pane_id == "%2"
+    assert registry.get_mapping(real_id).role == PeerRole.ORCHESTRATOR
+    assert registry.get_mapping(temp_id).role == PeerRole.AGENT
+
+
+@pytest.mark.asyncio
 async def test_description_update_persists_to_mapping(tmp_path):
     """update_description writes through to the SessionMapping for durability."""
     registry = _make_registry(tmp_path)
