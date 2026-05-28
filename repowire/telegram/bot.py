@@ -229,9 +229,12 @@ def _orchestrator_peer_from_list(
     ]
     role_matches = [p for p in active if p.get("role") == "orchestrator"]
     heuristic_matches = [
-        p for p in active
-        if str(p.get("display_name") or p.get("name") or "").startswith("orchestrator-")
-        or Path(str(p.get("path") or "")).name == "orchestrator"
+        p for p in peers
+        if p.get("circle", circle) == circle
+        and (
+            str(p.get("display_name") or p.get("name") or "").startswith("orchestrator-")
+            or Path(str(p.get("path") or "")).name == "orchestrator"
+        )
     ]
     for peer in role_matches + heuristic_matches:
         target = peer.get("peer_id") or peer.get("display_name") or peer.get("name")

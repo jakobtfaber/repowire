@@ -124,6 +124,42 @@ async def test_falls_back_to_orchestrator_named_workspace_peer(
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_fallback_prefers_workspace_identity_even_if_status_stale(
+    bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_peers: list[dict[str, Any]] = [
+        {
+            "peer_id": "repow-claude",
+            "name": "orchestrator-claude-code",
+            "display_name": "orchestrator-claude-code",
+            "role": "agent",
+            "status": "offline",
+            "circle": "default",
+            "path": "/home/user/.repowire/orchestrator",
+        },
+        {
+            "peer_id": "repow-codex",
+            "name": "orchestrator-codex",
+            "display_name": "orchestrator-codex",
+            "role": "agent",
+            "status": "online",
+            "circle": "default",
+            "path": "/home/user/.repowire/orchestrator",
+        },
+    ]
+    route = AsyncMock()
+    route.return_value = SimpleNamespace(status_code=200, json=lambda: {"present": False})
+    monkeypatch.setattr(bot._http, "get", route)
+    monkeypatch.setattr(
+        bot, "_fetch_online_peers", AsyncMock(return_value=fake_peers),
+    )
+
+    await bot._seed_default_target_from_orchestrator()
+
+    assert bot._reply_target == "repow-claude"
+
+
+@pytest.mark.asyncio
 async def test_stale_orchestrator_target_normalizes_before_send(
     bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
