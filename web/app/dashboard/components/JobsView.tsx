@@ -6,9 +6,17 @@ import type { JobStatus, JobsResponse, RecurringJobStatus } from "../types";
 type JobItem =
   | { type: "work"; id: string; status: JobStatus }
   | { type: "recurring"; id: string; status: RecurringJobStatus };
+type JobFilter = "all" | "attention" | "active" | "recurring" | "closed";
 
 const terminalStates = new Set(["completed", "failed", "cancelled", "expired", "unavailable"]);
 const retryableTerminalStates = new Set(["failed", "unavailable"]);
+const jobFilters: { id: JobFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "attention", label: "Attention" },
+  { id: "active", label: "Active" },
+  { id: "recurring", label: "Recurring" },
+  { id: "closed", label: "Closed" },
+];
 
 function itemTitle(item: JobItem): string {
   return item.status.title || item.id;
@@ -53,6 +61,24 @@ function canCancel(item: JobItem): boolean {
   return !terminalStates.has(itemState(item));
 }
 
+function isActiveItem(item: JobItem): boolean {
+  const state = itemState(item);
+  if (item.type === "recurring") return state !== "cancelled";
+  return !terminalStates.has(state);
+}
+
+function isAttentionItem(item: JobItem): boolean {
+  return item.type === "work" && retryableTerminalStates.has(itemState(item));
+}
+
+function matchesFilter(item: JobItem, filter: JobFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "attention") return isAttentionItem(item);
+  if (filter === "active") return isActiveItem(item);
+  if (filter === "recurring") return item.type === "recurring";
+  return !isActiveItem(item) && !isAttentionItem(item);
+}
+
 export function JobsView({
   apiBase,
   refreshSignal,
@@ -64,6 +90,7 @@ export function JobsView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<JobFilter>("all");
   const [detailById, setDetailById] = useState<Record<string, JobStatus | RecurringJobStatus>>({});
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -110,14 +137,17 @@ export function JobsView({
     });
   }, [jobs]);
 
-  const activeItems = items.filter((item) => {
-    const state = itemState(item);
-    if (item.type === "recurring") return state !== "cancelled";
-    return !terminalStates.has(state);
-  });
-  const attentionItems = items.filter((item) => item.type === "work" && retryableTerminalStates.has(itemState(item)));
-  const closedItems = items.filter((item) => !activeItems.includes(item) && !attentionItems.includes(item));
-  const selected = items.find((item) => item.id === selectedId) ?? activeItems[0] ?? attentionItems[0] ?? closedItems[0] ?? null;
+  const activeCount = items.filter(isActiveItem).length;
+  const attentionCount = items.filter(isAttentionItem).length;
+  const closedCount = items.length - activeCount - attentionCount;
+  const filteredItems = useMemo(
+    () => items.filter((item) => matchesFilter(item, filter)),
+    [filter, items],
+  );
+  const activeItems = filteredItems.filter(isActiveItem);
+  const attentionItems = filteredItems.filter(isAttentionItem);
+  const closedItems = filteredItems.filter((item) => !isActiveItem(item) && !isAttentionItem(item));
+  const selected = filteredItems.find((item) => item.id === selectedId) ?? activeItems[0] ?? attentionItems[0] ?? closedItems[0] ?? null;
   const selectedDetailId = selected?.id ?? null;
   const selectedDetail = selected ? detailById[selected.id] : null;
   const displaySelected: JobItem | null = selected && selectedDetail
@@ -128,10 +158,16 @@ export function JobsView({
   const selectedHasDetail = selected ? Boolean(selectedDetail) : false;
 
   useEffect(() => {
-    if (selectedId && !items.some((item) => item.id === selectedId)) {
-      setSelectedId(null);
+    const nextId = filteredItems[0]?.id ?? null;
+    if (selectedId && filteredItems.some((item) => item.id === selectedId)) {
+      return;
     }
-  }, [items, selectedId]);
+    if (selectedId !== nextId) {
+      setSelectedId(nextId);
+      setActionError(null);
+      setDetailError(null);
+    }
+  }, [filteredItems, selectedId]);
 
   const selectJob = useCallback((id: string) => {
     setSelectedId(id);
@@ -199,10 +235,10 @@ export function JobsView({
           <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.22em] text-primary">JOBS / durable work</div>
           <h1 className="mt-1 font-headline text-2xl font-bold text-on-surface">tracked work</h1>
         </div>
-        <div className="flex items-center gap-2">
-          <JobMetric label="active" value={activeItems.length} />
-          <JobMetric label="attention" value={attentionItems.length} />
-          <JobMetric label="closed" value={closedItems.length} />
+        <div className="flex flex-wrap items-center gap-2">
+          <JobMetric label="active" value={activeCount} />
+          <JobMetric label="attention" value={attentionCount} />
+          <JobMetric label="closed" value={closedCount} />
           <button
             onClick={() => void fetchJobs()}
             aria-label="Refresh jobs"
@@ -223,6 +259,10 @@ export function JobsView({
             <EmptyState icon={<BriefcaseBusiness className="h-5 w-5" />} title="no jobs yet" detail="create one with repowire jobs create or an MCP job_create tool call" />
           ) : (
             <>
+              <JobFilterBar filter={filter} onChange={setFilter} />
+              {filteredItems.length === 0 && (
+                <EmptyState icon={<BriefcaseBusiness className="h-5 w-5" />} title="no matching jobs" detail="change the jobs filter to see more tracked work" />
+              )}
               <JobGroup title="active" items={activeItems} selectedId={selected?.id ?? null} onSelect={selectJob} />
               <JobGroup title="needs attention" items={attentionItems} selectedId={selected?.id ?? null} onSelect={selectJob} />
               <JobGroup title="closed" items={closedItems} selectedId={selected?.id ?? null} onSelect={selectJob} />
@@ -249,6 +289,29 @@ export function JobsView({
         </div>
       </div>
     </>
+  );
+}
+
+function JobFilterBar({ filter, onChange }: { filter: JobFilter; onChange: (filter: JobFilter) => void }) {
+  return (
+    <div className="flex flex-wrap gap-1 border-b border-border-faint px-3 py-2">
+      {jobFilters.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          onClick={() => onChange(option.id)}
+          aria-pressed={filter === option.id}
+          className={cn(
+            "h-7 rounded border px-2.5 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] transition-colors",
+            filter === option.id
+              ? "border-primary bg-primary/10 text-primary-fixed"
+              : "border-border-faint text-outline hover:bg-surface-container-high hover:text-on-surface",
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
   );
 }
 
