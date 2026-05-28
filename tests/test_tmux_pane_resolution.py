@@ -65,10 +65,32 @@ class TestPpidChainResolution:
         monkeypatch.setenv("TMUX_PANE", "%7")
         assert _tmux.get_pane_id() == "%7"
 
+    def test_ppid_chain_runs_without_tmux_env(self, monkeypatch):
+        monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.delenv("TMUX", raising=False)
+
+        def fake_run(cmd, **_kw):
+            if cmd[:2] == ["tmux", "list-panes"]:
+                return _completed("%1 1000\n%2 2000\n")
+            if cmd[:3] == ["ps", "-o", "ppid="]:
+                pid = int(cmd[-1])
+                return _completed({5000: "2000", 2000: "1"}.get(pid, "1"))
+            if cmd[:2] == ["tmux", "display-message"]:
+                raise AssertionError("display-message must stay guarded by TMUX env")
+            return _completed("", 1)
+
+        with patch.object(_tmux.os, "getppid", return_value=5000), \
+             patch.object(_tmux.subprocess, "run", side_effect=fake_run):
+            assert _tmux.get_pane_id() == "%2"
+
     def test_not_in_tmux_returns_none(self, monkeypatch):
         monkeypatch.delenv("TMUX_PANE", raising=False)
         monkeypatch.delenv("TMUX", raising=False)
-        assert _tmux.get_pane_id() is None
+
+        with patch.object(_tmux, "_resolve_pane_via_ppid_chain", return_value=None), \
+             patch.object(_tmux.subprocess, "run") as run:
+            assert _tmux.get_pane_id() is None
+            run.assert_not_called()
 
     def test_list_panes_failure_falls_through(self, monkeypatch):
         monkeypatch.setenv("TMUX", "x")

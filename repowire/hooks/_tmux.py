@@ -134,15 +134,15 @@ def get_pane_id() -> str | None:
     if pane_id:
         return pane_id
 
-    # Only attempt tmux queries if TMUX env var is set (proves we're inside a
-    # tmux session). Without this guard, we'd get a pane from an unrelated
-    # session.
-    if not os.environ.get("TMUX"):
-        return None
-
     pane_id = _resolve_pane_via_ppid_chain()
     if pane_id:
         return pane_id
+
+    # Only use focused-pane fallback if TMUX env var is set. The ppid-chain
+    # match above is unambiguous even when runtimes strip TMUX, but
+    # display-message without TMUX can return an unrelated focused pane.
+    if not os.environ.get("TMUX"):
+        return None
 
     try:
         result = subprocess.run(
