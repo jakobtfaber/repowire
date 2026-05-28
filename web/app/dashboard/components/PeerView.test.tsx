@@ -748,10 +748,11 @@ describe("PeerView session controls", () => {
       />,
     );
 
-    expect(await screen.findByText("active executor")).toBeInTheDocument();
-    const input = screen.getByPlaceholderText("notify active alice session...");
+    expect(await screen.findByText("ready to nudge")).toBeInTheDocument();
+    expect(screen.getByText("Send a nudge to the agent currently running this session.")).toBeInTheDocument();
+    const input = screen.getByPlaceholderText("nudge alice's active session...");
     fireEvent.change(input, { target: { value: "status please" } });
-    fireEvent.click(screen.getByLabelText("Notify active session"));
+    fireEvent.click(screen.getByLabelText("Send session nudge"));
 
     await waitFor(() => {
       expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/sessions/session-a/controls/notify"))).toBe(true);
@@ -856,9 +857,10 @@ describe("PeerView session controls", () => {
       />,
     );
 
-    expect(await screen.findByText("resume unsupported")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("session notify unavailable")).toBeDisabled();
-    expect(screen.getByLabelText("Notify active session")).toBeDisabled();
+    expect(await screen.findByText("not resumable")).toBeInTheDocument();
+    expect(screen.getByText("This session is not running and cannot be resumed by this backend.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("active session unavailable")).toBeDisabled();
+    expect(screen.getByLabelText("Send session nudge")).toBeDisabled();
     expect(await screen.findByText(/no messages with alice/i)).toBeInTheDocument();
 
     await act(async () => {
@@ -874,8 +876,8 @@ describe("PeerView session controls", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByText("no session selected")).toBeInTheDocument();
-    expect(screen.getByText("Controls appear after a session is selected from live or persisted history.")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("session notify unavailable")).toBeDisabled();
+    expect(screen.getByText("no active session")).toBeInTheDocument();
+    expect(screen.getByText("Select a session with a running agent to send it a nudge.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("active session unavailable")).toBeDisabled();
   });
 });

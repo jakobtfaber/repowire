@@ -890,19 +890,32 @@ function SessionCommandPanel({
 
   const canNotifySession = Boolean(activeSessionId && resumeState?.capability === "active_executor");
   const resumeLabel = !activeSessionId
-    ? "no session selected"
+    ? "no active session"
     : loadingCapability
     ? "checking session..."
     : resumeState?.capability === "active_executor"
-    ? "active executor"
+    ? "ready to nudge"
     : resumeState?.capability === "supported"
-    ? "resume metadata ready"
+    ? "not running"
     : resumeState
-    ? "resume unsupported"
-    : "session controls unavailable";
+    ? "not resumable"
+    : "active session unavailable";
   const controlMessage = !activeSessionId
-    ? "Controls appear after a session is selected from live or persisted history."
-    : resumeState?.message || capabilityError || "Session capability is loading.";
+    ? "Select a session with a running agent to send it a nudge."
+    : resumeState?.capability === "active_executor"
+    ? "Send a nudge to the agent currently running this session."
+    : resumeState?.capability === "supported"
+    ? "This session is not running now; nudges need an active agent."
+    : resumeState?.capability === "unsupported"
+    ? "This session is not running and cannot be resumed by this backend."
+    : capabilityError === "Not Found" || capabilityError === "Error 404"
+    ? "No session binding was found for the selected message."
+    : capabilityError || "Checking whether this session has a running agent.";
+  const templates = [
+    { label: "Status update", text: "Please send a quick status update." },
+    { label: "Checkpoint", text: "Checkpoint your current diff and next step." },
+    { label: "Continue", text: "Continue with the active task and report blockers." },
+  ];
 
   async function submitNotify() {
     const text = notifyText.trim();
@@ -951,7 +964,7 @@ function SessionCommandPanel({
       <div className="rounded border border-border-faint bg-surface-container-low p-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-outline">
-            session controls
+            active session
           </span>
           <span
             className={cn(
@@ -979,19 +992,15 @@ function SessionCommandPanel({
         </div>
 
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {[
-            "Please send a quick status update.",
-            "Checkpoint your current diff and next step.",
-            "Continue with the active task and report blockers.",
-          ].map((template) => (
+          {templates.map((template) => (
             <button
-              key={template}
+              key={template.label}
               type="button"
-              onClick={() => setNotifyText(template)}
+              onClick={() => setNotifyText(template.text)}
               disabled={!canNotifySession}
               className="rounded border border-border-faint px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-outline hover:bg-surface-container-high hover:text-on-surface disabled:opacity-40"
             >
-              {template.split(" ").slice(0, 2).join(" ")}
+              {template.label}
             </button>
           ))}
         </div>
@@ -1002,14 +1011,14 @@ function SessionCommandPanel({
             onChange={(event) => setNotifyText(event.target.value)}
             disabled={!canNotifySession || notifyPending}
             rows={1}
-            placeholder={canNotifySession ? `notify active ${peerLabel(peer)} session...` : "session notify unavailable"}
+            placeholder={canNotifySession ? `nudge ${peerLabel(peer)}'s active session...` : "active session unavailable"}
             className="max-h-20 min-h-8 flex-1 resize-none rounded border border-border-faint bg-surface-container-lowest px-2.5 py-1.5 font-mono text-xs text-on-surface outline-none placeholder:text-outline focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-50"
           />
           <button
             type="button"
             onClick={submitNotify}
             disabled={!canNotifySession || !notifyText.trim() || notifyPending}
-            aria-label="Notify active session"
+            aria-label="Send session nudge"
             className={cn(
               "flex h-8 w-8 shrink-0 items-center justify-center rounded transition-[filter,transform] active:scale-[0.98]",
               canNotifySession && notifyText.trim()
