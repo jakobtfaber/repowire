@@ -71,6 +71,11 @@ _STATIC_EXTENSIONS = frozenset({
 })
 
 
+def _is_tunnel_path(path: str) -> bool:
+    """Return true for exact daemon API roots or their child paths."""
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in _TUNNEL_PREFIXES)
+
+
 @dataclass
 class DaemonConnection:
     user_id: str
@@ -691,7 +696,7 @@ def create_app() -> FastAPI:
                     return FileResponse(file_path)
 
         # Only tunnel daemon API paths
-        if not any(full_path.startswith(p) for p in _TUNNEL_PREFIXES):
+        if not _is_tunnel_path(full_path):
             raise HTTPException(status_code=404)
 
         if not rw_token:

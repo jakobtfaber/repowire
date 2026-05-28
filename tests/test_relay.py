@@ -4,7 +4,7 @@ from fastapi.responses import PlainTextResponse
 
 from repowire.relay import server as relay_server
 from repowire.relay.auth import APIKey, _token_registry, register_token, validate_api_key
-from repowire.relay.server import create_app
+from repowire.relay.server import _is_tunnel_path, create_app
 
 
 class TestRelayAuth:
@@ -108,3 +108,16 @@ class TestRelayLanding:
         assert response.status_code == 200
         assert response.text == "ok"
         assert seen == {"method": "GET", "path": "/jobs"}
+
+
+class TestRelayTunnelPaths:
+    def test_tunnel_path_allows_exact_roots_and_children(self):
+        assert _is_tunnel_path("/jobs")
+        assert _is_tunnel_path("/jobs/work-123")
+        assert _is_tunnel_path("/peers")
+        assert _is_tunnel_path("/peers/alice")
+
+    def test_tunnel_path_rejects_prefix_collisions(self):
+        assert not _is_tunnel_path("/jobsite")
+        assert not _is_tunnel_path("/peers2")
+        assert not _is_tunnel_path("/events-extra")
