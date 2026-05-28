@@ -408,7 +408,7 @@ class TelegramPeer:
 
         if data.startswith(("target:", "notify:")):
             peer = data.split(":", 1)[1]
-            await self._select_peer(peer)
+            await self._select_peer(peer, trigger_retry=True)
         elif data == "cancel":
             self._reply_target = None
             self._pending_retry = None
@@ -921,11 +921,14 @@ class TelegramPeer:
     async def _current_reply_keyboard(self) -> dict:
         """Build the persistent keyboard from fresh peer data."""
         peers = await self._fetch_online_peers()
-        online = {
-            p.get("display_name", p.get("name", ""))
-            for p in peers
-            if p.get("status") in ("online", "busy")
-        }
+        online: set[str] = set()
+        for p in peers:
+            if p.get("status") not in ("online", "busy"):
+                continue
+            for key in ("peer_id", "display_name", "name"):
+                value = p.get(key)
+                if value:
+                    online.add(str(value))
         online.discard("")
         pending = (
             self._pending_retry.text

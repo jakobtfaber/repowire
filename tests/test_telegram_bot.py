@@ -344,6 +344,62 @@ async def test_retry_error_offers_peer_id_buttons(
     assert telegram_bot._pending_retry is not None
 
 
+@pytest.mark.asyncio
+async def test_inline_target_callback_replays_pending_retry(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    post = AsyncMock()
+    monkeypatch.setattr(telegram_bot._http, "post", post)
+    send = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "_send_peer_message", send)
+    telegram_bot._pending_retry = PendingRetry(
+        text="please retry",
+        expires_at=time.monotonic() + 10,
+        mode="ask",
+        attachments=[{"id": "att-1"}],
+    )
+
+    await telegram_bot._on_callback({
+        "id": "cb-1",
+        "data": "target:repow-default-orchestrator",
+    })
+
+    send.assert_awaited_once_with(
+        "repow-default-orchestrator",
+        "please retry",
+        message_id=None,
+        mode="ask",
+        attachments=[{"id": "att-1"}],
+    )
+    assert telegram_bot._reply_target == "repow-default-orchestrator"
+    assert telegram_bot._pending_retry is None
+
+
+@pytest.mark.asyncio
+async def test_current_keyboard_treats_peer_id_target_as_online(
+    telegram_bot: TelegramPeer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    telegram_bot._reply_target = "repow-default-orchestrator"
+    monkeypatch.setattr(
+        telegram_bot,
+        "_fetch_online_peers",
+        AsyncMock(return_value=[
+            {
+                "peer_id": "repow-default-orchestrator",
+                "display_name": "orchestrator-codex",
+                "status": "online",
+                "circle": "default",
+                "path": "/orchestrator",
+            },
+        ]),
+    )
+
+    kb = await telegram_bot._current_reply_keyboard()
+
+    assert kb["keyboard"][0][0]["text"] == f"{CURRENT_MARK} repow-default-orchestrator"
+    assert kb["input_field_placeholder"] == "msg @repow-default-orchestrator..."
+
+
 # -- PendingRetry TTL --
 
 
