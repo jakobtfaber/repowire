@@ -196,6 +196,55 @@ async def test_jobs_list_and_show_include_recurring_calendar(env) -> None:
     assert shown.json()["status"]["calendar_id"] == calendar_id
 
 
+async def test_jobs_summary_view_omits_heavy_fields(env) -> None:
+    created = await env.post(
+        "/jobs",
+        json={
+            "title": "Heavy job",
+            "prompt": "x" * 1000,
+            "path": "/repo/repowire",
+            "provenance": {"large": "y" * 1000},
+        },
+    )
+    job_id = created.json()["job_id"]
+    await env.patch(
+        f"/jobs/{job_id}",
+        json={
+            "state": "completed",
+            "result_summary": "done",
+            "result_data": {"blob": "z" * 1000},
+            "progress_note": "finished",
+        },
+    )
+
+    full = await env.get("/jobs")
+    listed = await env.get("/jobs?view=summary")
+    shown = await env.get(f"/jobs/{job_id}/status")
+
+    assert full.status_code == 200
+    assert full.json()["work"][0]["request"]["execution"]["prompt"]["body"] == "x" * 1000
+    assert "provenance" in full.json()["work"][0]
+    assert listed.status_code == 200
+    summary = listed.json()["work"][0]
+    assert summary["job_id"] == job_id
+    assert summary["title"] == "Heavy job"
+    assert summary["state"] == "completed"
+    assert summary["execution"]["target"]["path"] == "/repo/repowire"
+    assert "request" not in summary
+    assert "provenance" not in summary
+    assert "progress_events" not in summary
+    assert "runner" not in summary
+    assert "prompt" not in summary["execution"]
+    assert shown.json()["status"]["execution"]["prompt"]["body"] == "x" * 1000
+
+
+async def test_jobs_summary_view_rejects_unknown_view(env) -> None:
+    listed = await env.get("/jobs?view=compact")
+
+    assert listed.status_code == 400
+    assert "view must be" in listed.json()["detail"]
+
+
 async def test_jobs_cancel_recurring_calendar_does_not_require_work(env) -> None:
     created = await env.post("/jobs", json={"title": "Daily brief", "cron": "@daily"})
     calendar_id = created.json()["calendar_id"]

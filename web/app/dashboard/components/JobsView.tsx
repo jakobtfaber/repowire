@@ -64,6 +64,9 @@ export function JobsView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detailById, setDetailById] = useState<Record<string, JobStatus | RecurringJobStatus>>({});
+  const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -71,7 +74,7 @@ export function JobsView({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${apiBase}/jobs`);
+      const res = await fetch(`${apiBase}/jobs?view=summary`);
       if (!res.ok) {
         setError(`Error ${res.status}`);
         return;
@@ -115,6 +118,13 @@ export function JobsView({
   const attentionItems = items.filter((item) => item.type === "work" && retryableTerminalStates.has(itemState(item)));
   const closedItems = items.filter((item) => !activeItems.includes(item) && !attentionItems.includes(item));
   const selected = items.find((item) => item.id === selectedId) ?? activeItems[0] ?? attentionItems[0] ?? closedItems[0] ?? null;
+  const selectedDetailId = selected?.id ?? null;
+  const selectedDetail = selected ? detailById[selected.id] : null;
+  const displaySelected: JobItem | null = selected && selectedDetail
+    ? selected.type === "work"
+      ? { ...selected, status: selectedDetail as JobStatus }
+      : { ...selected, status: selectedDetail as RecurringJobStatus }
+    : selected;
 
   useEffect(() => {
     if (selectedId && !items.some((item) => item.id === selectedId)) {
@@ -125,7 +135,35 @@ export function JobsView({
   const selectJob = useCallback((id: string) => {
     setSelectedId(id);
     setActionError(null);
+    setDetailError(null);
   }, []);
+
+  useEffect(() => {
+    if (!selectedDetailId) return;
+    const id = selectedDetailId;
+    const controller = new AbortController();
+    setDetailLoadingId(id);
+    setDetailError(null);
+    fetch(`${apiBase}/jobs/${encodeURIComponent(id)}/status`, { signal: controller.signal })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Error ${res.status}`);
+        return res.json();
+      })
+      .then((data: { status?: JobStatus | RecurringJobStatus }) => {
+        if (!data.status) throw new Error("Missing job status");
+        setDetailById((current) => ({ ...current, [id]: data.status! }));
+      })
+      .catch((err) => {
+        if (err instanceof Error && err.name === "AbortError") return;
+        setDetailError(err instanceof Error ? err.message : "Failed to load job detail");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setDetailLoadingId((current) => current === id ? null : current);
+        }
+      });
+    return () => controller.abort();
+  }, [apiBase, selectedDetailId, refreshSignal]);
 
   const runAction = async (item: JobItem, action: "run" | "retry" | "cancel") => {
     setActionError(null);
@@ -140,6 +178,10 @@ export function JobsView({
         const data = await res.json().catch(() => null);
         setActionError(typeof data?.detail === "string" ? data.detail : `Error ${res.status}`);
         return;
+      }
+      const data = await res.json().catch(() => null);
+      if (data?.status) {
+        setDetailById((current) => ({ ...current, [item.id]: data.status }));
       }
       await fetchJobs();
     } catch (err) {
@@ -188,14 +230,16 @@ export function JobsView({
         </div>
 
         <div className="min-h-0 md:overflow-y-auto">
-          {selected ? (
+          {displaySelected ? (
             <JobDetail
-              item={selected}
+              item={displaySelected}
               busyAction={busyAction}
               actionError={actionError}
-              onRun={() => void runAction(selected, "run")}
-              onRetry={() => void runAction(selected, "retry")}
-              onCancel={() => void runAction(selected, "cancel")}
+              detailLoading={detailLoadingId === displaySelected.id}
+              detailError={detailError}
+              onRun={() => void runAction(displaySelected, "run")}
+              onRetry={() => void runAction(displaySelected, "retry")}
+              onCancel={() => void runAction(displaySelected, "cancel")}
             />
           ) : (
             <EmptyState icon={<BriefcaseBusiness className="h-5 w-5" />} title="select a job" detail="job detail and actions appear here" />
@@ -283,6 +327,8 @@ function JobDetail({
   item,
   busyAction,
   actionError,
+  detailLoading,
+  detailError,
   onRun,
   onRetry,
   onCancel,
@@ -290,6 +336,8 @@ function JobDetail({
   item: JobItem;
   busyAction: string | null;
   actionError: string | null;
+  detailLoading: boolean;
+  detailError: string | null;
   onRun: () => void;
   onRetry: () => void;
   onCancel: () => void;
@@ -329,6 +377,8 @@ function JobDetail({
           </div>
         )}
         {actionError && <p className="mt-3 font-mono text-xs text-error">{actionError}</p>}
+        {detailLoading && <p className="mt-3 font-mono text-xs text-outline">loading detail</p>}
+        {detailError && <p className="mt-3 font-mono text-xs text-error">{detailError}</p>}
 
         <div className="mt-4 flex flex-wrap gap-2">
           {canRun(item) && (

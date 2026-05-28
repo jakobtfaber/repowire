@@ -342,6 +342,7 @@ async def list_work(
     created_by_peer_id: str | None = None,
     repowire_session_id: str | None = None,
     circle: str | None = None,
+    view: str | None = None,
     _: str | None = Depends(require_auth),
 ) -> WorkListResponse:
     store = _store()
@@ -365,10 +366,66 @@ async def list_work(
                 )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    if view not in {None, "full", "summary"}:
+        raise HTTPException(status_code=400, detail="view must be one of: full, summary")
+    summarize = view == "summary"
     return WorkListResponse(
-        work=[item.status() for item in items],
-        recurring=[item.status() for item in recurring],
+        work=[_summary_status(item.status()) if summarize else item.status() for item in items],
+        recurring=[
+            _summary_status(item.status()) if summarize else item.status()
+            for item in recurring
+        ],
     )
+
+
+def _summary_status(status: dict[str, Any]) -> dict[str, Any]:
+    summary = {
+        key: status.get(key)
+        for key in (
+            "job_id",
+            "work_id",
+            "calendar_id",
+            "recurring_id",
+            "title",
+            "kind",
+            "state",
+            "state_reason",
+            "phase",
+            "owner_peer_id",
+            "assigned_peer_id",
+            "repowire_session_id",
+            "correlation_id",
+            "circle",
+            "created_by_peer_id",
+            "source_kind",
+            "source_id",
+            "scope",
+            "visibility",
+            "created_at",
+            "updated_at",
+            "deadline_at",
+            "expires_at",
+            "due_at",
+            "cron",
+            "next_due_at",
+            "last_occurrence_work_id",
+            "last_materialized_at",
+            "result_summary",
+            "cancel_requested",
+            "cancel_requested_at",
+            "cancel_requested_by_peer_id",
+            "cancellation_reason",
+        )
+        if key in status
+    }
+    execution = status.get("execution")
+    if isinstance(execution, dict):
+        summary["execution"] = {
+            key: value
+            for key, value in execution.items()
+            if key in {"target", "delivery"}
+        }
+    return summary
 
 
 @router.get("/work/{work_id}/status", response_model=WorkStatusResponse)

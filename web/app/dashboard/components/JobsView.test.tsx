@@ -67,32 +67,50 @@ describe("JobsView", () => {
 
   it("renders daemon jobs and recurring templates", async () => {
     const payload: JobsResponse = {
-      work: [QUEUED_JOB],
-      recurring: [RECURRING_JOB],
+      work: [{ ...QUEUED_JOB, execution: { target: QUEUED_JOB.execution.target, delivery: QUEUED_JOB.execution.delivery } }],
+      recurring: [{ ...RECURRING_JOB, execution: { target: RECURRING_JOB.execution.target, delivery: RECURRING_JOB.execution.delivery } }],
     };
-    const fetchMock = vi.fn(async () => jsonResponse(payload));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/jobs?view=summary")) return jsonResponse(payload);
+      if (url.endsWith("/jobs/work-1/status")) return jsonResponse({ status: QUEUED_JOB });
+      if (url.endsWith("/jobs/cal-1/status")) return jsonResponse({ status: RECURRING_JOB });
+      return jsonResponse({ detail: "not found" }, 404);
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<JobsView apiBase="http://daemon.test" refreshSignal={0} />);
 
     expect((await screen.findAllByText("Audit docs")).length).toBeGreaterThan(0);
     expect(screen.getByText("Nightly maintenance")).toBeInTheDocument();
-    expect(screen.getByText("Review the docs IA.")).toBeInTheDocument();
+    expect(await screen.findByText("Review the docs IA.")).toBeInTheDocument();
     expect(screen.getAllByText("active").length).toBeGreaterThan(0);
-    expect(fetchMock).toHaveBeenCalledWith("http://daemon.test/jobs");
+    expect(fetchMock).toHaveBeenCalledWith("http://daemon.test/jobs?view=summary");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://daemon.test/jobs/work-1/status",
+      expect.any(Object),
+    );
+
+    fireEvent.click(screen.getByText("Nightly maintenance"));
+    expect(await screen.findByText("Run the maintenance pass.")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://daemon.test/jobs/cal-1/status",
+      expect.any(Object),
+    );
   });
 
   it("cancels a recurring template through the jobs control route", async () => {
-    const active: JobsResponse = { work: [], recurring: [RECURRING_JOB] };
-    const cancelled: JobsResponse = {
-      work: [],
-      recurring: [{ ...RECURRING_JOB, state: "cancelled" }],
-    };
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(active))
-      .mockResolvedValueOnce(jsonResponse({ ok: true }))
-      .mockResolvedValueOnce(jsonResponse(cancelled));
+    let current = RECURRING_JOB;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/jobs?view=summary")) return jsonResponse({ work: [], recurring: [current] });
+      if (url.endsWith("/jobs/cal-1/status")) return jsonResponse({ status: current });
+      if (url.endsWith("/jobs/cal-1/cancel") && init?.method === "POST") {
+        current = { ...RECURRING_JOB, state: "cancelled" };
+        return jsonResponse({ status: current });
+      }
+      return jsonResponse({ detail: "not found" }, 404);
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<JobsView apiBase="http://daemon.test" refreshSignal={0} />);
@@ -112,16 +130,17 @@ describe("JobsView", () => {
   });
 
   it("offers retry and run controls for failed work jobs", async () => {
-    const failed: JobsResponse = { work: [FAILED_JOB], recurring: [] };
-    const retried: JobsResponse = {
-      work: [{ ...FAILED_JOB, state: "queued", result_summary: null }],
-      recurring: [],
-    };
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(failed))
-      .mockResolvedValueOnce(jsonResponse({ ok: true }))
-      .mockResolvedValueOnce(jsonResponse(retried));
+    let current = FAILED_JOB;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/jobs?view=summary")) return jsonResponse({ work: [current], recurring: [] });
+      if (url.endsWith("/jobs/work-failed/status")) return jsonResponse({ status: current });
+      if (url.endsWith("/jobs/work-failed/retry") && init?.method === "POST") {
+        current = { ...FAILED_JOB, state: "queued", result_summary: null };
+        return jsonResponse({ status: current });
+      }
+      return jsonResponse({ detail: "not found" }, 404);
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<JobsView apiBase="http://daemon.test" refreshSignal={0} />);
@@ -146,7 +165,13 @@ describe("JobsView", () => {
       work: [FAILED_JOB, COMPLETED_JOB],
       recurring: [],
     };
-    const fetchMock = vi.fn(async () => jsonResponse(payload));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/jobs?view=summary")) return jsonResponse(payload);
+      if (url.endsWith("/jobs/work-failed/status")) return jsonResponse({ status: FAILED_JOB });
+      if (url.endsWith("/jobs/work-completed/status")) return jsonResponse({ status: COMPLETED_JOB });
+      return jsonResponse({ detail: "not found" }, 404);
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<JobsView apiBase="http://daemon.test" refreshSignal={0} />);

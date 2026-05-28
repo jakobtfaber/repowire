@@ -13,6 +13,16 @@ The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and client
 - `/attachments` for upload and download.
 - `/dashboard` for the static dashboard bundle.
 
+## Jobs List Views
+
+`GET /jobs` returns the full durable-work list by default. Dashboard-style clients that only need row data can use:
+
+```http
+GET /jobs?view=summary
+```
+
+The summary view keeps the same `{ "work": [...], "recurring": [...] }` envelope and preserves ids, state, timestamps, ownership/routing fields, result summaries, and trimmed execution target/delivery metadata. It omits heavier detail fields such as full requests, provenance, runner state, prompt bodies, and progress history. Fetch `GET /jobs/{id}/status` for the selected job or recurring `cal-*` template when full detail is needed.
+
 ## Auth
 
 When `daemon.auth_token` is configured, clients send:
