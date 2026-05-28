@@ -125,6 +125,7 @@ export function JobsView({
       ? { ...selected, status: selectedDetail as JobStatus }
       : { ...selected, status: selectedDetail as RecurringJobStatus }
     : selected;
+  const selectedHasDetail = selected ? Boolean(selectedDetail) : false;
 
   useEffect(() => {
     if (selectedId && !items.some((item) => item.id === selectedId)) {
@@ -237,6 +238,7 @@ export function JobsView({
               actionError={actionError}
               detailLoading={detailLoadingId === displaySelected.id}
               detailError={detailError}
+              hasDetail={selectedHasDetail}
               onRun={() => void runAction(displaySelected, "run")}
               onRetry={() => void runAction(displaySelected, "retry")}
               onCancel={() => void runAction(displaySelected, "cancel")}
@@ -329,6 +331,7 @@ function JobDetail({
   actionError,
   detailLoading,
   detailError,
+  hasDetail,
   onRun,
   onRetry,
   onCancel,
@@ -338,6 +341,7 @@ function JobDetail({
   actionError: string | null;
   detailLoading: boolean;
   detailError: string | null;
+  hasDetail: boolean;
   onRun: () => void;
   onRetry: () => void;
   onCancel: () => void;
@@ -378,7 +382,15 @@ function JobDetail({
         )}
         {actionError && <p className="mt-3 font-mono text-xs text-error">{actionError}</p>}
         {detailLoading && <p className="mt-3 font-mono text-xs text-outline">loading detail</p>}
-        {detailError && <p className="mt-3 font-mono text-xs text-error">{detailError}</p>}
+        {detailError && !hasDetail && (
+          <div className="mt-4 border border-error/25 bg-error/10 p-3">
+            <p className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-error">detail unavailable</p>
+            <p className="mt-1 font-mono text-xs leading-5 text-on-surface-variant">
+              {detailError}. The list is still loaded from the jobs summary view; refresh after checking the daemon or relay tunnel.
+            </p>
+          </div>
+        )}
+        {detailError && hasDetail && <p className="mt-3 font-mono text-xs text-error">{detailError}</p>}
 
         <div className="mt-4 flex flex-wrap gap-2">
           {canRun(item) && (

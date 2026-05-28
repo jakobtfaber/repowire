@@ -182,4 +182,29 @@ describe("JobsView", () => {
     expect(screen.getByText("Ship release")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
+
+  it("shows an explicit detail error while keeping summary rows usable", async () => {
+    const payload: JobsResponse = {
+      work: [QUEUED_JOB],
+      recurring: [RECURRING_JOB],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/jobs?view=summary")) return jsonResponse(payload);
+      if (url.endsWith("/jobs/work-1/status")) return jsonResponse({ detail: "stale daemon" }, 500);
+      if (url.endsWith("/jobs/cal-1/status")) return jsonResponse({ status: RECURRING_JOB });
+      return jsonResponse({ detail: "not found" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<JobsView apiBase="http://daemon.test" refreshSignal={0} />);
+
+    await waitFor(() => expect(screen.getAllByText("Audit docs").length).toBeGreaterThan(0));
+    expect(await screen.findByText("detail unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/The list is still loaded from the jobs summary view/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Nightly maintenance"));
+
+    expect(await screen.findByText("Run the maintenance pass.")).toBeInTheDocument();
+  });
 });
