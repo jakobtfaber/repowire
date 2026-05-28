@@ -102,6 +102,32 @@ export interface JobsResponse {
   recurring: RecurringJobStatus[];
 }
 
+export interface DaemonHealth {
+  status: string;
+  version: string;
+  relay_mode?: boolean;
+  channel?: {
+    status?: string;
+    configured?: boolean;
+    runtime_available?: boolean;
+    last_error?: string | null;
+  };
+  acp_broker?: {
+    status?: string;
+    enabled?: boolean;
+    sdk_available?: boolean;
+    manager_initialized?: boolean;
+    configured_peers?: number;
+    active_clients?: number;
+    in_flight?: number;
+    last_error?: string | null;
+    permissions?: {
+      pending?: number;
+      last_error?: string | null;
+    };
+  };
+}
+
 export interface AttachmentRef {
   id?: string | null;
   path?: string | null;

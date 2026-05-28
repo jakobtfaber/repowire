@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Bot, Play, RefreshCw, X } from "lucide-react";
 import { cn } from "../lib/utils";
-import type { Peer } from "../types";
+import type { DaemonHealth, Peer } from "../types";
 import { peerLabel } from "../types";
 import { StatusLabel } from "./status";
 
@@ -135,9 +135,35 @@ export function SpawnDialog({ apiBase, onClose, onSpawned }: { apiBase: string; 
 }
 
 export function SettingsDialog({ apiBase, isConnected, peers, onClose }: { apiBase: string; isConnected: boolean; peers: Peer[]; onClose: () => void }) {
-  const [relayEnabled, setRelayEnabled] = useState(false);
+  const [health, setHealth] = useState<DaemonHealth | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
   const host = apiBase.replace(/^https?:\/\//, "");
   const servicePeers = peers.filter((peer) => peer.role === "service");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${apiBase}/health`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Error ${res.status}`);
+        return res.json();
+      })
+      .then((data: DaemonHealth) => {
+        if (!cancelled) {
+          setHealth(data);
+          setHealthError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setHealthError(err instanceof Error ? err.message : "Failed to load health");
+      })
+      .finally(() => {
+        if (!cancelled) setHealthLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase]);
 
   return (
     <Modal title="Configuration" onClose={onClose} wide>
@@ -160,23 +186,28 @@ export function SettingsDialog({ apiBase, isConnected, peers, onClose }: { apiBa
         </section>
 
         <section className="border border-border-faint bg-surface-container-low p-4">
-          <div className="flex items-center justify-between gap-4">
+          <div className="mb-4 flex items-start justify-between gap-4">
             <div>
-              <h3 className="font-headline text-sm font-semibold text-on-surface">Relay enabled</h3>
-              <p className="text-xs text-outline">Tunnel local nodes to the hosted relay.</p>
+              <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.18em] text-outline">Runtime health</p>
+              <h3 className="font-headline text-sm font-semibold text-on-surface">Daemon report</h3>
             </div>
-            <button
-              role="switch"
-              aria-checked={relayEnabled}
-              onClick={() => setRelayEnabled((value) => !value)}
-              className={cn("relative h-6 w-11 rounded-full transition-colors", relayEnabled ? "bg-primary" : "bg-surface-container-highest")}
-            >
-              <span className={cn("absolute top-1 h-4 w-4 rounded-full bg-on-surface transition-transform", relayEnabled ? "translate-x-6" : "translate-x-1")} />
-            </button>
+            <HealthBadge status={health?.status ?? (healthLoading ? "loading" : "error")} />
           </div>
-          <Field label="API key">
-            <input className={inputClass} type="password" placeholder="rw_..." readOnly />
-          </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Metric label="Version" value={health?.version || "-"} />
+            <Metric label="Relay mode" value={health ? (health.relay_mode ? "Enabled" : "Disabled") : "-"} />
+            <Metric label="Channel" value={health?.channel?.status || "-"} />
+            <Metric label="ACP broker" value={health?.acp_broker?.status || "-"} />
+            <Metric label="ACP clients" value={String(health?.acp_broker?.active_clients ?? "-")} />
+            <Metric label="Approvals pending" value={String(health?.acp_broker?.permissions?.pending ?? "-")} />
+          </div>
+          {health?.acp_broker?.last_error && (
+            <p className="mt-3 break-words font-mono text-xs text-error">{health.acp_broker.last_error}</p>
+          )}
+          {health?.channel?.last_error && (
+            <p className="mt-3 break-words font-mono text-xs text-error">{health.channel.last_error}</p>
+          )}
+          {healthError && <p className="mt-3 font-mono text-xs text-error">{healthError}</p>}
         </section>
 
         <section>
@@ -215,6 +246,24 @@ function Metric({ label, value }: { label: string; value: string }) {
     <div className="border-l-2 border-primary/60 bg-surface-container-lowest p-3">
       <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-outline">{label}</p>
       <p className="font-mono text-sm text-primary-fixed">{value}</p>
+    </div>
+  );
+}
+
+function HealthBadge({ status }: { status: string }) {
+  const ok = status === "ok";
+  const loading = status === "loading";
+  return (
+    <div className={cn(
+      "flex items-center gap-2 border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em]",
+      ok
+        ? "border-secondary/25 bg-secondary/10 text-secondary"
+        : loading
+          ? "border-border-faint bg-surface-container-high text-outline"
+          : "border-error/25 bg-error/10 text-error",
+    )}>
+      <span className={cn("h-2 w-2 rounded-full", ok ? "bg-secondary pulse-online" : loading ? "bg-outline" : "bg-error")} />
+      {loading ? "Loading" : ok ? "Healthy" : "Unknown"}
     </div>
   );
 }
