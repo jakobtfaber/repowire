@@ -56,6 +56,8 @@ def _binding_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     allowed_keys = (
         "hook_session_id",
+        "runtime_session_id",
+        "session_id",
         "runtime_source_uri",
         "source_uri",
         "transcript_source_uri",
@@ -63,14 +65,22 @@ def _binding_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     return {key: metadata[key] for key in allowed_keys if metadata.get(key) is not None}
 
 
+def _runtime_session_id_from_metadata(metadata: dict[str, Any] | None) -> str | None:
+    if not metadata:
+        return None
+    for key in ("hook_session_id", "runtime_session_id", "session_id"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _resume_capability_from_metadata(
     backend: AgentType,
     metadata: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    if not metadata:
-        return {}
-    runtime_session_id = metadata.get("hook_session_id")
-    if not isinstance(runtime_session_id, str) or not runtime_session_id:
+    runtime_session_id = _runtime_session_id_from_metadata(metadata)
+    if runtime_session_id is None:
         return {}
     return resume_capability_for_registration(backend, runtime_session_id)
 
@@ -376,6 +386,7 @@ async def _register_peer_impl(
     to assign).
     """
     circle = request.circle or "global"
+    runtime_session_id = _runtime_session_id_from_metadata(request.metadata)
 
     peer_registry = get_peer_registry()
     try:
@@ -392,7 +403,7 @@ async def _register_peer_impl(
             turn_state=request.turn_state,
             initial_status=(
                 PeerStatus.OFFLINE
-                if request.pane_id and request.metadata.get("hook_session_id")
+                if request.pane_id and runtime_session_id
                 else PeerStatus.ONLINE
             ),
             agent_pid=request.agent_pid,
@@ -412,12 +423,12 @@ async def _register_peer_impl(
                 peer_id=peer_id,
                 backend=request.backend,
                 project_path=request.path,
-                runtime_session_id=request.metadata.get("hook_session_id"),
+                runtime_session_id=runtime_session_id,
                 runtime_source_uri=_metadata_source_uri(request.metadata),
                 provenance={
                     "source_kind": "runtime_hook",
                     "backend": request.backend.value,
-                    "runtime_session_id": request.metadata.get("hook_session_id"),
+                    "runtime_session_id": runtime_session_id,
                     "observed_by_peer_id": peer_id,
                 },
                 resume_capability=_resume_capability_from_metadata(
@@ -432,7 +443,7 @@ async def _register_peer_impl(
                 display_name=display_name,
                 backend=request.backend,
                 project_path=request.path,
-                runtime_session_id=request.metadata.get("hook_session_id"),
+                runtime_session_id=runtime_session_id,
                 pane_id=request.pane_id,
                 agent_pid=request.agent_pid,
                 parent_pid=request.parent_pid,

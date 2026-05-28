@@ -267,7 +267,8 @@ Current compatible slice:
   executor from the binding and uses the existing notify delivery path.
 - `POST /sessions/{repowire_session_id}/controls/resume` reports
   `active_executor`, `resume_available`, or `unsupported` capability status.
-  It does not execute backend-specific resume yet.
+  Passing `dry_run=false` executes backend-specific resume through the daemon
+  spawn service when the binding is resumable.
 
 Peer-targeted controls remain the compatibility surface while session-targeted
 routes harden.

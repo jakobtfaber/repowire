@@ -430,6 +430,32 @@ async def test_test_app_wires_session_binding_store_and_observes_hooks(tmp_path:
                 "runtime_session_id_arg": "codex-runtime-1",
             }
 
+            gemini_reg = await client.post(
+                "/peers",
+                json={
+                    "name": "daily-email-brief",
+                    "path": "/repo/daily-email-brief",
+                    "circle": "default",
+                    "backend": "gemini",
+                    "pane_id": "%79",
+                    "metadata": {
+                        "session_id": "gemini-runtime-1",
+                    },
+                },
+            )
+            assert gemini_reg.status_code == 200
+            gemini_binding = app.state.session_binding_store.get_by_runtime_session(
+                "gemini-runtime-1",
+                backend="gemini",
+                project_path="/repo/daily-email-brief",
+            )
+            assert gemini_binding is not None
+            assert gemini_binding.resume_capability == {
+                "supported": True,
+                "strategy": "gemini_resume",
+                "runtime_session_id_arg": "gemini-runtime-1",
+            }
+
             app.state.peer_registry._peers.clear()
             rehydrated = await client.post(
                 "/peers/identity/validate",

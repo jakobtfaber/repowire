@@ -27,9 +27,9 @@ bindings rather than display names:
   `session_executor_unavailable` instead of guessing from path or display name.
 - `POST /sessions/{repowire_session_id}/controls/resume` reports the current
   resume capability for the binding. Active sessions return
-  `status=active_executor`; detached sessions return `status=resume_available`
-  only when backend resume metadata is already recorded, otherwise
-  `status=unsupported`.
+  `status=active_executor`; detached local-agent sessions with captured runtime
+  ids return `status=resume_available`. Passing `dry_run=false` spawns the
+  backend-native resume command through the daemon spawn service.
 
 These routes require the SQLite session binding store. Existing peer-targeted
 `ask`, `notify_peer`, and dashboard routes remain compatible and continue to

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from repowire.agent_backends import can_resume_backend
+from repowire.agent_backends import agent_backend_for, can_resume_backend
 from repowire.config.models import AgentType
 from repowire.daemon.state.session_bindings import SessionBinding, SQLiteSessionBindingStore
 from repowire.protocol.peers import Peer, PeerStatus
@@ -92,6 +92,22 @@ def resume_capability_for(resolution: SessionResolution) -> tuple[ResumeStatus, 
         backend = AgentType(binding.backend)
     except ValueError:
         backend = None
+
+    if not binding.runtime_session_id:
+        return (
+            "unsupported",
+            "unavailable",
+            "This is a legacy or partial session binding without a runtime "
+            "session id; resume is not available.",
+        )
+
+    if backend is not None and not agent_backend_for(backend).supports_local_spawn:
+        return (
+            "unsupported",
+            "unsupported",
+            f"{binding.backend} is a service identity, not a resumable local agent session.",
+        )
+
     can_resume = (
         can_resume_backend(
             backend,

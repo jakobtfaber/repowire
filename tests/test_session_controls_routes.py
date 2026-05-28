@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -44,6 +46,20 @@ class _FakePeerDelivery:
             from_peer_name=kwargs["from_peer"],
             to_peer_id=kwargs["to_peer"],
             to_peer_name="worker-claude-code",
+        )
+
+
+class _FakeSpawnService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def spawn(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            display_name="repo-codex",
+            tmux_session="repowire-repo-codex",
+            pane_id="%99",
+            message=None,
         )
 
 
@@ -108,6 +124,52 @@ async def test_session_resume_reports_supported_backend_capability(tmp_path):
     assert body["resume_capability"]["strategy"] == "codex_resume"
 
 
+async def test_session_resume_executes_backend_resume_when_requested(tmp_path):
+    cfg = Config(experiments={"sqlite_state": True})
+    app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
+
+    async with app.router.lifespan_context(app):
+        fake_spawn = _FakeSpawnService()
+        app.state.spawn_service = fake_spawn
+        binding = app.state.session_binding_store.upsert_observation(
+            peer_id=None,
+            backend="codex",
+            project_path="/repo",
+            runtime_session_id="codex-runtime-1",
+            runtime_source_uri="codex-rollout:repo/codex-runtime-1.jsonl",
+            resume_capability={
+                "supported": True,
+                "strategy": "codex_resume",
+                "runtime_session_id_arg": "codex-runtime-1",
+            },
+            status="resumable",
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                f"/sessions/{binding.repowire_session_id}/controls/resume",
+                json={"dry_run": False, "profile": "fast", "message": "resume please"},
+            )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "resume_available"
+    assert body["capability"] == "supported"
+    assert body["action"] == "spawned"
+    assert body["spawned_display_name"] == "repo-codex"
+    assert body["tmux_session"] == "repowire-repo-codex"
+    assert body["pane_id"] == "%99"
+    assert body["message"] == "Backend resume spawned for this runtime session."
+    assert len(fake_spawn.calls) == 1
+    call = fake_spawn.calls[0]
+    assert call["path"] == "/repo"
+    assert call["backend"].value == "codex"
+    assert call["profile"] == "fast"
+    assert call["message"] == "resume please"
+    assert call["resume_plan"].runtime_session_id == "codex-runtime-1"
+    assert call["resume_plan"].repowire_session_id == binding.repowire_session_id
+
+
 async def test_session_resume_reports_unsupported_fallback(tmp_path):
     cfg = Config(experiments={"sqlite_state": True})
     app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
@@ -131,7 +193,33 @@ async def test_session_resume_reports_unsupported_fallback(tmp_path):
     body = response.json()
     assert body["status"] == "unsupported"
     assert body["capability"] == "unsupported"
-    assert "No compatible backend resume capability" in body["message"]
+    assert "service identity" in body["message"]
+
+
+async def test_session_resume_reports_legacy_binding_without_runtime_id(tmp_path):
+    cfg = Config(experiments={"sqlite_state": True})
+    app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
+
+    async with app.router.lifespan_context(app):
+        binding = app.state.session_binding_store.upsert_observation(
+            peer_id=None,
+            backend="codex",
+            project_path="/repo",
+            runtime_session_id=None,
+            status="detached",
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                f"/sessions/{binding.repowire_session_id}/controls/resume",
+                json={},
+            )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "unsupported"
+    assert body["capability"] == "unavailable"
+    assert "without a runtime session id" in body["message"]
 
 
 async def test_session_notify_targets_active_executor(tmp_path):

@@ -7,6 +7,8 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from repowire.agent_backends import AgentResumePlan
+from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.peer_delivery import peer_delivery_from_state
@@ -55,8 +57,10 @@ class SessionResumeRequest(BaseModel):
     from_peer: str = Field(default="dashboard", description="Caller peer or surface")
     dry_run: bool = Field(
         default=True,
-        description="Reserved for future backend resume execution; currently always inspect-only",
+        description="Inspect capability when true; spawn backend resume when false",
     )
+    profile: str | None = Field(default=None, description="Optional spawn profile")
+    message: str | None = Field(default=None, description="Optional startup nudge")
 
 
 class SessionResumeResponse(BaseModel):
@@ -79,6 +83,10 @@ class SessionResumeResponse(BaseModel):
     executor_peer_id: str | None = None
     executor_peer_name: str | None = None
     resume_capability: dict = Field(default_factory=dict)
+    action: Literal["inspect", "spawned"] = "inspect"
+    spawned_display_name: str | None = None
+    tmux_session: str | None = None
+    pane_id: str | None = None
 
 
 @router.post(
@@ -163,18 +171,57 @@ async def resume_session(
     request: SessionResumeRequest,
     _auth: str | None = Depends(require_auth),
 ) -> SessionResumeResponse:
-    """Return the compatible resume capability for a session binding.
-
-    This v0.13 slice is API-first: active sessions resolve to their current
-    executor, and detached sessions expose recorded backend capability metadata
-    or a clear unsupported status. Backend-specific resume execution can be
-    layered onto this contract without changing peer-targeted ask/notify APIs.
-    """
+    """Inspect or execute backend-native resume for a session binding."""
     state = get_app_state()
     resolution = await _resolve_or_http(state, repowire_session_id)
     resume_status, capability, message = resume_capability_for(resolution)
-    executor = resolution.executor if resolution.has_active_executor else None
     binding = resolution.binding
+    executor = resolution.executor if resolution.has_active_executor else None
+    action: Literal["inspect", "spawned"] = "inspect"
+    spawned_display_name: str | None = None
+    tmux_session: str | None = None
+    pane_id: str | None = None
+
+    if not request.dry_run and capability == "supported":
+        try:
+            backend = AgentType(binding.backend)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "error": "unknown_backend",
+                    "backend": binding.backend,
+                },
+            ) from exc
+        spawn_service = getattr(state, "spawn_service", None)
+        if spawn_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "spawn_service_unavailable",
+                    "message": "Backend resume requires the daemon spawn service.",
+                },
+            )
+        assert binding.runtime_session_id is not None
+        spawn_result = spawn_service.spawn(
+            path=binding.project_path,
+            backend=backend,
+            profile=request.profile,
+            circle=resolution.executor.circle if resolution.executor else "default",
+            message=request.message,
+            resume_plan=AgentResumePlan(
+                backend=backend,
+                runtime_session_id=binding.runtime_session_id,
+                repowire_session_id=binding.repowire_session_id,
+                capability=binding.resume_capability,
+            ),
+        )
+        action = "spawned"
+        spawned_display_name = spawn_result.display_name
+        tmux_session = spawn_result.tmux_session
+        pane_id = spawn_result.pane_id
+        message = "Backend resume spawned for this runtime session."
+
     return SessionResumeResponse(
         repowire_session_id=repowire_session_id,
         session_status=binding.status,
@@ -187,6 +234,10 @@ async def resume_session(
         executor_peer_id=executor.peer_id if executor else resolution.executor_peer_id,
         executor_peer_name=executor.display_name if executor else None,
         resume_capability=binding.resume_capability,
+        action=action,
+        spawned_display_name=spawned_display_name,
+        tmux_session=tmux_session,
+        pane_id=pane_id,
     )
 
 

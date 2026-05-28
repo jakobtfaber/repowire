@@ -897,6 +897,8 @@ function SessionCommandPanel({
     ? "running agent"
     : resumeState?.capability === "supported"
     ? "resume available"
+    : resumeState?.capability === "unavailable"
+    ? "legacy session"
     : resumeState
     ? "not resumable"
     : "session unavailable";
@@ -906,8 +908,10 @@ function SessionCommandPanel({
     ? "This durable session has a running agent attached, so nudges can be sent now."
     : resumeState?.capability === "supported"
     ? "This durable session has resume metadata, but no running agent is attached right now."
+    : resumeState?.capability === "unavailable"
+    ? resumeState.message
     : resumeState?.capability === "unsupported"
-    ? "This durable session has no running agent and no supported resume path yet."
+    ? resumeState.message || "This session is not a resumable local agent session."
     : capabilityError === "Not Found" || capabilityError === "Error 404"
     ? "No session binding was found for the selected message."
     : capabilityError || "Checking whether this session has a running agent.";

@@ -16,6 +16,12 @@ durable session currently has a running agent attached. If the session has
 history but no running agent, the timeline can still be useful, but nudge
 buttons are disabled until there is an active agent or a future resume path.
 
+For current local agent backends, a detached session with a captured runtime
+session id should also be resumable. Non-resumable sessions should be unusual:
+legacy bindings from before runtime ids were captured, partial/corrupt
+bindings, archived/lost/superseded bindings, or service identities that are
+not local agent sessions.
+
 ## Related
 
 - [Session-native roadmap](session-native-roadmap.md)

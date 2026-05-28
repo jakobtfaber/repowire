@@ -821,7 +821,7 @@ describe("PeerView session controls", () => {
     });
   });
 
-  it("shows unsupported and no-session controls as disabled states", async () => {
+  it("shows legacy and no-session controls as disabled states", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
@@ -835,9 +835,9 @@ describe("PeerView session controls", () => {
             repowire_session_id: "session-a",
             session_status: "detached",
             status: "unsupported",
-            capability: "unsupported",
-            message: "No compatible backend resume capability is recorded for this session.",
-            backend: "opencode",
+            capability: "unavailable",
+            message: "This is a legacy or partial session binding without a runtime session id; resume is not available.",
+            backend: "codex",
             resume_capability: {},
           }),
           { status: 200 },
@@ -849,7 +849,7 @@ describe("PeerView session controls", () => {
 
     const { rerender } = render(
       <PeerView
-        peer={{ ...PEER, backend: "opencode", metadata: { hook_session_id: "session-a" } }}
+        peer={{ ...PEER, backend: "codex", metadata: { hook_session_id: "session-a" } }}
         events={[]}
         apiBase=""
         onClose={() => {}}
@@ -857,8 +857,10 @@ describe("PeerView session controls", () => {
       />,
     );
 
-    expect(await screen.findByText("not resumable")).toBeInTheDocument();
-    expect(screen.getByText("This durable session has no running agent and no supported resume path yet.")).toBeInTheDocument();
+    expect(await screen.findByText("legacy session")).toBeInTheDocument();
+    expect(
+      screen.getByText("This is a legacy or partial session binding without a runtime session id; resume is not available."),
+    ).toBeInTheDocument();
     expect(screen.getByPlaceholderText("nudges need a running agent")).toBeDisabled();
     expect(screen.getByLabelText("Send session nudge")).toBeDisabled();
     expect(await screen.findByText(/no messages with alice/i)).toBeInTheDocument();
