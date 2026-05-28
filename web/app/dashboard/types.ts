@@ -125,17 +125,26 @@ export interface Event {
     | "status_change"
     | "chat_turn"
     | "chat_turn_delta"
-    | "ask";
+    | "ask"
+    | "ack"
+    | "peer_reaped";
   timestamp: string;
   from?: string;
   to?: string;
   from_peer_id?: string;
   to_peer_id?: string;
-  text: string;
+  text?: string;
   attachments?: AttachmentRef[];
   status?: "pending" | "success" | "error" | "blocked";
+  delivered?: boolean;
+  has_message?: boolean;
+  has_attachments?: boolean;
   peer?: string;
   peer_id?: string;
+  display_name?: string;
+  backend?: string;
+  path?: string;
+  reason?: string;
   role?: "user" | "assistant";
   new_status?: "online" | "busy" | "offline";
   query_id?: string;

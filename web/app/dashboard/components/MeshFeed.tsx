@@ -106,6 +106,48 @@ function EventRow({
     );
   }
 
+  if (event.type === "ack") {
+    const ackText = event.text || ackSummary(event);
+    return (
+      <div className="border-b border-border-faint/70 py-1.5 font-mono text-xs leading-5 md:grid md:grid-cols-[62px_minmax(70px,120px)_18px_minmax(70px,120px)_1fr] md:gap-3">
+        <div className="flex items-center gap-2 md:contents">
+          <span className="shrink-0 text-outline tabular-nums">{formatTime(event.timestamp)}</span>
+          <ActorLabel
+            label={fromLabel}
+            clickable={fromClickable}
+            className="text-secondary"
+            onClick={() => onPickPeer(event.from)}
+          />
+          <span className="shrink-0 text-center text-outline">ack</span>
+          <ActorLabel
+            label={to}
+            clickable={toClickable}
+            className="text-primary-fixed"
+            onClick={() => onPickPeer(event.to)}
+          />
+        </div>
+        <span className="mt-0.5 block min-w-0 break-words text-on-surface-variant [overflow-wrap:anywhere] md:mt-0">
+          {ackText}
+          <AttachmentChips attachments={event.attachments} apiBase={apiBase} />
+        </span>
+      </div>
+    );
+  }
+
+  if (event.type === "peer_reaped") {
+    const label = event.display_name || event.peer || event.peer_id || "peer";
+    const details = [event.backend, event.path, event.reason].filter(Boolean).join(" · ");
+    return (
+      <div className="grid grid-cols-[62px_1fr] gap-3 border-b border-border-faint/70 py-1.5 font-mono text-xs leading-5">
+        <span className="text-outline tabular-nums">{formatTime(event.timestamp)}</span>
+        <span className="min-w-0 break-words text-outline [overflow-wrap:anywhere]">
+          reaped <span className="text-on-surface-variant">{label}</span>
+          {details ? <span> · {details}</span> : null}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className="border-b border-border-faint/70 py-1.5 font-mono text-xs leading-5 md:grid md:grid-cols-[62px_minmax(70px,120px)_18px_minmax(70px,120px)_1fr] md:gap-3">
       <div className="flex items-center gap-2 md:contents">
@@ -125,11 +167,22 @@ function EventRow({
         />
       </div>
       <span className={cn("mt-0.5 block min-w-0 break-words [overflow-wrap:anywhere] md:mt-0", event.status === "error" ? "text-error" : "text-on-surface-variant")}>
-        {event.text}
+        {event.text || ""}
         <AttachmentChips attachments={event.attachments} apiBase={apiBase} />
       </span>
     </div>
   );
+}
+
+function ackSummary(event: Event): string {
+  const cid = event.correlation_id ? ` #${event.correlation_id}` : "";
+  if (event.has_message || event.has_attachments) {
+    return `ack${cid} replied`;
+  }
+  if (event.delivered) {
+    return `ack${cid} delivered`;
+  }
+  return `ack${cid} closed`;
 }
 
 function ActorLabel({

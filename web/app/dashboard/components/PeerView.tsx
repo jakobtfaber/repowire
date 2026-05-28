@@ -2090,7 +2090,7 @@ function coalesceDeltas(sorted: Event[]): ThreadItemEntry[] {
     for (const ev of ordered) {
       if (ev.kind === "tool_use" && ev.tool_call) {
         group.tool_calls.push(ev.tool_call);
-      } else if (ev.kind === "text" || ev.kind === undefined) {
+      } else if ((ev.kind === "text" || ev.kind === undefined) && ev.text) {
         // Adjacent text blocks within one turn are conceptually paragraphs.
         group.text = group.text ? `${group.text}\n\n${ev.text}` : ev.text;
       }

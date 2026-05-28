@@ -94,4 +94,85 @@ describe("MeshFeed", () => {
 
     expect(onPickPeer).toHaveBeenCalledWith(PEER);
   });
+
+  it("renders bare ack events with a useful summary", () => {
+    const event: Event = {
+      id: "event-ack",
+      type: "ack",
+      timestamp: "2025-01-01T00:00:00Z",
+      from: "alice",
+      to: "bob",
+      correlation_id: "ask-123",
+      status: "success",
+      delivered: false,
+      has_message: false,
+      has_attachments: false,
+    };
+
+    render(
+      <MeshFeed
+        events={[event]}
+        peers={[PEER]}
+        apiBase="http://daemon.test"
+        onPickPeer={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("ack #ask-123 closed")).toBeInTheDocument();
+    expect(screen.getByText("ack")).toBeInTheDocument();
+  });
+
+  it("renders ack reply event text when present", () => {
+    const event: Event = {
+      id: "event-ack-reply",
+      type: "ack",
+      timestamp: "2025-01-01T00:00:00Z",
+      from: "alice",
+      to: "bob",
+      correlation_id: "ask-456",
+      text: "fixed in commit abc",
+      status: "success",
+      delivered: true,
+      has_message: true,
+      has_attachments: false,
+    };
+
+    render(
+      <MeshFeed
+        events={[event]}
+        peers={[PEER]}
+        apiBase="http://daemon.test"
+        onPickPeer={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("fixed in commit abc")).toBeInTheDocument();
+  });
+
+  it("renders peer reaped events without unknown actor buttons", () => {
+    const event: Event = {
+      id: "event-reaped",
+      type: "peer_reaped",
+      timestamp: "2025-01-01T00:00:00Z",
+      peer_id: "peer-old",
+      display_name: "old-codex",
+      backend: "codex",
+      path: "/repo/old",
+      reason: "offline_ttl",
+    };
+
+    render(
+      <MeshFeed
+        events={[event]}
+        peers={[PEER]}
+        apiBase="http://daemon.test"
+        onPickPeer={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/reaped/)).toBeInTheDocument();
+    expect(screen.getByText("old-codex")).toBeInTheDocument();
+    expect(screen.getByText(/codex .* offline_ttl/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /unknown/i })).not.toBeInTheDocument();
+  });
 });
