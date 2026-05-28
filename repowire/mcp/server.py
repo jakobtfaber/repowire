@@ -859,6 +859,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         """[Repowire mesh] Open a non-blocking ask thread with a peer.
 
         Use for tracked work that the recipient must close with `ack`. The
+        right default for worker checkpoints, review requests, pre-commit
+        handoffs, status checks, and any delegation where closure matters. The
         call returns a correlation_id immediately; it is not a synchronous
         wait or delivery receipt. Use notify_peer for fire-and-forget nudges.
         Chain follow-ups with `reply_to`, which closes the prior thread and
@@ -947,6 +949,9 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
 
         Use for status updates, announcements, replies to notifications,
         reminders, self-wakes, and nudges that do not require closure.
+        Do not use for worker checkpoints, review requests, pre-commit
+        handoffs, or delegated work that needs an explicit ack; use ask() or a
+        durable job instead.
         Special peers: 'telegram' sends to user's phone.
         The dashboard sees your responses automatically via chat turns - no
         need to notify it.

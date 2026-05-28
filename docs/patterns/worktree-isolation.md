@@ -27,7 +27,9 @@ Both register as peers (different display names, separate paths). Address them b
 ## The pattern
 
 1. Plan the split. Each worktree is a peer; each peer owns one branch.
-2. Dispatch work via `notify_peer` or have an orchestrator do it.
+2. Dispatch work with `ask` when you need an explicit closeout, or create a job
+   when you need durable lifecycle/result state. Keep `notify_peer` for FYIs and
+   nudges that do not gate progress.
 3. Each peer commits and pushes its own branch. No merge conflicts during development; conflicts happen at PR-merge time, not in the working tree.
 4. Spawn a reviewer peer (or use an existing one) to review each PR.
 5. Merge in dependency order.
@@ -45,7 +47,8 @@ spawn_peer(
 )
 ```
 
-The spawned peer self-registers within seconds. The orchestrator then `ask`s it for progress and reviews the PR when it lands.
+The spawned peer self-registers within seconds. The orchestrator then `ask`s it
+for progress and reviews the PR when it lands.
 
 ## Cleanup
 

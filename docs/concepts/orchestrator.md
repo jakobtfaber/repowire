@@ -9,7 +9,7 @@ Worth setting up when you have more than a few peers and find yourself routing d
 A typical orchestrator runs a loop like:
 
 1. **Scan a board or queue** (GitHub Project, beads, your own todo source).
-2. **Dispatch** to the right project peer with `notify_peer(peer, brief)`; flip the board item to `In Progress`.
+2. **Dispatch** to the right project peer with `ask(peer, brief)` when the work needs closure, or create a durable job when it needs lifecycle/result state; flip the board item to `In Progress`.
 3. **Track** as the peer reports via `ask`/`notify` back. `set_description` on each peer keeps the dashboard honest.
 4. **Review** completed work. `review_queue()` surfaces PRs the peer has touched that you still owe a review on; `mark_reviewed(pr_url)` clears them.
 5. **Close out** when work lands: update the board, summarize the impact, and clean up peers/worktrees when they are no longer needed.
@@ -41,6 +41,8 @@ Pair runtimes: a `claude-code` orchestrator alongside a `codex` or `gemini` one 
 
 Scheduled background work should stay quiet by default. Use it for watchdogs,
 summaries, cleanup, and review nudges, with a clear owner and cancellation path.
+Use `kind="ask"` for scheduled checkpoints or review handoffs that must be
+closed; keep `kind="notify"` for reminders that do not gate progress.
 Durable board or memory writes should happen only for real state transitions or
 forward-applicable lessons, not just because a hook fired.
 

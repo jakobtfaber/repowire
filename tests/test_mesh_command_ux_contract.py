@@ -76,10 +76,13 @@ def test_mesh_command_contract_preserves_agent_messaging_lifecycle() -> None:
     required_rules = (
         "Agents must not use `SendMessage` for Repowire peers.",
         "`ask` is non-blocking and returns a `correlation_id` immediately.",
+        "Use `ask` for worker checkpoints, review requests, pre-commit handoffs",
+        "Use durable jobs when the work needs lifecycle and result state.",
         "bare `ack(correlation_id)`",
         "`ack(correlation_id, message)`",
         "`ask(reply_to=correlation_id, ...)`",
         "`notify` is fire-and-forget.",
+        "Use `notify` only for FYIs, self-wakes, reminders, human phone updates",
         "`schedule --kind ask` opens an ask thread",
         "`schedule --kind notify` delivers a fire-and-forget notification",
     )
@@ -175,11 +178,15 @@ def test_mcp_tool_instructions_match_command_contract() -> None:
     assert "Open a non-blocking ask thread" in ask_doc
     ask_doc_line = _one_line(ask_doc)
     assert "not a synchronous wait or delivery receipt" in ask_doc_line
+    assert "pre-commit handoffs" in ask_doc_line
+    assert "where closure matters" in ask_doc_line
     assert "Use notify_peer for fire-and-forget" in ask_doc_line
     assert "Do not use SendMessage for mesh peers" in ask_doc
     assert "Bare ack" in ack_doc
     assert "Reply ack" in ack_doc
     assert "Fire-and-forget" in notify_doc
     assert "does NOT guarantee agent receipt" in notify_doc
+    assert "delegated work that needs an explicit ack" in _one_line(notify_doc)
+    assert "durable job" in _one_line(notify_doc)
     assert "Do not use SendMessage" in notify_doc
     assert "Do not use SendMessage" in broadcast_doc

@@ -14,6 +14,8 @@ An orchestrator is a peer whose job is coordinating other peers. It can dispatch
 
 - Claim or repair the orchestrator role for a long-running coordinator peer.
 - Use `orchestrator_status` before dispatching long-running work.
+- Dispatch closure-sensitive handoffs with `ask`, or use jobs when the work
+  needs durable lifecycle/result tracking.
 - Route review work through `review_queue` and `mark_reviewed`.
 - Schedule check-ins so the orchestrator wakes itself or workers later.
 - Pair the orchestrator with a persona when routing policy should be explicit.

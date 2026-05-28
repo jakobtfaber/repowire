@@ -21,7 +21,7 @@ Or simply work in a session named `orchestrator` — by convention other peers w
 ## The loop
 
 1. **Scan** the work queue. GitHub Project, beads, a markdown checklist — whatever your team uses.
-2. **Dispatch**: `notify_peer(project_a, "claim this task: <brief>")`. Flip the board item to `In Progress`.
+2. **Dispatch**: `ask(project_a, "claim this task: <brief>")` when you need an explicit closeout, or create a job when the task needs durable lifecycle/result tracking. Flip the board item to `In Progress`.
 3. **Receive** progress via `ask` / `notify` from project peers. `set_description("working on X")` on each peer keeps the dashboard honest.
 4. **Review** completed work. `review_queue()` surfaces PRs you owe a look. `mark_reviewed(pr_url)` clears them after the pass.
 5. **Release** when a batch lands. Tag, push, notify the team channel.
@@ -69,6 +69,10 @@ Pairing runtimes also hedges against rate limits and credit caps on either side.
 ## Scheduled check-ins
 
 `schedule_create(to_peer, text, fire_at, kind="notify")` defers a single future message. Use `schedule_cron(to_peer, text, cron, kind="notify")` for recurring check-ins, or `schedule_self(text, fire_at=...|cron=...)` when the orchestrator is scheduling its own wake-up.
+
+Use `kind="ask"` for scheduled checkpoints, reviews, and handoffs that must be
+closed. Keep `kind="notify"` for reminders, nudges, and FYIs where no closure is
+expected.
 
 Typical uses:
 

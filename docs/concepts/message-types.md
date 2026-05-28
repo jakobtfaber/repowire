@@ -6,6 +6,11 @@ The daemon routes four message types. Pick by lifecycle, not by content.
 
 Non-blocking. Returns a `correlation_id` immediately. The recipient closes the thread with `ack(corr_id)` (bare) or `ack(corr_id, message)` (reply). Chain follow-ups with `ask(reply_to=corr_id, ...)`, which closes the prior thread and opens a new one referencing it.
 
+Use `ask` when closure matters: worker checkpoints, review requests, pre-commit
+handoffs, status checks you intend to track, and delegated work that should not
+quietly disappear. For durable implementation work with lifecycle/result state,
+prefer a job instead of overloading a long ask thread.
+
 If the recipient never acks, repowire injects a reminder block at the start of every subsequent prompt on the recipient side until the ask is acked. Tool-call detection is the source of truth — prose `[ack #cid]` mentions in agent output do not close anything, only a real `ack()` MCP call does.
 
 When the daemon can resolve a durable session binding for either side, ask events include nullable `repowire_session_id`, `from_repowire_session_id`, and `to_repowire_session_id` metadata. Peer IDs remain the routing authority.
@@ -24,6 +29,11 @@ Bare ack events and reply notifications carry the same nullable session metadata
 ## `notify_peer`
 
 Fire-and-forget. No lifecycle, no response expected. Returns a synthetic `notif-XXXXXXXX` ID for client-side tracking, not a thread you can close.
+
+Use `notify_peer` for FYIs, self-wakes, reminders, human phone updates, and
+nudges where daemon acceptance is enough. Do not use it for worker checkpoints,
+review requests, pre-commit handoffs, or delegated work that needs an explicit
+ack.
 
 The special peer name `telegram` routes to the user's phone (if the Telegram bot is running). The dashboard already sees agent turns; you do not need to notify it.
 

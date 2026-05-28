@@ -54,6 +54,9 @@ The command UX must preserve the lifecycle distinction:
 
 - `ask` is non-blocking and returns a `correlation_id` immediately. The returned
   id is not a delivery receipt.
+- Use `ask` for worker checkpoints, review requests, pre-commit handoffs,
+  status checks you intend to track, and any delegation where closure matters.
+  Use durable jobs when the work needs lifecycle and result state.
 - A recipient closes an ask with bare `ack(correlation_id)` when no substantive
   reply is needed.
 - A recipient replies with `ack(correlation_id, message)`. The reply is the
@@ -62,6 +65,8 @@ The command UX must preserve the lifecycle distinction:
   thread and opens a new tracked thread.
 - `notify` is fire-and-forget. It may return a local notification id for
   observability, but that id is not an ask thread and cannot be acked.
+- Use `notify` only for FYIs, self-wakes, reminders, human phone updates, and
+  nudges where no closure is expected.
 - `schedule --kind ask` opens an ask thread when the schedule fires.
   `schedule --kind notify` delivers a fire-and-forget notification.
 

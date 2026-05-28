@@ -59,6 +59,8 @@ ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None 
 
 Open a non-blocking ask thread. In normal use, you tell your local agent what you need in natural language, and the agent invokes this MCP tool. Returns a `correlation_id` immediately. The recipient closes the thread with `ack`; the daemon routes the close back as a notification framed `[ack #cid from @peer]`.
 
+Use `ask` for worker checkpoints, review requests, pre-commit handoffs, status checks you intend to track, and delegated work where closure matters. Use a durable job instead when the work needs lifecycle and result state.
+
 Daemon events for asks and acks include nullable `repowire_session_id`, `from_repowire_session_id`, and `to_repowire_session_id` fields when an existing session binding can be resolved. Peer IDs remain the routing authority.
 
 Live delivery is attempted first. If a CLI-fallback/polling peer has no live transport, the ask stays open and a one-shot queued delivery is stored in SQLite for its next Stop-hook or CLI drain. The queued delivery is deleted after drain; the ask itself still appears in `/asks/pending` until `ack`.
@@ -91,7 +93,9 @@ ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")
 notify_peer(peer_name: str, message: str, circle: str | None = None, attachments: list[dict] | None = None) -> str
 ```
 
-Fire-and-forget. No lifecycle, no expected response. Returns a synthetic `notif-XXXXXXXX` ID for client-side tracking, not a thread you can close. Use for status pings and announcements.
+Fire-and-forget. No lifecycle, no expected response. Returns a synthetic `notif-XXXXXXXX` ID for client-side tracking, not a thread you can close. Use for FYIs, self-wakes, reminders, human phone updates, and nudges where no closure is expected.
+
+Do not use `notify_peer` for worker checkpoints, review requests, pre-commit handoffs, or delegated work that needs explicit ack; use `ask` or a durable job instead.
 
 On the HTTP `/notify` response, `hook_delivery` may be present when the
 recipient is a new enough WebSocket hook. It is a best-effort terminal injection
@@ -289,7 +293,7 @@ schedule_create(to_peer: str, text: str, fire_at: str, kind: str = "notify", cir
 
 Schedule a **one-shot** future message to a peer. Use `schedule_cron` for recurring schedules, or `schedule_self` when the recipient is the calling peer.
 
-At `fire_at`, the daemon delivers `text` to `to_peer` on your behalf. `kind="notify"` is fire-and-forget; `kind="ask"` opens an ask thread (the recipient must `ack`). `fire_at` is ISO-8601; naive datetimes are interpreted as UTC.
+At `fire_at`, the daemon delivers `text` to `to_peer` on your behalf. `kind="notify"` is fire-and-forget; `kind="ask"` opens an ask thread (the recipient must `ack`). Use `kind="ask"` for scheduled checkpoints, reviews, and handoffs that must be closed. `fire_at` is ISO-8601; naive datetimes are interpreted as UTC.
 
 Use for self-wake reminders, post-stand-up nudges, or future check-ins that don't need a live caller waiting. Returns a `sched-XXXXXXXX` ID; pass it to `schedule_delete` to cancel.
 
@@ -301,7 +305,7 @@ schedule_self(text: str, fire_at: str | None = None, cron: str | None = None, ki
 
 Schedule a future message to yourself. Provide exactly one of `fire_at` or `cron`.
 
-For one-shot reminders, pass an ISO-8601 `fire_at`. For recurring reminders, pass a five-field cron expression or an alias such as `@hourly`, `@daily`, `@midnight`, `@weekly`, or `@monthly`. `kind="notify"` delivers a reminder; `kind="ask"` opens an ask thread that must be acked.
+For one-shot reminders, pass an ISO-8601 `fire_at`. For recurring reminders, pass a five-field cron expression or an alias such as `@hourly`, `@daily`, `@midnight`, `@weekly`, or `@monthly`. `kind="notify"` delivers a reminder; `kind="ask"` opens an ask thread that must be acked. Use `kind="ask"` when the scheduled delivery gates progress.
 
 ### `schedule_cron`
 

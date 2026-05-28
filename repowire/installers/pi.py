@@ -753,7 +753,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "ask",
     label: "Repowire: ask peer",
-    description: "Open a non-blocking ask thread with a peer. Use when work needs a tracked thread and explicit ack, such as worker status checks, reviewer checkpoints, or deliberate loopback checks. Returns a correlation_id immediately; watch notifications for the eventual ack. Use notify_peer for fire-and-forget updates, reminders, self-wakes, and nudges. Do not use SendMessage for mesh peers.",
+    description: "Open a non-blocking ask thread with a peer. Use when work needs a tracked thread and explicit ack, such as worker status checks, reviewer checkpoints, pre-commit handoffs, or delegated work that needs closure. Returns a correlation_id immediately; watch notifications for the eventual ack. Use notify_peer for fire-and-forget updates, reminders, self-wakes, and nudges. Do not use SendMessage for mesh peers.",
     parameters: Type.Object({
       peer_name: Type.String({ description: "Display name or peer_id of the peer to ask" }),
       query: Type.String({ description: "The question or request to send" }),
@@ -797,7 +797,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "notify_peer",
     label: "Repowire: notify peer",
-    description: "Send a fire-and-forget notification to another peer. Use for status updates, replies to notifications, reminders, self-wakes, and nudges that do not require closure. Special peer 'telegram' sends to the user's phone; dashboard sees chat turns automatically. Daemon-side success is not delivery confirmation; use ask when confirmed closure matters.",
+    description: "Send a fire-and-forget notification to another peer. Use for status updates, replies to notifications, reminders, self-wakes, and nudges that do not require closure. Do not use for worker checkpoints, review requests, pre-commit handoffs, or delegated work that needs explicit ack; use ask or a durable job instead. Special peer 'telegram' sends to the user's phone; dashboard sees chat turns automatically. Daemon-side success is not delivery confirmation.",
     parameters: Type.Object({
       peer_name: Type.String({ description: "Display name or peer_id of the peer to notify" }),
       message: Type.String({ description: "The notification message" }),
