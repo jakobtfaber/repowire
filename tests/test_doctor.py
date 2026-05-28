@@ -93,10 +93,26 @@ class TestDaemon:
                 200, json={"status": "ok", "version": "9.9.9", "relay_mode": False},
             )
 
-        with patch("repowire.doctor.httpx.Client", _mock_client_factory(handler)):
+        with patch("repowire.doctor.__version__", "9.9.9"), \
+             patch("repowire.doctor.httpx.Client", _mock_client_factory(handler)):
             r = check_daemon("http://localhost:8377")
         assert r.status is Status.OK
         assert "9.9.9" in r.detail
+
+    def test_reachable_warns_on_version_mismatch(self):
+        def handler(_request):
+            return httpx.Response(
+                200, json={"status": "ok", "version": "0.14.3", "relay_mode": False},
+            )
+
+        with patch("repowire.doctor.__version__", "0.14.4"), \
+             patch("repowire.doctor.httpx.Client", _mock_client_factory(handler)):
+            r = check_daemon("http://localhost:8377")
+        assert r.status is Status.WARN
+        child = next(c for c in r.children if c.name == "Daemon version")
+        assert child.status is Status.WARN
+        assert "daemon v0.14.3 differs from CLI v0.14.4" in child.detail
+        assert "reinstall/restart daemon" in child.detail
 
     def test_reachable_reports_degraded_acp_child(self):
         def handler(_request):

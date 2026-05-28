@@ -67,7 +67,7 @@ Run a battery of diagnostic checks and print color-coded results. Each check rep
 
 Checks include:
 
-- Daemon reachable (`GET /health`, prints version)
+- Daemon reachable (`GET /health`, prints version and warns if the running daemon version differs from the CLI/package version)
 - Per-runtime hook + MCP install state (claude-code, codex, gemini, antigravity, opencode, pi)
 - `tmux`, Python, and package-manager (`uv`/`pipx`/`pip`) availability
 - Update availability when opted in with `repowire setup --update-checks`

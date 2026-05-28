@@ -106,6 +106,15 @@ def check_daemon(daemon_url: str, timeout: float = 2.0) -> CheckResult:
     version = payload.get("version", "?")
     relay_mode = " (relay mode)" if payload.get("relay_mode") else ""
     children = _daemon_health_children(payload)
+    if version not in {None, "?", __version__}:
+        children.insert(
+            0,
+            CheckResult(
+                "Daemon version",
+                Status.WARN,
+                f"daemon v{version} differs from CLI v{__version__}; reinstall/restart daemon",
+            ),
+        )
     return CheckResult(
         "Daemon reachable",
         _worst(children) if children else Status.OK,
