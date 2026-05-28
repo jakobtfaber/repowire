@@ -540,6 +540,10 @@ class SessionControlService:
                 pane_peer = await self._registry.get_peer_by_pane(pane_id)
                 if pane_peer is not None and pane_peer.status != PeerStatus.OFFLINE:
                     return pane_peer
+                if _utcnow() >= deadline:
+                    return None
+                await asyncio.sleep(0.25)
+                continue
             resolved = await self._registry.resolve_peer_strict(display_name, circle=circle)
             if not isinstance(resolved, list) and resolved.status != PeerStatus.OFFLINE:
                 return resolved
@@ -718,8 +722,23 @@ class SessionControlService:
     @staticmethod
     def _execution_policy(work: TrackedWork) -> dict[str, str]:
         execution = (work.request or {}).get("execution") or {}
-        process_scope = str(execution.get("process_scope") or "persistent")
-        continuity = str(execution.get("continuity") or "resume")
+        process_scope = execution.get("process_scope")
+        target = execution.get("target") or {}
+        if (
+            process_scope is None
+            and work.source_kind == "calendar"
+            and not (target.get("assigned_peer_id") or work.assigned_peer_id)
+            and target.get("path")
+            and target.get("backend")
+        ):
+            process_scope = "per_fire"
+        process_scope = str(process_scope or "persistent")
+        if process_scope == "per-fire":
+            process_scope = "per_fire"
+        continuity = execution.get("continuity")
+        if continuity is None and process_scope == "per_fire":
+            continuity = "resume"
+        continuity = str(continuity or "resume")
         return {"process_scope": process_scope, "continuity": continuity}
 
     @staticmethod

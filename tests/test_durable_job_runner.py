@@ -455,6 +455,109 @@ async def test_path_backend_job_reuses_live_matching_peer_without_spawning(tmp_p
 
 
 @pytest.mark.anyio
+async def test_legacy_recurring_path_backend_defaults_to_per_fire(tmp_path):
+    _cfg, registry, db, _store, calendar, _session_bindings, delivery, spawn, runner = _env(
+        tmp_path
+    )
+    worker_path = str(tmp_path / "daily-email-brief")
+    live_peer_id = await _register_peer(
+        registry,
+        peer_id="repow-default-old-live",
+        backend=AgentType.CODEX,
+        path=worker_path,
+        pane_id="%42",
+        tmux_session="default:old-live",
+        metadata={"hook_session_id": "codex-session-live"},
+        status=PeerStatus.ONLINE,
+    )
+    calendar.create(
+        title="daily brief",
+        kind="brief",
+        cron="*/2 * * * *",
+        circle="default",
+        request={"execution": {"target": {"path": worker_path, "backend": "codex"}}},
+        now=datetime(2026, 5, 25, 8, 0, tzinfo=timezone.utc),
+    )
+    [child] = calendar.materialize_due(now=datetime(2026, 5, 25, 8, 2, tzinfo=timezone.utc))
+    registered: dict[str, str] = {}
+
+    async def register_after_spawn() -> None:
+        while not spawn.calls:
+            await asyncio.sleep(0.01)
+        peer_id, _name = await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CODEX,
+            path=worker_path,
+            peer_id="repow-default-per-fire",
+            pane_id=spawn.pane_id,
+            tmux_session="default:daily-email-brief",
+            metadata={"hook_session_id": "codex-session-new"},
+            initial_status=PeerStatus.ONLINE,
+            role=PeerRole.AGENT,
+        )
+        registered["peer_id"] = peer_id
+
+    task = asyncio.create_task(register_after_spawn())
+    try:
+        result = await runner.run_job(child.work_id)
+    finally:
+        await task
+
+    assert result.state == "delivered"
+    assert len(spawn.calls) == 1
+    assert delivery.calls[0]["to_peer"] == registered["peer_id"]
+    assert delivery.calls[0]["to_peer"] != live_peer_id
+    attempt = result.provenance["runner"]["attempts"][0]
+    assert attempt["acquisition"]["strategy"] == "spawned_peer"
+    assert attempt["acquisition"]["release_handle"]["pane_id"] == spawn.pane_id
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
+async def test_recurring_path_backend_persistent_policy_reuses_live_peer(tmp_path):
+    _cfg, registry, db, _store, calendar, _session_bindings, delivery, spawn, runner = _env(
+        tmp_path
+    )
+    worker_path = str(tmp_path / "daily-email-brief")
+    peer_id = await _register_peer(
+        registry,
+        peer_id="repow-default-daily",
+        backend=AgentType.CODEX,
+        path=worker_path,
+        pane_id="%42",
+        tmux_session="default:daily-email-brief",
+        metadata={"hook_session_id": "codex-session-1"},
+        status=PeerStatus.ONLINE,
+    )
+    calendar.create(
+        title="daily brief",
+        kind="brief",
+        cron="*/2 * * * *",
+        circle="default",
+        request={
+            "execution": {
+                "process_scope": "persistent",
+                "target": {"path": worker_path, "backend": "codex"},
+            }
+        },
+        now=datetime(2026, 5, 25, 8, 0, tzinfo=timezone.utc),
+    )
+    [child] = calendar.materialize_due(now=datetime(2026, 5, 25, 8, 2, tzinfo=timezone.utc))
+
+    result = await runner.run_job(child.work_id)
+
+    assert result.state == "delivered"
+    assert spawn.calls == []
+    assert delivery.calls[0]["to_peer"] == peer_id
+    attempt = result.provenance["runner"]["attempts"][0]
+    assert attempt["acquisition"]["strategy"] == "reused_peer"
+    assert attempt["acquisition"]["release_handle"] is None
+    db.close()
+    cleanup_deps()
+
+
+@pytest.mark.anyio
 async def test_spawned_peer_wait_tolerates_delayed_codex_registration(tmp_path):
     _cfg, registry, db, store, _calendar, _session_bindings, delivery, spawn, runner = _env(
         tmp_path
@@ -481,7 +584,7 @@ async def test_spawned_peer_wait_tolerates_delayed_codex_registration(tmp_path):
             backend=AgentType.CODEX,
             path=worker_path,
             peer_id="repow-default-spawned",
-            pane_id="%655",
+            pane_id=spawn.pane_id,
             tmux_session="default:daily-email-brief",
             metadata={"hook_session_id": "codex-session-2"},
             initial_status=PeerStatus.ONLINE,
@@ -518,7 +621,10 @@ async def test_spawned_peer_wait_tolerates_delayed_codex_registration(tmp_path):
     assert (
         attempt["assigned_peer_info"]["runtime_binding"]["runtime_session_id"] == "codex-session-2"
     )
-    assert attempt["tmux"] == {"tmux_session": "default:daily-email-brief", "pane_id": "%655"}
+    assert attempt["tmux"] == {
+        "tmux_session": "default:daily-email-brief",
+        "pane_id": spawn.pane_id,
+    }
     db.close()
     cleanup_deps()
 
@@ -898,7 +1004,7 @@ async def test_recurring_job_uses_recorded_codex_resume_binding(tmp_path):
             backend=AgentType.CODEX,
             path=worker_path,
             peer_id="repow-default-resumed",
-            pane_id="%656",
+            pane_id=spawn.pane_id,
             tmux_session="default:daily-email-brief",
             metadata={"hook_session_id": "codex-runtime-old"},
             initial_status=PeerStatus.ONLINE,
@@ -976,7 +1082,7 @@ async def test_per_fire_terminal_update_releases_spawned_executor(
             backend=AgentType.CODEX,
             path=worker_path,
             peer_id="repow-default-spawned",
-            pane_id="%655",
+            pane_id=spawn.pane_id,
             tmux_session="default:daily-email-brief",
             metadata={"hook_session_id": "codex-session-2"},
             initial_status=PeerStatus.ONLINE,
@@ -1006,7 +1112,7 @@ async def test_per_fire_terminal_update_releases_spawned_executor(
     attempt_id = delivered.provenance["runner"]["current_attempt_id"]
     assert delivered.provenance["runner"]["attempts"][0]["acquisition"]["release_handle"][
         "pane_id"
-    ] == "%655"
+    ] == spawn.pane_id
 
     app = FastAPI()
     app.include_router(work_routes.router)
@@ -1023,10 +1129,10 @@ async def test_per_fire_terminal_update_releases_spawned_executor(
     assert response.status_code == 200, response.text
     status = response.json()["status"]
     assert status["state"] == "completed"
-    assert killed == ["%655"]
+    assert killed == [spawn.pane_id]
     release = status["provenance"]["runner"]["release_result"]
     assert release["status"] == "released"
-    assert release["pane_id"] == "%655"
+    assert release["pane_id"] == spawn.pane_id
     assert await registry.get_peer(registered["peer_id"]) is None
     db.close()
     cleanup_deps()
@@ -1130,7 +1236,7 @@ async def test_per_fire_fresh_ignores_recorded_resume_binding(tmp_path):
             backend=AgentType.CODEX,
             path=worker_path,
             peer_id="repow-default-fresh",
-            pane_id="%656",
+            pane_id=spawn.pane_id,
             tmux_session="default:daily-email-brief",
             metadata={"hook_session_id": "codex-runtime-new"},
             initial_status=PeerStatus.ONLINE,
