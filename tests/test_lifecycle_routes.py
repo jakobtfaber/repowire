@@ -131,21 +131,40 @@ class TestPaneDied:
         )
         assert r.status_code == 200
 
-    async def test_clears_spawned_pane_ownership(self, client_and_registry):
+    async def test_clears_spawned_pane_ownership(
+        self,
+        client_and_registry,
+        tmp_path,
+        monkeypatch,
+    ):
         """pane_died must clear the pane id from _SPAWNED_PANE_IDS so a
         future tmux server restart can't reuse it and accidentally match
         an externally-attached peer."""
         from repowire.daemon.routes import spawn as spawn_routes
+        from repowire.spawn_ownership import get_spawn_ownership, record_spawn_ownership
 
+        monkeypatch.setattr("repowire.spawn_ownership.OWNERSHIP_PATH", tmp_path / "ownership.json")
         client, _ = client_and_registry
         spawn_routes._SPAWNED_PANE_IDS.add("%5")
         try:
+            record_spawn_ownership(
+                pane_id="%5",
+                path="/tmp/test",
+                backend=AgentType.CLAUDE_CODE,
+                circle="alpha",
+                role="agent",
+                display_name="myproject",
+                tmux_session="default:test",
+                peer_id="repow-dev-abc12345",
+            )
+            assert get_spawn_ownership("%5") is not None
             r = await client.post(
                 "/hooks/lifecycle/pane-died",
                 json={"pane_id": "%5"},
             )
             assert r.status_code == 200
             assert "%5" not in spawn_routes._SPAWNED_PANE_IDS
+            assert get_spawn_ownership("%5") is None
         finally:
             spawn_routes._SPAWNED_PANE_IDS.discard("%5")
 

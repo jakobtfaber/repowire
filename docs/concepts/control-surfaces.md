@@ -31,6 +31,11 @@ bindings rather than display names:
   ids return `status=resume_available`. Passing `dry_run=false` spawns the
   backend-native resume command through the daemon spawn service.
 
+Session resume is not limited to peers originally spawned by Repowire. Spawn
+ownership is still required for destructive pane operations such as
+peer restart/kill, but session resume only needs a captured backend runtime
+session id and a backend that supports local resume.
+
 These routes require the SQLite session binding store. Existing peer-targeted
 `ask`, `notify_peer`, and dashboard routes remain compatible and continue to
 route by peer identity.

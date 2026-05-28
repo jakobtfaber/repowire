@@ -241,6 +241,71 @@ class TestRestartPeerRoute:
         mock_kill.assert_not_called()
         mock_spawn.assert_not_called()
 
+    async def test_restart_uses_durable_ownership_after_daemon_restart_for_orchestrator(
+        self, env, tmp_path, monkeypatch,
+    ):
+        name = await _register(
+            env.client,
+            path=str(tmp_path),
+            role=PeerRole.ORCHESTRATOR.value,
+            pane_id=None,
+            machine="unknown",
+        )
+        peer = await env.registry.get_peer(name)
+        assert peer is not None
+        assert peer.pane_id is None
+        record_spawn_ownership(
+            pane_id="%101",
+            path=str(tmp_path),
+            backend=AgentType.CLAUDE_CODE,
+            circle="default",
+            role=PeerRole.ORCHESTRATOR,
+            display_name=name,
+            tmux_session="default:orchestrator",
+            peer_id=peer.peer_id,
+        )
+        spawn_routes._SPAWNED_PANE_IDS.clear()
+
+        monkeypatch.setattr(
+            "repowire.spawn_ownership.probe_tmux_pane",
+            lambda pane_id: TmuxPaneEvidence(
+                pane_id=pane_id,
+                tmux_session="default:orchestrator",
+                current_path=str(tmp_path),
+                pane_pid="12345",
+            ) if pane_id == "%101" else None,
+        )
+
+        with patch.object(spawn_routes, "kill_pane", return_value=True) as mock_kill, \
+            patch.object(
+                spawn_routes,
+                "spawn_peer",
+                return_value=_spawn_result("%202"),
+            ) as mock_spawn, \
+            patch.object(spawn_routes, "post_spawn_warmup", new_callable=AsyncMock):
+            response = await env.client.post(
+                f"/peers/{name}/restart",
+                json={"message": "restart orchestrator"},
+            )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["status"] == "restarted"
+        assert body["peer_id"] == peer.peer_id
+        assert body["display_name"] == peer.display_name
+        mock_kill.assert_called_once_with("%101")
+        spawn_cfg = mock_spawn.call_args.args[0]
+        assert spawn_cfg.peer_id == peer.peer_id
+        assert spawn_cfg.role == PeerRole.ORCHESTRATOR.value
+        assert spawn_cfg.path == str(tmp_path.resolve())
+        assert spawn_cfg.message == "restart orchestrator"
+        assert get_spawn_ownership("%101") is None
+        new_record = get_spawn_ownership("%202")
+        assert new_record is not None
+        assert new_record.peer_id == peer.peer_id
+        assert new_record.role == PeerRole.ORCHESTRATOR.value
+        assert new_record.path == str(tmp_path.resolve())
+
     async def test_dry_run_adopts_unique_durable_ownership_for_paneless_peer(
         self, env, tmp_path, monkeypatch,
     ):

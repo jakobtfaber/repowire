@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Bell, Check, Clock, Copy, Paperclip, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
+import { AlertCircle, Bell, Check, Clock, Copy, Paperclip, Play, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
 import { cn, shortPath, statusDot } from "../lib/utils";
 import { registerSnapshotProvider, useFrozenThread, useIsPeerProtected } from "../lib/protection";
 import { clearDraft, setDraftFile, setDraftText, useDraftFile, useDraftText } from "../lib/drafts";
@@ -42,6 +42,10 @@ interface SessionResumeControlResponse {
   executor_peer_id?: string | null;
   executor_peer_name?: string | null;
   resume_capability: Record<string, unknown>;
+  action?: "inspect" | "spawned";
+  spawned_display_name?: string | null;
+  tmux_session?: string | null;
+  pane_id?: string | null;
 }
 
 interface SessionNotifyControlResponse {
@@ -841,6 +845,9 @@ function SessionCommandPanel({
   const [notifyPending, setNotifyPending] = useState(false);
   const [notifyStatus, setNotifyStatus] = useState<string | null>(null);
   const [notifyError, setNotifyError] = useState<string | null>(null);
+  const [resumePending, setResumePending] = useState(false);
+  const [resumeStatus, setResumeStatus] = useState<string | null>(null);
+  const [resumeError, setResumeError] = useState<string | null>(null);
 
   const loadCapability = useCallback(async () => {
     if (!activeSessionId) {
@@ -885,10 +892,14 @@ function SessionCommandPanel({
     setNotifyText("");
     setNotifyStatus(null);
     setNotifyError(null);
+    setResumeStatus(null);
+    setResumeError(null);
     void loadCapability();
   }, [loadCapability]);
 
-  const canNotifySession = Boolean(activeSessionId && resumeState?.capability === "active_executor");
+  const controlSessionId = activeSessionId || resumeState?.repowire_session_id || null;
+  const canNotifySession = Boolean(controlSessionId && resumeState?.capability === "active_executor");
+  const canResumeSession = Boolean(controlSessionId && resumeState?.capability === "supported");
   const resumeLabel = !activeSessionId
     ? "no selected session"
     : loadingCapability
@@ -903,11 +914,11 @@ function SessionCommandPanel({
     ? "not resumable"
     : "session unavailable";
   const controlMessage = !activeSessionId
-    ? "Select a session; nudges require a running agent attached to it."
+    ? "Select a captured session to inspect controls."
     : resumeState?.capability === "active_executor"
-    ? "This durable session has a running agent attached, so nudges can be sent now."
+    ? "This captured session has a running agent attached, so nudges can be sent now."
     : resumeState?.capability === "supported"
-    ? "This durable session has resume metadata, but no running agent is attached right now."
+    ? "This captured session has resume metadata and can start a new backend-native resume."
     : resumeState?.capability === "unavailable"
     ? resumeState.message
     : resumeState?.capability === "unsupported"
@@ -923,13 +934,13 @@ function SessionCommandPanel({
 
   async function submitNotify() {
     const text = notifyText.trim();
-    if (!activeSessionId || !text || notifyPending || !canNotifySession) return;
+    if (!controlSessionId || !text || notifyPending || !canNotifySession) return;
     setNotifyPending(true);
     setNotifyStatus(null);
     setNotifyError(null);
     try {
       const res = await fetch(
-        `${apiBase}/sessions/${encodeURIComponent(activeSessionId)}/controls/notify`,
+        `${apiBase}/sessions/${encodeURIComponent(controlSessionId)}/controls/notify`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -963,12 +974,48 @@ function SessionCommandPanel({
     }
   }
 
+  async function submitResume() {
+    if (!controlSessionId || !canResumeSession || resumePending) return;
+    setResumePending(true);
+    setResumeStatus(null);
+    setResumeError(null);
+    try {
+      const res = await fetch(
+        `${apiBase}/sessions/${encodeURIComponent(controlSessionId)}/controls/resume`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ from_peer: "dashboard", dry_run: false }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = data?.detail;
+        setResumeError(
+          typeof detail === "string"
+            ? detail
+            : detail?.message || detail?.error || `Error ${res.status}`,
+        );
+        return;
+      }
+      const body = data as SessionResumeControlResponse;
+      setResumeState(body);
+      setResumeStatus(body.spawned_display_name ? `resume spawned: ${body.spawned_display_name}` : "resume spawned");
+      onSent?.();
+    } catch (e) {
+      setResumeError(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setResumePending(false);
+    }
+  }
+
   return (
     <div className="border-t border-border-faint bg-surface px-3 py-2 md:px-4">
       <div className="rounded border border-border-faint bg-surface-container-low p-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-outline">
-            session nudges
+            session actions
           </span>
           <span
             className={cn(
@@ -993,6 +1040,23 @@ function SessionCommandPanel({
         </div>
         <div className="mt-1.5 line-clamp-2 font-mono text-[11px] leading-4 text-outline">
           {controlMessage}
+        </div>
+
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={submitResume}
+            disabled={!canResumeSession || resumePending}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors disabled:opacity-40",
+              canResumeSession
+                ? "border-primary/50 bg-primary/10 text-primary hover:bg-primary/15"
+                : "border-border-faint text-outline",
+            )}
+          >
+            {resumePending ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+            Resume session
+          </button>
         </div>
 
         <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1033,10 +1097,15 @@ function SessionCommandPanel({
             {notifyPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Bell className="h-4 w-4" />}
           </button>
         </div>
-        {(notifyStatus || notifyError) && (
-          <div className={cn("mt-2 flex items-center gap-2 font-mono text-xs", notifyError ? "text-error" : "text-primary")}>
-            {notifyError ? <AlertCircle className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
-            <span>{notifyError || notifyStatus}</span>
+        {(notifyStatus || notifyError || resumeStatus || resumeError) && (
+          <div
+            className={cn(
+              "mt-2 flex items-center gap-2 font-mono text-xs",
+              notifyError || resumeError ? "text-error" : "text-primary",
+            )}
+          >
+            {notifyError || resumeError ? <AlertCircle className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
+            <span>{notifyError || resumeError || notifyStatus || resumeStatus}</span>
           </div>
         )}
       </div>

@@ -2792,7 +2792,7 @@ def peer_describe(identifier: str, circle: str | None) -> None:
 @click.argument("role", type=click.Choice(["orchestrator"]))
 @click.option("--peer", "peer_name", help="Existing peer id or display name to update")
 @click.option("--circle", "-c", help="Circle to scope lookup and role ownership")
-@click.option("--force", "-f", is_flag=True, help="Demote an existing live holder")
+@click.option("--force", "-f", is_flag=True, help="Retry repair with compatibility force flag")
 def peer_claim_role(role: str, peer_name: str | None, circle: str | None, force: bool) -> None:
     """Claim a singleton special role for an existing peer."""
     import sys
@@ -2820,7 +2820,10 @@ def peer_claim_role(role: str, peer_name: str | None, circle: str | None, force:
                 sys.exit(1)
             if resp.status_code == 409:
                 console.print(f"[red]Cannot claim role:[/] {_http_response_detail(resp)}")
-                console.print("[dim]Use --force only if the current holder should be demoted.[/]")
+                console.print(
+                    "[dim]A fresh live orchestrator holder cannot be demoted; "
+                    "stop it first, then retry.[/]"
+                )
                 sys.exit(1)
             resp.raise_for_status()
             data = resp.json()

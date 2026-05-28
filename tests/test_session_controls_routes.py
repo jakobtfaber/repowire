@@ -124,6 +124,50 @@ async def test_session_resume_reports_supported_backend_capability(tmp_path):
     assert body["resume_capability"]["strategy"] == "codex_resume"
 
 
+@pytest.mark.parametrize(
+    ("backend", "strategy"),
+    [
+        ("claude-code", "claude_resume"),
+        ("codex", "codex_resume"),
+        ("gemini", "gemini_resume"),
+        ("opencode", "opencode_session"),
+        ("antigravity", "antigravity_conversation"),
+        ("pi", "pi_session"),
+    ],
+)
+async def test_local_agent_sessions_with_runtime_ids_are_resumable(
+    tmp_path,
+    backend: str,
+    strategy: str,
+) -> None:
+    cfg = Config(experiments={"sqlite_state": True})
+    app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
+
+    async with app.router.lifespan_context(app):
+        binding = app.state.session_binding_store.upsert_observation(
+            peer_id=None,
+            backend=backend,
+            project_path="/repo",
+            runtime_session_id=f"{backend}-runtime-1",
+            runtime_source_uri=f"{backend}:repo/runtime-1",
+            status="resumable",
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                f"/sessions/{binding.repowire_session_id}/controls/resume",
+                json={},
+            )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "resume_available"
+    assert body["capability"] == "supported"
+    assert body["backend"] == backend
+    assert body["resume_capability"]["supported"] is True
+    assert body["resume_capability"]["strategy"] == strategy
+
+
 async def test_session_resume_executes_backend_resume_when_requested(tmp_path):
     cfg = Config(experiments={"sqlite_state": True})
     app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")

@@ -64,6 +64,12 @@ When a new peer claims a pane already held by another peer, the old peer normall
 
 There is one protected case: a fresh live `orchestrator` peer keeps sticky ownership of its tmux pane. If a temporary same-pane session starts in a split terminal, the daemon can register that session without assigning the pane (`pane_assigned=false`). The temporary peer can still use outbound MCP/HTTP tools, but it does not get inbound hook transport and must not clear the incumbent orchestrator's pane metadata or WebSocket hook.
 
+Orchestrator role repair follows the same boundary. `claim_orchestrator_role`
+and `repowire peer claim-role orchestrator` can repair stale, offline, or
+mapping-only holders, but they cannot demote a fresh online/busy orchestrator
+holder. To intentionally replace a live orchestrator, stop that holder first so
+the daemon no longer treats it as fresh.
+
 MCP lazy registration treats tmux pane lookup as a locator, not as identity proof. A by-pane daemon result is accepted only when local pane runtime metadata proves the same daemon peer id, backend, and owning agent process. If that proof is missing or belongs to another process, MCP registers or resolves its own peer instead of adopting the incumbent. This keeps path and display name as useful context while avoiding path-based identity takeover.
 
 MCP lazy registration checks a daemon-minted birth certificate before the

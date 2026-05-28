@@ -749,7 +749,7 @@ describe("PeerView session controls", () => {
     );
 
     expect(await screen.findByText("running agent")).toBeInTheDocument();
-    expect(screen.getByText("This durable session has a running agent attached, so nudges can be sent now.")).toBeInTheDocument();
+    expect(screen.getByText("This captured session has a running agent attached, so nudges can be sent now.")).toBeInTheDocument();
     const input = screen.getByPlaceholderText("nudge alice's running agent...");
     fireEvent.change(input, { target: { value: "status please" } });
     fireEvent.click(screen.getByLabelText("Send session nudge"));
@@ -879,11 +879,11 @@ describe("PeerView session controls", () => {
     });
 
     expect(screen.getByText("no selected session")).toBeInTheDocument();
-    expect(screen.getByText("Select a session; nudges require a running agent attached to it.")).toBeInTheDocument();
+    expect(screen.getByText("Select a captured session to inspect controls.")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("nudges need a running agent")).toBeDisabled();
   });
 
-  it("explains resumable sessions without a running agent", async () => {
+  it("resumes captured sessions without a running agent", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
@@ -919,10 +919,27 @@ describe("PeerView session controls", () => {
       />,
     );
 
-    expect(await screen.findByText("resume available")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/sessions/session-a/controls/resume"))).toBe(true);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /resume session/i })).toBeEnabled();
+    });
     expect(
-      screen.getByText("This durable session has resume metadata, but no running agent is attached right now."),
+      screen.getByText("This captured session has resume metadata and can start a new backend-native resume."),
     ).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Resume session"));
+
+    await waitFor(() => {
+      const resumeCalls = fetchMock.mock.calls.filter((call) => String(call[0]).includes("/sessions/session-a/controls/resume"));
+      expect(resumeCalls.length).toBeGreaterThanOrEqual(2);
+    });
+    const spawnCall = fetchMock.mock.calls.find((call) => {
+      const body = String((call[1] as RequestInit | undefined)?.body || "{}");
+      return String(call[0]).includes("/controls/resume") && body.includes('"dry_run":false');
+    });
+    expect(spawnCall?.[1]).toMatchObject({ method: "POST" });
+    expect(await screen.findByText("resume spawned")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("nudges need a running agent")).toBeDisabled();
     expect(screen.getByLabelText("Send session nudge")).toBeDisabled();
   });

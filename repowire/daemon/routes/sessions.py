@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from repowire.agent_backends import AgentResumePlan
+from repowire.agent_backends import AgentResumePlan, resume_capability_for_registration
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state
@@ -177,6 +177,7 @@ async def resume_session(
     resume_status, capability, message = resume_capability_for(resolution)
     binding = resolution.binding
     executor = resolution.executor if resolution.has_active_executor else None
+    response_resume_capability = dict(binding.resume_capability)
     action: Literal["inspect", "spawned"] = "inspect"
     spawned_display_name: str | None = None
     tmux_session: str | None = None
@@ -203,6 +204,11 @@ async def resume_session(
                 },
             )
         assert binding.runtime_session_id is not None
+        if not response_resume_capability:
+            response_resume_capability = resume_capability_for_registration(
+                backend,
+                binding.runtime_session_id,
+            )
         spawn_result = spawn_service.spawn(
             path=binding.project_path,
             backend=backend,
@@ -213,7 +219,7 @@ async def resume_session(
                 backend=backend,
                 runtime_session_id=binding.runtime_session_id,
                 repowire_session_id=binding.repowire_session_id,
-                capability=binding.resume_capability,
+                capability=response_resume_capability,
             ),
         )
         action = "spawned"
@@ -221,6 +227,19 @@ async def resume_session(
         tmux_session = spawn_result.tmux_session
         pane_id = spawn_result.pane_id
         message = "Backend resume spawned for this runtime session."
+
+    elif (
+        capability == "supported"
+        and binding.runtime_session_id
+        and not response_resume_capability
+    ):
+        try:
+            response_resume_capability = resume_capability_for_registration(
+                AgentType(binding.backend),
+                binding.runtime_session_id,
+            )
+        except ValueError:
+            response_resume_capability = dict(binding.resume_capability)
 
     return SessionResumeResponse(
         repowire_session_id=repowire_session_id,
@@ -233,7 +252,7 @@ async def resume_session(
         runtime_source_uri=binding.runtime_source_uri,
         executor_peer_id=executor.peer_id if executor else resolution.executor_peer_id,
         executor_peer_name=executor.display_name if executor else None,
-        resume_capability=binding.resume_capability,
+        resume_capability=response_resume_capability,
         action=action,
         spawned_display_name=spawned_display_name,
         tmux_session=tmux_session,

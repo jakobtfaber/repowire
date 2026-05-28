@@ -47,6 +47,7 @@ async def _register(
     path: str,
     circle: str = "ops",
     role: PeerRole = PeerRole.AGENT,
+    pane_id: str | None = None,
 ) -> str:
     peer_id, _ = await registry.allocate_and_register(
         circle=circle,
@@ -54,6 +55,7 @@ async def _register(
         path=path,
         role=role,
         machine="m",
+        pane_id=pane_id,
     )
     return peer_id
 
@@ -203,6 +205,43 @@ async def test_same_workspace_temp_peer_cannot_claim_over_fresh_orchestrator(
     assert temp.role == PeerRole.AGENT
 
 
+@pytest.mark.asyncio
+async def test_same_workspace_temp_peer_cannot_force_claim_over_fresh_orchestrator(
+    client: tuple[AsyncClient, PeerRegistry],
+    tmp_path: Path,
+) -> None:
+    http_client, registry = client
+    orch_dir = tmp_path / "orchestrator"
+    orch_dir.mkdir()
+    real_id = await _register(
+        registry,
+        path=str(orch_dir),
+        role=PeerRole.ORCHESTRATOR,
+        pane_id="%1",
+    )
+    temp_id = await _register(registry, path=str(orch_dir), pane_id=None)
+
+    resp = await http_client.post(
+        "/peers/claim-role",
+        json={"role": "orchestrator", "peer_name": temp_id, "force": True},
+    )
+
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "already held" in detail
+    assert "force cannot demote" in detail
+    active = await registry.get_orchestrator("ops")
+    assert active is not None
+    assert active.peer_id == real_id
+    real = await registry.get_peer(real_id)
+    temp = await registry.get_peer(temp_id)
+    assert real is not None
+    assert temp is not None
+    assert real.role == PeerRole.ORCHESTRATOR
+    assert real.pane_id == "%1"
+    assert temp.role == PeerRole.AGENT
+
+
 def _mock_client(monkeypatch: pytest.MonkeyPatch, response: MagicMock) -> MagicMock:
     client = MagicMock()
     client.post.return_value = response
@@ -262,7 +301,7 @@ def test_cli_claim_role_reports_live_holder_conflict(monkeypatch: pytest.MonkeyP
 
     assert result.exit_code == 1
     assert "Cannot claim role" in result.output
-    assert "Use --force" in result.output
+    assert "cannot be demoted" in result.output
 
 
 def test_mcp_orchestrator_claim_ignores_display_name_shortcut(
@@ -314,7 +353,9 @@ async def test_mcp_self_claim_reclaims_orchestrator_after_restart(
         params: dict | None = None,
     ) -> dict:
         response = await http_client.request(method, path, json=body, params=params)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            detail = response.json().get("detail", response.text)
+            raise RuntimeError(str(detail))
         return response.json()
 
     monkeypatch.setattr(mcp_server, "daemon_request", local_daemon_request)
@@ -365,7 +406,9 @@ async def test_mcp_self_claim_rejects_non_orchestrator_session(
         params: dict | None = None,
     ) -> dict:
         response = await http_client.request(method, path, json=body, params=params)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            detail = response.json().get("detail", response.text)
+            raise RuntimeError(str(detail))
         return response.json()
 
     monkeypatch.setattr(mcp_server, "daemon_request", local_daemon_request)
@@ -374,3 +417,62 @@ async def test_mcp_self_claim_rejects_non_orchestrator_session(
 
     with pytest.raises(PermissionError, match="orchestrator workspace"):
         await claim()
+
+
+@pytest.mark.asyncio
+async def test_mcp_self_claim_force_cannot_demote_fresh_orchestrator(
+    client: tuple[AsyncClient, PeerRegistry],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    http_client, registry = client
+    orch_dir = tmp_path / "orchestrator"
+    orch_dir.mkdir()
+    real_id = await _register(
+        registry,
+        path=str(orch_dir),
+        circle="default",
+        role=PeerRole.ORCHESTRATOR,
+        pane_id="%1",
+    )
+    temp_id = await _register(
+        registry,
+        path=str(orch_dir),
+        circle="default",
+        pane_id=None,
+    )
+    mcp_server.reset_mcp_context()
+    mcp_server._registered = True
+    mcp_server._cached_peer_id = temp_id
+    mcp_server._cached_peer_name = "orchestrator-codex-2"
+    mcp_server._cached_my_circle = "default"
+    mcp_server._cached_my_role = "agent"
+
+    from repowire.orchestrator import workspace as orch_workspace
+    monkeypatch.setattr(orch_workspace, "workspace_path", lambda: orch_dir)
+
+    async def local_daemon_request(
+        method: str,
+        path: str,
+        body: dict | None = None,
+        params: dict | None = None,
+    ) -> dict:
+        response = await http_client.request(method, path, json=body, params=params)
+        if response.status_code >= 400:
+            detail = response.json().get("detail", response.text)
+            raise RuntimeError(str(detail))
+        return response.json()
+
+    monkeypatch.setattr(mcp_server, "daemon_request", local_daemon_request)
+    monkeypatch.setattr(mcp_server, "_touch_last_seen", AsyncMock())
+    claim = mcp_server.create_mcp_server()._tool_manager._tools["claim_orchestrator_role"].fn
+
+    with pytest.raises(Exception, match="force cannot demote"):
+        await claim(force=True)
+
+    active = await registry.get_orchestrator("default")
+    assert active is not None
+    assert active.peer_id == real_id
+    temp = await registry.get_peer(temp_id)
+    assert temp is not None
+    assert temp.role == PeerRole.AGENT

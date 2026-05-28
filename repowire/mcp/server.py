@@ -1101,7 +1101,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         caller's current peer_id and cannot claim the role for another peer.
 
         Args:
-            force: Demote an existing fresh orchestrator holder in this circle.
+            force: Compatibility flag for repair calls. Fresh live
+                orchestrator holders are never demoted by this tool.
 
         Returns:
             Confirmation message

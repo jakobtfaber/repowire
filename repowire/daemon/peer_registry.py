@@ -1580,9 +1580,9 @@ class PeerRegistry:
 
         Narrow v0.13 repair hook: only orchestrator is supported. The target
         peer must already exist; this never allocates a new peer. A fresh
-        ONLINE/BUSY holder in the same circle blocks the claim unless force is
-        set. Offline/stale holders are demoted in both live registry state and
-        durable mappings so restarts do not reintroduce the bad role.
+        ONLINE/BUSY holder in the same circle always blocks the claim. Offline
+        or stale holders are demoted in both live registry state and durable
+        mappings so restarts do not reintroduce the bad role.
         """
         if role != PeerRole.ORCHESTRATOR:
             raise ValueError("Only role=orchestrator can be claimed")
@@ -1610,11 +1610,16 @@ class PeerRegistry:
                 and p.circle == target_circle
                 and fresh_holder(p)
             ]
-            if blockers and not force:
+            if blockers:
                 holder = max(blockers, key=lambda p: p.last_seen or now)
+                force_note = (
+                    "; force cannot demote a fresh live orchestrator"
+                    if force else ""
+                )
                 raise RoleClaimConflictError(
                     f"role={role.value} is already held by "
                     f"{holder.display_name} ({holder.peer_id}) in circle {target_circle}"
+                    f"{force_note}"
                 )
 
             previous_holders: list[dict[str, str | None]] = []
