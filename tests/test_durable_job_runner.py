@@ -398,7 +398,7 @@ async def test_manual_run_future_due_dispatches_once_and_records_correlation(tmp
 
 
 @pytest.mark.anyio
-async def test_path_backend_job_persistent_policy_reuses_live_matching_peer_without_spawning(
+async def test_path_backend_persistent_policy_reuses_live_matching_peer_without_spawning(
     tmp_path,
 ):
     _cfg, registry, db, store, _calendar, _session_bindings, delivery, spawn, runner = _env(
