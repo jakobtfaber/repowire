@@ -15,6 +15,7 @@ from repowire.daemon.state.database import SCHEMA_VERSION, StateDatabase
 from repowire.daemon.state.operations import SQLiteOperationStore
 from repowire.daemon.state.schedules import SQLiteScheduleStore
 from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
+from repowire.protocol.peers import AgentType, Peer, PeerStatus
 
 
 def _ts(seconds_from_now: float = 60.0) -> datetime:
@@ -457,6 +458,16 @@ async def test_test_app_wires_session_binding_store_and_observes_hooks(tmp_path:
             }
 
             app.state.peer_registry._peers.clear()
+            app.state.peer_registry._peers["repow-default-conflict"] = Peer(
+                peer_id="repow-default-conflict",
+                display_name="repo-claude-code",
+                circle="default",
+                backend=AgentType.CLAUDE_CODE,
+                status=PeerStatus.ONLINE,
+                path="/repo",
+                machine="test",
+                pane_id="%77",
+            )
             rehydrated = await client.post(
                 "/peers/identity/validate",
                 json={
@@ -469,6 +480,7 @@ async def test_test_app_wires_session_binding_store_and_observes_hooks(tmp_path:
             assert rehydrated.status_code == 200
             assert rehydrated.json()["peer_id"] == peer_id
             assert rehydrated.json()["peer"]["display_name"] == "repo-claude-code"
+            assert await app.state.peer_registry.get_peer("repow-default-conflict") is None
 
             chat = await client.post(
                 "/events/chat",

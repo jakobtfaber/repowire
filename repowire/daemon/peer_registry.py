@@ -756,6 +756,7 @@ class PeerRegistry:
         agent_pid: int | None = None,
         parent_pid: int | None = None,
         circle_source: CircleSource | None = None,
+        display_name_override: str | None = None,
     ) -> tuple[str, str]:
         """Allocate a peer_id and register the peer atomically.
 
@@ -875,8 +876,39 @@ class PeerRegistry:
                         )
                         effective_pane_id = None
 
-                # Fresh registration: daemon owns the name
-                assigned_name = self._build_display_name(path or "", circle, backend)
+                # Fresh registration: daemon owns the name by default. Runtime
+                # identity certificates are daemon-minted proof of an existing
+                # peer identity, so those rehydrations must not get a new
+                # collision suffix.
+                assigned_name = display_name_override or self._build_display_name(
+                    path or "", circle, backend,
+                )
+                if display_name_override:
+                    for existing_id, existing in list(self._peers.items()):
+                        if (
+                            existing_id != peer_id
+                            and existing.display_name == assigned_name
+                            and existing.circle == circle
+                            and existing.backend == backend
+                            and (
+                                existing.status == PeerStatus.OFFLINE
+                                or (
+                                    effective_pane_id is not None
+                                    and existing.pane_id == effective_pane_id
+                                )
+                            )
+                        ):
+                            del self._peers[existing_id]
+                            self._mappings.pop(existing_id, None)
+                            self._mappings_dirty = True
+                            logger.info(
+                                "Pruned conflicting peer %s (%s) for certified "
+                                "identity rehydration as %s (%s)",
+                                existing.display_name,
+                                existing_id,
+                                assigned_name,
+                                peer_id,
+                            )
                 allocated_id = self._find_or_allocate_mapping(
                     assigned_name, circle, backend, path, role=role,
                     agent_pid=agent_pid, circle_source=circle_source,

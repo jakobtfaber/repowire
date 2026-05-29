@@ -531,6 +531,7 @@ async def validate_runtime_identity(
                 agent_pid=cert.agent_pid,
                 parent_pid=cert.parent_pid,
                 circle_source="fallback",
+                display_name_override=cert.display_name,
             )
         except Exception as exc:
             raise HTTPException(
