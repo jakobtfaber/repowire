@@ -172,7 +172,7 @@ export function SettingsDialog({ apiBase, isConnected, peers, onClose }: { apiBa
           <div className="mb-4 flex items-start justify-between gap-4">
             <div>
               <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.18em] text-outline">Service identity</p>
-              <h3 className="font-headline text-lg font-bold text-on-surface">Daemon status</h3>
+              <h3 className="font-headline text-lg font-semibold text-on-surface">Daemon status</h3>
             </div>
             <div className={cn("flex items-center gap-2 border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em]", isConnected ? "border-secondary/25 bg-secondary/10 text-secondary" : "border-error/25 bg-error/10 text-error")}>
               <span className={cn("h-2 w-2 rounded-full", isConnected ? "bg-secondary pulse-online" : "bg-error")} />
@@ -219,7 +219,7 @@ export function SettingsDialog({ apiBase, isConnected, peers, onClose }: { apiBa
                   <Bot className="h-5 w-5 text-on-surface-variant" />
                   <StatusLabel status={peer.status} />
                 </div>
-                <p className="font-headline text-sm font-bold text-on-surface">{peerLabel(peer)}</p>
+                <p className="font-headline text-sm font-semibold text-on-surface">{peerLabel(peer)}</p>
                 <p className="font-mono text-[10px] text-outline">{peer.backend || "service"} · {peer.circle}</p>
               </div>
             )) : (
@@ -272,7 +272,7 @@ function Modal({ title, onClose, children, wide }: { title: string; onClose: () 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
-        className={cn("max-h-[90vh] w-full overflow-y-auto border border-border bg-surface-container-low shadow-[var(--shadow-3)]", wide ? "max-w-2xl" : "max-w-md")}
+        className={cn("max-h-[90vh] w-full overflow-y-auto border border-border bg-surface-container-low shadow-[var(--shadow-xl)]", wide ? "max-w-2xl" : "max-w-md")}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border-faint px-5 py-4">

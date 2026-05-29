@@ -396,7 +396,7 @@ export function PeerView({
       <div className="sticky top-[var(--topbar-offset)] z-10 flex items-center gap-3 border-b border-border-faint bg-surface-dim px-4 py-3 md:static md:px-6">
         <span className={cn("h-2.5 w-2.5 rounded-full", statusDot(peer.status))} />
         <div className="min-w-0 flex-1">
-          <h1 className="truncate font-headline text-lg font-bold text-on-surface">{peerLabel(peer)}</h1>
+          <h1 className="truncate font-headline text-lg font-semibold text-on-surface">{peerLabel(peer)}</h1>
           <div className="mt-1 flex items-center gap-1.5 truncate font-mono text-[11px] text-outline">
             <span className="truncate">
               {peer.backend || "agent"} · {peer.metadata?.branch ? String(peer.metadata.branch) : peer.circle}
@@ -623,7 +623,7 @@ function ThreadItem({
         {isUser ? (
           <p className="whitespace-pre-wrap break-words">{event.text}</p>
           ) : (
-            <div className="prose prose-invert prose-sm max-w-none break-words [&_pre]:overflow-x-auto">
+            <div className="prose prose-sm max-w-none break-words [&_pre]:overflow-x-auto">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown>
             </div>
           )}
@@ -817,7 +817,7 @@ function HistoryTurn({ turn, peer }: { turn: TranscriptTurn; peer: Peer }) {
         {isUser ? (
           <p className="whitespace-pre-wrap break-words">{turn.text}</p>
         ) : (
-          <div className="prose prose-invert prose-sm max-w-none break-words [&_pre]:overflow-x-auto">
+          <div className="prose prose-sm max-w-none break-words [&_pre]:overflow-x-auto">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.text}</ReactMarkdown>
           </div>
         )}
@@ -1434,10 +1434,10 @@ function GitStatusBadge({ status }: { status?: { ahead: number; behind: number; 
   const color = hasLocal && hasRemote
     ? "bg-error"
     : hasRemote
-    ? "bg-orange-500"
+    ? "bg-tertiary"
     : hasLocal
-    ? "bg-yellow-500"
-    : "bg-green-500";
+    ? "bg-accent"
+    : "bg-secondary";
   const tooltip = `git: ${ahead} ahead, ${behind} behind, ${staged} staged, ${dirty} dirty`;
   return (
     <span
@@ -2196,7 +2196,7 @@ function StreamingTurnItem({ group, peer }: { group: ChatTurnDeltaGroup; peer: P
       </div>
       {group.text && (
         <div className="max-w-[82%] min-w-0 rounded border-l-2 border-primary/70 bg-surface-container-high p-3 font-mono text-[13px] leading-6 text-on-surface [overflow-wrap:anywhere]">
-          <div className="prose prose-invert prose-sm max-w-none break-words [&_pre]:overflow-x-auto">
+          <div className="prose prose-sm max-w-none break-words [&_pre]:overflow-x-auto">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{group.text}</ReactMarkdown>
           </div>
         </div>

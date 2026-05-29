@@ -9,17 +9,6 @@ const inter = Inter({
   display: "swap",
 });
 
-const ibmPlexSans = localFont({
-  variable: "--font-ibm-plex-sans",
-  display: "swap",
-  src: [
-    { path: "./fonts/IBMPlexSans-Regular.woff2", weight: "400", style: "normal" },
-    { path: "./fonts/IBMPlexSans-Medium.woff2", weight: "500", style: "normal" },
-    { path: "./fonts/IBMPlexSans-SemiBold.woff2", weight: "600", style: "normal" },
-    { path: "./fonts/IBMPlexSans-Bold.woff2", weight: "700", style: "normal" },
-  ],
-});
-
 const jetbrainsMono = localFont({
   variable: "--font-jetbrains-mono",
   display: "swap",
@@ -59,7 +48,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body
-        className={`${inter.variable} ${ibmPlexSans.variable} ${jetbrainsMono.variable} antialiased`}
+        className={`${inter.variable} ${jetbrainsMono.variable} antialiased`}
       >
         {children}
       </body>

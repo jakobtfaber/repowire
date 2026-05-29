@@ -41,7 +41,7 @@ export function MeshFeed({
       <div className="sticky top-[var(--topbar-offset)] z-10 flex items-baseline justify-between border-b border-border-faint bg-surface-dim px-4 py-3 md:static md:px-6">
         <div>
           <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.22em] text-primary">LIVE / mesh.log</div>
-          <h1 className="mt-1 font-headline text-2xl font-bold text-on-surface">tail -f</h1>
+          <h1 className="mt-1 font-headline text-2xl font-semibold text-on-surface">tail -f</h1>
         </div>
         <div className="text-right font-mono text-[11px] leading-5 text-outline">
           {feedEvents.length} events<br />

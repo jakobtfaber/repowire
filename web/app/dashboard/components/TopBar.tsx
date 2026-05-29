@@ -2,6 +2,7 @@ import Image from "next/image";
 import { BriefcaseBusiness, Plus, RefreshCw, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { ConnectionState } from "../lib/useEventStream";
+import { ThemeToggle } from "./ThemeToggle";
 
 export function TopBar({
   counts,
@@ -28,8 +29,8 @@ export function TopBar({
   return (
     <header className="sticky top-0 z-30 col-span-full flex min-h-[calc(48px+env(safe-area-inset-top))] items-center gap-3 border-b border-border-faint bg-surface-dim px-3 pt-[env(safe-area-inset-top)] md:static md:h-[52px] md:min-h-0 md:px-5 md:pt-0">
       <div className="flex min-w-0 items-center gap-3 md:w-[397px]">
-        <Image src="/brand/logo-mark-copper.svg" alt="" width={22} height={24} priority />
-        <span className="font-headline text-xs font-bold tracking-[0.2em] text-on-surface">REPOWIRE</span>
+        <Image src="/brand/logo-mark.svg" alt="" width={22} height={24} priority />
+        <span className="font-headline text-xs font-bold tracking-[0.16em] text-on-surface">REPOWIRE</span>
         <span className="hidden font-mono text-[10px] font-semibold tracking-[0.18em] text-outline md:inline">DASH</span>
       </div>
 
@@ -89,6 +90,7 @@ export function TopBar({
       >
         <RefreshCw className={cn("h-3.5 w-3.5", isRefreshing && "animate-spin")} />
       </button>
+      <ThemeToggle />
       <button
         onClick={onSettings}
         aria-label="Open settings"

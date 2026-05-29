@@ -1,8 +1,8 @@
 # Design system
 
-Repowire's outward-facing surfaces (the marketing site and these docs) use the **Repowire Design System**: light-first, warm-paper neutrals, a single cobalt accent, and Inter for everything but code. It reads closer to Linear, Resend, or Stripe documentation than to a terminal.
+All of Repowire's surfaces — the marketing site, these docs, and the hosted relay dashboard — use the **Repowire Design System**: light-first, warm-paper neutrals, a single cobalt accent, and Inter for body and prose. It reads closer to Linear, Resend, or Stripe documentation than to a terminal.
 
-The earlier dark, mono-forward "Copper Mesh" direction is retired for marketing and docs. The hosted relay **dashboard** still runs on the Copper Mesh tokens for now (see [Dashboard](#dashboard) below); migrating it is separate, planned work.
+The earlier dark, mono-forward "Copper Mesh" direction is fully retired. The dashboard keeps an operator/terminal character within the new system by using JetBrains Mono for its technical chrome (labels, section headings, peer names, paths, IDs, timestamps, the live feed) while everything else stays Inter — see [Dashboard](#dashboard).
 
 ## Voice
 
@@ -96,4 +96,8 @@ The generated `repowire-design-system/` handoff bundle is a reference, not a pro
 
 ## Dashboard
 
-The hosted relay dashboard (`web/app/dashboard/`) still uses the Copper Mesh tokens defined in `@theme inline` in `web/app/globals.css` (dark ink surfaces, copper accent, mono headings, sharp 4px radii). It does not set `data-theme`, so it is unaffected by the marketing theme toggle. Realigning the dashboard to the Repowire Design System is separate, planned work.
+The hosted relay dashboard (`web/app/dashboard/`) is on the Repowire Design System: cobalt accent, warm-paper light surfaces, light-first with a dark counterpart, tight radii for density. It inherits `data-theme` from the root layout, so it follows the same theme toggle as the marketing site.
+
+It keeps an operator/terminal character through typography: JetBrains Mono for the technical chrome — the `REPOWIRE`/`DASH` wordmark, uppercase annunciator labels (count pills, connection badge, view tabs), section headings, peer names, paths, IDs, timestamps, and the live feed. Inter is used for body text and chat/markdown prose. Status semantics stay constant: online → success (green), busy → warning (amber), offline → muted, error → danger (red), active → cobalt.
+
+The dashboard reaches these via Tailwind's `@theme` color tokens in `web/app/globals.css`, which are repointed to the RDS palette. Because Tailwind v4 emits non-alpha utilities as `var(--color-*)` (flipped by a `[data-theme="dark"]` re-declaration) but bakes opacity-modifier colors at build time, the color tokens use concrete light hex with a dark override, while the font and radius tokens use a separate `@theme inline` block so they resolve the `next/font` variables set on `<body>`.
