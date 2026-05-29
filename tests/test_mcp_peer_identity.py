@@ -720,16 +720,11 @@ async def test_ensure_registered_re_resolves_in_same_call_after_touch_404():
     mcp_server._registered = True
 
     call_log: list[tuple[str, str]] = []
-    # First touch is the stale-id one and 404s; the post-re-registration
-    # touch uses the fresh id and should succeed.
-    touch_count = {"n": 0}
-
     async def daemon_router(method, path, body=None, params=None):
         del body, params
         call_log.append((method, path))
         if method == "POST" and "/touch" in path:
-            touch_count["n"] += 1
-            if touch_count["n"] == 1:
+            if "stale-id" in path:
                 raise mcp_server.DaemonHTTPError(404, "Peer not found")
             return {"ok": True}
         if method == "GET" and path.startswith("/peers/by-pane/"):
@@ -747,11 +742,59 @@ async def test_ensure_registered_re_resolves_in_same_call_after_touch_404():
          patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)):
         await mcp_server._ensure_registered()
 
-    # First the touch (which 404s and invalidates), then by-pane re-resolve.
-    assert any("/touch" in path for _, path in call_log), "touch should fire"
+    # The stale touch may be skipped when local pane metadata already proves
+    # the cache is stale; either way, by-pane re-resolution must happen in
+    # this call and the eventual touch must use the fresh id.
+    assert ("POST", "/peers/stale-id/touch") not in call_log
+    assert ("POST", "/peers/fresh-id/touch") in call_log
     assert any("/peers/by-pane/" in path for _, path in call_log), \
         "re-registration must happen in the same call after touch invalidates"
     assert mcp_server._cached_peer_id == "fresh-id", \
         "post-restart peer_id must be canonicalized in same call, not stale"
+    assert mcp_server._cached_peer_name == "fresh-name"
+    assert mcp_server._registered is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_registered_re_resolves_when_cached_peer_conflicts_with_pane_metadata():
+    """A successful touch must not keep a stale cached peer identity alive.
+
+    This reproduces the split-pane bug where an MCP process kept sending as an
+    old suffixed peer even though current pane metadata identified the live
+    unsuffixed peer. Since `/touch` revives offline peers, the cache must be
+    checked against local runtime metadata before touch.
+    """
+    mcp_server._cached_peer_id = "stale-id"
+    mcp_server._cached_peer_name = "stale-name"
+    mcp_server._registered = True
+
+    call_log: list[tuple[str, str]] = []
+
+    async def daemon_router(method, path, body=None, params=None):
+        del body, params
+        call_log.append((method, path))
+        if method == "GET" and path.startswith("/peers/by-pane/"):
+            return _matching_peer({"display_name": "fresh-name", "peer_id": "fresh-id"})
+        if method == "POST" and path.endswith("/touch"):
+            assert "fresh-id" in path
+            return {"ok": True}
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+    with patch.object(mcp_server, "get_tmux_info", return_value={
+            "pane_id": "%99",
+            "session_name": None,
+         }), \
+         patch.object(mcp_server, "get_pane_id", return_value="%99"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
+         patch.object(mcp_server, "read_pane_runtime_metadata", return_value=_matching_meta({
+             "display_name": "fresh-name",
+             "peer_id": "fresh-id",
+         })), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)):
+        await mcp_server._ensure_registered()
+
+    assert ("POST", "/peers/stale-id/touch") not in call_log
+    assert any(path.startswith("/peers/by-pane/") for _, path in call_log)
+    assert mcp_server._cached_peer_id == "fresh-id"
     assert mcp_server._cached_peer_name == "fresh-name"
     assert mcp_server._registered is True

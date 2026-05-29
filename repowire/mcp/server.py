@@ -285,6 +285,34 @@ def _peer_result_matches_current_process(peer: dict, pane_meta: dict) -> bool:
     return str(peer_id) == str(meta_peer_id)
 
 
+def _cached_identity_matches_current_process() -> bool:
+    """Return False when local pane metadata proves our cache is stale.
+
+    MCP server processes are long-lived. After daemon restarts, pane takeovers,
+    or certificate rehydration, a process-global cached peer_id can outlive the
+    pane metadata that SessionStart/ws-hook now considers authoritative. A
+    successful `/touch` is not enough proof because touch intentionally revives
+    offline peers. When current-process pane metadata exists, require the cache
+    to match it before sending any routed MCP call.
+    """
+    pane_id = get_pane_id()
+    if not pane_id:
+        return True
+    pane_meta = read_pane_runtime_metadata(pane_id)
+    if not _metadata_matches_current_process(pane_meta):
+        return True
+
+    meta_peer_id = pane_meta.get("peer_id")
+    if _cached_peer_id and meta_peer_id and str(_cached_peer_id) != str(meta_peer_id):
+        return False
+
+    meta_name = pane_meta.get("display_name")
+    if _cached_peer_name and meta_name and str(_cached_peer_name) != str(meta_name):
+        return False
+
+    return True
+
+
 def read_runtime_birth_certificate(
     *,
     backend: str | None = None,
@@ -449,12 +477,19 @@ async def _ensure_registered(*, strict: bool = False) -> None:
     """
     global _registered, _cached_peer_name, _cached_my_circle, _cached_my_role, _cached_peer_id
     if _registered:
-        await _touch_last_seen()
-        # _touch_last_seen invalidates _registered on 404/409 (daemon restart,
-        # peer reassignment). Fall through to re-resolve identity in THIS call
-        # so the current MCP tool doesn't continue with stale from_peer.
-        if _registered:
-            return
+        if _cached_identity_matches_current_process():
+            await _touch_last_seen()
+            # _touch_last_seen invalidates _registered on 404/409 (daemon restart,
+            # peer reassignment). Fall through to re-resolve identity in THIS call
+            # so the current MCP tool doesn't continue with stale from_peer.
+            if _registered:
+                return
+        else:
+            _registered = False
+            _cached_peer_id = None
+            _cached_peer_name = None
+            _cached_my_circle = None
+            _cached_my_role = None
     if _cached_peer_name is None:
         _cached_peer_id = None
 
