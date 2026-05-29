@@ -15,6 +15,7 @@ The MCP entry points at the installed `repowire` binary:
 [mcp_servers.repowire]
 command = "repowire"
 args = ["mcp"]
+env = { REPOWIRE_BACKEND = "codex" }
 ```
 
 ## The hooks feature flag
@@ -60,4 +61,4 @@ To confirm hooks fire, open a Codex session, type one message, and watch `repowi
 
 - Codex peer never registers → confirm `[features] hooks = true` is in `config.toml`, then see [Hooks not firing](../troubleshooting/hooks.md).
 - Codex peer shows up but `turn_state=pending_first_turn` → the spawn `message` never reached the agent. Re-send via `notify_peer`.
-- MCP tools returning errors → check `~/.codex/config.toml` has the `[mcp_servers.repowire]` section and `repowire` is on `PATH`.
+- MCP tools returning errors → check `~/.codex/config.toml` has the `[mcp_servers.repowire]` section, `env = { REPOWIRE_BACKEND = "codex" }`, and `repowire` is on `PATH`.

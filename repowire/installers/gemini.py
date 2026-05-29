@@ -117,11 +117,18 @@ def install_mcp() -> bool:
     servers = data.setdefault("mcpServers", {})
 
     if "repowire" in servers:
+        entry = servers["repowire"]
+        if isinstance(entry, dict):
+            env = entry.setdefault("env", {})
+            if isinstance(env, dict):
+                env["REPOWIRE_BACKEND"] = "gemini"
+                _save_settings(data)
         return True  # already installed
 
     servers["repowire"] = {
         "command": "repowire",
         "args": ["mcp"],
+        "env": {"REPOWIRE_BACKEND": "gemini"},
     }
 
     _save_settings(data)

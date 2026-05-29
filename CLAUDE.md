@@ -122,7 +122,7 @@ Each agent runtime uses different hook event names and response fields. The adap
 
 The MCP server needs to know its own peer_id for `from_peer` in tool calls. Key behaviors:
 - `_ensure_registered()` runs on every MCP tool call (lazy, idempotent)
-- Backend detection: `GEMINI_CLI` env var for Gemini, `.codex/` in PATH for Codex, else claude-code
+- Backend detection: explicit `REPOWIRE_BACKEND` and hook-written pane metadata win; runtime env markers such as `CLAUDECODE`, `GEMINI_CLI`, and Codex-specific hints are compatibility fallbacks.
 - Codex fires SessionStart late (after first interaction, not at startup). The MCP lazy registration covers this gap.
 - `_get_my_peer_name()` caches peer name from pane-based daemon lookup, falls back to cwd folder name
 - Cache and send the daemon-assigned `peer_id` for routing-sensitive MCP calls

@@ -40,7 +40,11 @@ def test_install_mcp_on_empty(tmp_path, monkeypatch):
     home = _retarget(tmp_path, monkeypatch)
     assert gemini_mod.install_mcp() is True
     data = _read(home)
-    assert data["mcpServers"]["repowire"] == {"command": "repowire", "args": ["mcp"]}
+    assert data["mcpServers"]["repowire"] == {
+        "command": "repowire",
+        "args": ["mcp"],
+        "env": {"REPOWIRE_BACKEND": "gemini"},
+    }
 
 
 def test_install_mcp_preserves_other_servers_and_keys(tmp_path, monkeypatch):
@@ -66,6 +70,21 @@ def test_install_mcp_is_idempotent(tmp_path, monkeypatch):
     gemini_mod.install_mcp()
     second = (home / "settings.json").read_text()
     assert first == second
+
+
+def test_install_mcp_upgrades_existing_repowire_entry_with_backend_env(
+    tmp_path, monkeypatch,
+):
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    (home / "settings.json").write_text(json.dumps({
+        "mcpServers": {"repowire": {"command": "repowire", "args": ["mcp"]}},
+    }))
+
+    gemini_mod.install_mcp()
+    data = _read(home)
+
+    assert data["mcpServers"]["repowire"]["env"]["REPOWIRE_BACKEND"] == "gemini"
 
 
 # -- uninstall_mcp ----------------------------------------------------------

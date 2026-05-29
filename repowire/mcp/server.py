@@ -12,6 +12,8 @@ from uuid import uuid4
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from repowire.agent_backends import detect_mcp_backend
+from repowire.agent_types import AgentType
 from repowire.config.models import DEFAULT_DAEMON_URL
 from repowire.hooks._tmux import get_pane_id, get_tmux_info
 from repowire.hooks.utils import (
@@ -255,7 +257,9 @@ def _metadata_matches_current_process(pane_meta: dict) -> bool:
     meta_agent_pid = pane_meta.get("agent_pid")
     if not meta_backend or meta_agent_pid is None:
         return False
-    if meta_backend != _detect_backend():
+    try:
+        AgentType(str(meta_backend))
+    except ValueError:
         return False
     try:
         return int(meta_agent_pid) == os.getppid()
@@ -281,12 +285,18 @@ def _peer_result_matches_current_process(peer: dict, pane_meta: dict) -> bool:
     return str(peer_id) == str(meta_peer_id)
 
 
-def read_runtime_birth_certificate() -> list[dict]:
+def read_runtime_birth_certificate(
+    *,
+    backend: str | None = None,
+    pane_id: str | None = None,
+) -> list[dict]:
     """Read local daemon-minted certificate candidates for this MCP process."""
-    backend = _detect_backend()
+    pane_id = pane_id if pane_id is not None else get_pane_id()
+    if backend is None:
+        pane_meta = read_pane_runtime_metadata(pane_id) if pane_id else None
+        backend = _detect_backend(pane_meta)
     agent_pid = os.getppid()
     candidates: list[dict] = []
-    pane_id = get_pane_id()
     if pane_id:
         pane_meta = read_pane_runtime_metadata(pane_id)
         cert = pane_meta.get("birth_certificate")
@@ -312,7 +322,7 @@ async def _try_birth_certificate_identity(
     cwd: Path,
 ) -> bool:
     """Validate a daemon-minted certificate and cache its peer identity."""
-    for certificate in read_runtime_birth_certificate():
+    for certificate in read_runtime_birth_certificate(backend=backend, pane_id=pane_id):
         try:
             result = await daemon_request(
                 "POST",
@@ -373,18 +383,16 @@ async def _get_my_peer_name() -> str:
     return get_display_name()
 
 
-def _detect_backend() -> str:
+def _detect_backend(pane_meta: dict | None = None) -> str:
     """Detect which agent runtime is hosting this MCP server.
 
-    Antigravity CLI (`agy`) has no documented env-var signature today, so
-    detection relies on the explicit REPOWIRE_BACKEND override propagated
-    via the spawn command profile or hook --backend flag.
+    Compatibility wrapper around the backend registry's MCP detection helpers.
     """
-    if os.environ.get("GEMINI_CLI"):
-        return "gemini"
-    if ".codex/" in os.environ.get("PATH", ""):
-        return "codex"
-    return os.environ.get("REPOWIRE_BACKEND", "claude-code")
+    return detect_mcp_backend(
+        os.environ,
+        pane_metadata=pane_meta,
+        current_agent_pid=os.getppid(),
+    ).value
 
 
 def _hook_disconnect_message(pane_id: str) -> str:
@@ -490,7 +498,9 @@ async def _ensure_registered(*, strict: bool = False) -> None:
 
     tmux_info = get_tmux_info()
     pane_id = tmux_info["pane_id"]
-    backend = _detect_backend()
+    pane_meta = read_pane_runtime_metadata(pane_id) if pane_id else {}
+    metadata_matches = _metadata_matches_current_process(pane_meta)
+    backend = _detect_backend(pane_meta if metadata_matches else None)
     try:
         cwd = Path.cwd()
     except OSError as e:
@@ -503,8 +513,8 @@ async def _ensure_registered(*, strict: bool = False) -> None:
         return
 
     skip_path_backend_fallback = False
+    allow_pane_claim = bool(metadata_matches)
     if pane_id:
-        pane_meta = read_pane_runtime_metadata(pane_id)
         try:
             result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
             name = result.get("display_name") or result.get("peer_id")
@@ -522,15 +532,11 @@ async def _ensure_registered(*, strict: bool = False) -> None:
         except Exception:
             pass
 
-        if (
-            _metadata_matches_current_process(pane_meta)
-            and pane_meta.get("display_name")
-            and _cached_peer_name is None
-        ):
+        if metadata_matches and pane_meta.get("display_name") and _cached_peer_name is None:
             _cached_peer_name = pane_meta["display_name"]
         if (
             strict
-            and _metadata_matches_current_process(pane_meta)
+            and metadata_matches
             and (pane_meta.get("peer_id") or pane_meta.get("display_name"))
         ):
             raise RuntimeError(_hook_disconnect_message(pane_id))
@@ -590,7 +596,7 @@ async def _ensure_registered(*, strict: bool = False) -> None:
             "backend": backend,
             "circle_source": circle_source,
         }
-        if pane_id:
+        if pane_id and allow_pane_claim:
             body["pane_id"] = pane_id
         result = await daemon_request("POST", "/peers", body)
         # Cache the daemon-assigned name

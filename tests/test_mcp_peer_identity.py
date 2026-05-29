@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from repowire.agent_backends import detect_mcp_backend
+from repowire.agent_types import AgentType
 from repowire.mcp import server as mcp_server
 
 
@@ -52,6 +54,41 @@ def _matching_peer(extra: dict | None = None) -> dict:
     if extra:
         base.update(extra)
     return base
+
+
+def test_mcp_backend_detection_prefers_claude_signal_over_codex_path():
+    backend = detect_mcp_backend({
+        "CLAUDECODE": "1",
+        "PATH": "/tmp/.codex/bin:/usr/bin",
+    })
+
+    assert backend == AgentType.CLAUDE_CODE
+
+
+def test_mcp_backend_detection_uses_explicit_codex_when_path_is_stripped():
+    backend = detect_mcp_backend({"REPOWIRE_BACKEND": "codex", "PATH": "/usr/bin"})
+
+    assert backend == AgentType.CODEX
+
+
+def test_mcp_backend_detection_prefers_matching_pane_metadata_over_path():
+    backend = detect_mcp_backend(
+        {"PATH": "/tmp/.codex/bin:/usr/bin"},
+        pane_metadata={"backend": "claude-code", "agent_pid": 12345},
+        current_agent_pid=12345,
+    )
+
+    assert backend == AgentType.CLAUDE_CODE
+
+
+def test_mcp_backend_detection_ignores_stale_pane_metadata():
+    backend = detect_mcp_backend(
+        {"REPOWIRE_BACKEND": "codex"},
+        pane_metadata={"backend": "claude-code", "agent_pid": 77777},
+        current_agent_pid=12345,
+    )
+
+    assert backend == AgentType.CODEX
 
 
 @pytest.mark.asyncio
@@ -133,9 +170,8 @@ async def test_rejects_stale_metadata_with_agent_pid_mismatch():
 
 
 @pytest.mark.asyncio
-async def test_rejects_stale_metadata_with_backend_mismatch():
-    """Backend mismatch (e.g. codex peer reused a pane previously held by
-    claude-code) also disqualifies the metadata."""
+async def test_rejects_metadata_with_invalid_backend():
+    """Metadata with an unknown backend value can't be validated."""
     async def daemon_miss(*_args, **_kw):
         raise RuntimeError("nope")
 
@@ -511,7 +547,7 @@ async def test_ensure_registered_ignores_by_pane_incumbent_backend_mismatch():
     assert mcp_server._cached_peer_id == "repow-temp"
     assert mcp_server._cached_peer_name == "project-claude-code"
     assert posted_body["backend"] == "claude-code"
-    assert posted_body["pane_id"] == "%42"
+    assert "pane_id" not in posted_body
 
 
 @pytest.mark.asyncio
@@ -563,7 +599,7 @@ async def test_ensure_registered_skips_path_backend_after_failed_pane_proof():
     assert mcp_server._cached_peer_id == "repow-temp"
     assert mcp_server._cached_peer_name == "project-codex"
     assert posted_body["backend"] == "codex"
-    assert posted_body["pane_id"] == "%42"
+    assert "pane_id" not in posted_body
 
 
 @pytest.mark.asyncio

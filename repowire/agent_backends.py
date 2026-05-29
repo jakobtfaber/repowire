@@ -11,9 +11,11 @@ config imports would create a cycle.
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 from abc import ABC
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -77,6 +79,11 @@ class AgentBackend(ABC):
     resume_subcommand: ClassVar[str | None] = None
     mcp_config_scope: ClassVar[McpConfigScope | None] = None
     post_spawn_strategy: ClassVar[str] = "seed_message"
+
+    @classmethod
+    def mcp_runtime_matches(cls, env: Mapping[str, str]) -> bool:
+        explicit = env.get("REPOWIRE_BACKEND")
+        return explicit == cls.agent_type.value
 
     def detect_installed(self) -> bool:
         return any(shutil.which(name) for name in self.cli_names) or any(
@@ -173,6 +180,18 @@ class ClaudeCodeBackend(AgentBackend):
         is_global=False,
     )
 
+    @classmethod
+    def mcp_runtime_matches(cls, env: Mapping[str, str]) -> bool:
+        if super().mcp_runtime_matches(env):
+            return True
+        ai_agent = env.get("AI_AGENT", "")
+        return bool(
+            env.get("CLAUDECODE")
+            or env.get("CLAUDE_CODE_SESSION_ID")
+            or env.get("CLAUDE_CODE_ENTRYPOINT")
+            or ai_agent.startswith("claude-code")
+        )
+
     def install(self, options: BackendInstallOptions | None = None) -> list[BackendInstallMessage]:
         import subprocess
 
@@ -200,7 +219,11 @@ class ClaudeCodeBackend(AgentBackend):
 
         try:
             subprocess.run(["claude", "mcp", "remove", "repowire"], capture_output=True)
-            cmd = ["claude", "mcp", "add", "-s", "user", "repowire", "--", "repowire", "mcp"]
+            cmd = [
+                "claude", "mcp", "add", "-s", "user",
+                "repowire", "-e", "REPOWIRE_BACKEND=claude-code",
+                "--", "repowire", "mcp",
+            ]
             subprocess.run(cmd, check=True)
             messages.append(BackendInstallMessage("success", "MCP server added to Claude"))
         except subprocess.CalledProcessError as e:
@@ -246,6 +269,17 @@ class CodexBackend(AgentBackend):
             "Codex sessions on this host."
         ),
     )
+
+    @classmethod
+    def mcp_runtime_matches(cls, env: Mapping[str, str]) -> bool:
+        if super().mcp_runtime_matches(env):
+            return True
+        ai_agent = env.get("AI_AGENT", "")
+        if ai_agent.startswith("codex"):
+            return True
+        # PATH can be inherited by other runtimes, so this is intentionally
+        # only a backend-local legacy marker used after stronger signals.
+        return ".codex/" in env.get("PATH", "")
 
     def install(self, options: BackendInstallOptions | None = None) -> list[BackendInstallMessage]:
         from repowire.installers.codex import install_hooks, install_mcp
@@ -296,6 +330,10 @@ class GeminiBackend(AgentBackend):
             "Gemini sessions on this host."
         ),
     )
+
+    @classmethod
+    def mcp_runtime_matches(cls, env: Mapping[str, str]) -> bool:
+        return super().mcp_runtime_matches(env) or bool(env.get("GEMINI_CLI"))
 
     def install(self, options: BackendInstallOptions | None = None) -> list[BackendInstallMessage]:
         from repowire.installers.gemini import install_hooks, install_mcp
@@ -413,6 +451,78 @@ AGENT_BACKENDS: dict[AgentType, AgentBackend] = {
     AgentType.PI: PiBackend(),
     AgentType.MCP_HTTP: McpHttpBackend(),
 }
+
+
+def _explicit_backend(env: Mapping[str, str]) -> AgentType | None:
+    value = env.get("REPOWIRE_BACKEND")
+    if not value:
+        return None
+    try:
+        return AgentType(value)
+    except ValueError:
+        return None
+
+
+def _metadata_backend(
+    pane_metadata: Mapping[str, Any] | None,
+    *,
+    current_agent_pid: int | None,
+) -> AgentType | None:
+    if not pane_metadata or current_agent_pid is None:
+        return None
+    metadata_agent_pid = pane_metadata.get("agent_pid")
+    if metadata_agent_pid is None:
+        return None
+    try:
+        if int(metadata_agent_pid) != int(current_agent_pid):
+            return None
+    except (TypeError, ValueError):
+        return None
+    try:
+        return AgentType(str(pane_metadata.get("backend")))
+    except ValueError:
+        return None
+
+
+def detect_mcp_backend(
+    env: Mapping[str, str] | None = None,
+    *,
+    pane_metadata: Mapping[str, Any] | None = None,
+    current_agent_pid: int | None = None,
+) -> AgentType:
+    """Detect the backend hosting the Repowire MCP process.
+
+    Explicit installer hints and hook-written pane metadata are authoritative.
+    Runtime markers are a compatibility path for older installs; arbitrary PATH
+    markers are intentionally weaker than Claude/Gemini process signals because
+    shells can carry Codex paths into other runtimes.
+    """
+    env = env or os.environ
+
+    explicit = _explicit_backend(env)
+    if explicit is not None:
+        return explicit
+
+    metadata = _metadata_backend(
+        pane_metadata,
+        current_agent_pid=current_agent_pid,
+    )
+    if metadata is not None:
+        return metadata
+
+    for backend_type in (
+        AgentType.CLAUDE_CODE,
+        AgentType.GEMINI,
+        AgentType.CODEX,
+        AgentType.OPENCODE,
+        AgentType.ANTIGRAVITY,
+        AgentType.PI,
+    ):
+        backend = AGENT_BACKENDS[backend_type]
+        if backend.mcp_runtime_matches(env):
+            return backend_type
+
+    return AgentType.CLAUDE_CODE
 
 DEFAULT_SPAWN_COMMANDS: dict[AgentType, str] = {
     backend_type: backend.default_command

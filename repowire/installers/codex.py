@@ -11,6 +11,7 @@ HOOKS_PATH = CODEX_HOME / "hooks.json"
 CONFIG_PATH = CODEX_HOME / "config.toml"
 
 HOOK_EVENTS = ["SessionStart", "Stop", "UserPromptSubmit"]
+_MCP_ENV_LINE = 'env = { REPOWIRE_BACKEND = "codex" }'
 
 
 def _load_hooks() -> dict:
@@ -150,6 +151,40 @@ def _enable_hooks_feature() -> None:
     CONFIG_PATH.write_text(content)
 
 
+def _ensure_repowire_mcp_backend_env(content: str) -> str:
+    lines = content.splitlines()
+    out: list[str] = []
+    in_section = False
+    saw_section = False
+    saw_env = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_section and not saw_env:
+                out.append(_MCP_ENV_LINE)
+            in_section = stripped == "[mcp_servers.repowire]"
+            saw_section = saw_section or in_section
+            saw_env = False
+            out.append(line)
+            continue
+
+        if in_section and stripped.startswith("env") and "=" in stripped:
+            saw_env = True
+            if "REPOWIRE_BACKEND" not in stripped and stripped.endswith("}"):
+                prefix, suffix = line.rsplit("}", 1)
+                sep = "" if prefix.rstrip().endswith("{") else ","
+                line = f'{prefix}{sep} REPOWIRE_BACKEND = "codex" }}{suffix}'
+        out.append(line)
+
+    if in_section and not saw_env:
+        out.append(_MCP_ENV_LINE)
+
+    if not saw_section:
+        return content
+    return "\n".join(out).rstrip() + "\n"
+
+
 def install_mcp() -> bool:
     """Add repowire MCP server to ~/.codex/config.toml.
 
@@ -165,11 +200,13 @@ def install_mcp() -> bool:
         "\n[mcp_servers.repowire]\n"
         'command = "repowire"\n'
         'args = ["mcp"]\n'
+        f"{_MCP_ENV_LINE}\n"
     )
 
     if CONFIG_PATH.exists():
         content = CONFIG_PATH.read_text()
         if "[mcp_servers.repowire]" in content:
+            CONFIG_PATH.write_text(_ensure_repowire_mcp_backend_env(content))
             return True  # already installed
         CONFIG_PATH.write_text(content.rstrip() + "\n" + section)
     else:

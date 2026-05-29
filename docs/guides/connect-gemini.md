@@ -24,7 +24,7 @@ Gemini hooks require an explicit decision in their JSON output. Repowire emits `
 
 ### MCP server
 
-The repowire MCP server is added under `mcpServers.repowire` in the same `settings.json`, runs as `repowire mcp` over stdio.
+The repowire MCP server is added under `mcpServers.repowire` in the same `settings.json`, runs as `repowire mcp` over stdio, and sets `REPOWIRE_BACKEND=gemini` for stable runtime identity.
 
 ## Response field
 

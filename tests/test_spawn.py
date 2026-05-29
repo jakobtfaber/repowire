@@ -648,10 +648,10 @@ class TestMcpRegistration:
         "repowire.mcp.server.get_tmux_info",
         return_value={"pane_id": "%1", "session_name": "0", "window_name": "repowire"},
     )
-    async def test_tmux_lazy_registration_uses_pane_and_circle(
+    async def test_tmux_lazy_registration_uses_circle_without_claiming_pane(
         self, _mock_tmux, mock_request: AsyncMock, _mock_birth_certificate,
     ) -> None:
-        """Tmux-backed MCP registration should converge on the pane-owned circle."""
+        """MCP fallback registration should keep tmux circle without taking pane ownership."""
         import repowire.mcp.server as mcp_server
 
         mcp_server._registered = False
@@ -678,7 +678,6 @@ class TestMcpRegistration:
                 "circle": "0",
                 "backend": "codex",
                 "circle_source": "tmux",
-                "pane_id": "%1",
             },
         )
         assert mock_request.await_args_list[3].args == (

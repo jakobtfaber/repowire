@@ -35,6 +35,7 @@ def test_install_mcp_on_empty_writes_section_and_feature_flag(tmp_path, monkeypa
     assert "[mcp_servers.repowire]" in content
     assert 'command = "repowire"' in content
     assert 'args = ["mcp"]' in content
+    assert 'REPOWIRE_BACKEND = "codex"' in content
     assert "[features]" in content
     assert "hooks = true" in content
 
@@ -73,6 +74,41 @@ def test_install_mcp_is_idempotent(tmp_path, monkeypatch):
     assert first == second
     assert second.count("[mcp_servers.repowire]") == 1
     assert second.count("hooks = true") == 1
+    assert second.count("REPOWIRE_BACKEND") == 1
+
+
+def test_install_mcp_upgrades_existing_repowire_section_with_backend_env(
+    tmp_path, monkeypatch,
+):
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    (home / "config.toml").write_text(
+        "[mcp_servers.repowire]\n"
+        'command = "repowire"\n'
+        'args = ["mcp"]\n'
+    )
+
+    codex_mod.install_mcp()
+    content = (home / "config.toml").read_text()
+
+    assert 'REPOWIRE_BACKEND = "codex"' in content
+
+
+def test_install_mcp_merges_existing_repowire_env(tmp_path, monkeypatch):
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    (home / "config.toml").write_text(
+        "[mcp_servers.repowire]\n"
+        'command = "repowire"\n'
+        'args = ["mcp"]\n'
+        'env = { FOO = "bar" }\n'
+    )
+
+    codex_mod.install_mcp()
+    content = (home / "config.toml").read_text()
+
+    assert 'FOO = "bar"' in content
+    assert 'REPOWIRE_BACKEND = "codex"' in content
 
 
 def test_install_mcp_respects_existing_features_block(tmp_path, monkeypatch):
