@@ -227,10 +227,11 @@ class TestSendAsk:
             correlation_id="ask-abc",
             text="ping?",
         )
-        transport.send.assert_called_once()
-        sid, msg = transport.send.call_args[0]
+        transport.send_and_wait_delivery_ack.assert_called_once()
+        sid, msg = transport.send_and_wait_delivery_ack.call_args[0]
         assert sid == "sid-bob"
         assert msg["type"] == "ask"
+        assert msg["delivery_id"].startswith("ask-delivery-")
         assert msg["correlation_id"] == "ask-abc"
         assert msg["from_peer"] == "alice"
         assert msg["to_peer"] == "bob"
@@ -251,7 +252,7 @@ class TestSendAsk:
             correlation_id="ask-ws",
             text="line one\nline two\n\n  \n",
         )
-        msg = transport.send.call_args[0][1]
+        msg = transport.send_and_wait_delivery_ack.call_args[0][1]
         assert msg["text"] == (
             'line one\nline two\n'
             '↳ ack("ask-ws") or ack("ask-ws", "reply")'
@@ -286,7 +287,7 @@ class TestSendAsk:
             text="follow-up",
             reply_to="ask-prior",
         )
-        msg = transport.send.call_args[0][1]
+        msg = transport.send_and_wait_delivery_ack.call_args[0][1]
         assert msg["reply_to"] == "ask-prior"
 
     async def test_includes_attachments(self, router, transport):
@@ -303,6 +304,26 @@ class TestSendAsk:
                 "content_type": "image/png",
             }],
         )
-        msg = transport.send.call_args[0][1]
+        msg = transport.send_and_wait_delivery_ack.call_args[0][1]
         assert msg["attachments"][0]["id"] == "att-1"
         assert msg["attachments"][0]["path"] == "/tmp/a.png"
+
+    async def test_ask_hook_injection_failure_raises_transport_error(
+        self, router, transport,
+    ):
+        transport.send_and_wait_delivery_ack.return_value = {
+            "type": "delivery_ack",
+            "delivery_id": "ask-delivery-abc",
+            "message_type": "ask",
+            "status": "failed",
+            "detail": "Failed to send keys to pane %5",
+        }
+
+        with pytest.raises(TransportError, match="Ask injection failed"):
+            await router.send_ask(
+                from_peer="alice",
+                to_session_id="sid-bob",
+                to_peer_name="bob",
+                correlation_id="ask-new",
+                text="see file",
+            )

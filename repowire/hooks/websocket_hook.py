@@ -348,12 +348,12 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
 
     async def _send_delivery_ack(status: str, detail: str | None = None) -> None:
         delivery_id = data.get("delivery_id")
-        if msg_type != "notify" or not websocket or not isinstance(delivery_id, str):
+        if msg_type not in {"ask", "notify"} or not websocket or not isinstance(delivery_id, str):
             return
         frame = {
             "type": "delivery_ack",
             "delivery_id": delivery_id,
-            "message_type": "notify",
+            "message_type": msg_type,
             "status": status,
         }
         if detail:
@@ -453,8 +453,21 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 logger.info(
                     f"Injected ask from {from_peer}: {correlation_id[:8]}",
                 )
+                await _send_delivery_ack("injected")
+            else:
+                error_msg = f"Failed to send keys to pane {pane_id}"
+                logger.error(
+                    "Inbound ask dropped: tmux send-keys failed "
+                    "(pane=%s from=%s to=%s correlation_id=%s)",
+                    pane_id,
+                    from_peer,
+                    to_peer,
+                    correlation_id,
+                )
+                await _send_delivery_ack("failed", error_msg)
         except Exception as e:
             logger.error(f"Failed to inject ask: {e}")
+            await _send_delivery_ack("failed", str(e))
 
     elif msg_type == "notify":
         # Plain FYI, no lifecycle.

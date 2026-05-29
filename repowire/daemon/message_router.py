@@ -186,6 +186,7 @@ class MessageRouter:
         )
         message: dict[str, Any] = {
             "type": "ask",
+            "delivery_id": f"ask-delivery-{uuid4().hex[:8]}",
             "correlation_id": correlation_id,
             "from_peer": from_peer,
             "to_peer": to_peer_name,
@@ -204,7 +205,16 @@ class MessageRouter:
             message["to_peer"],
             self._transport.get_connection_pane_id(to_session_id),
         )
-        await self._transport.send(to_session_id, message)
+        delivery_ack = await self._transport.send_and_wait_delivery_ack(
+            to_session_id,
+            message,
+        )
+        if isinstance(delivery_ack, dict) and delivery_ack.get("status") in {
+            "failed",
+            "rejected",
+        }:
+            detail = delivery_ack.get("detail") or delivery_ack.get("status")
+            raise TransportError(f"Ask injection {delivery_ack.get('status')}: {detail}")
         logger.info(f"Ask sent: {from_peer} -> {to_peer_name} ({correlation_id[:8]})")
 
     async def broadcast(
