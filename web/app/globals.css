@@ -129,6 +129,182 @@
   --topbar-offset: calc(48px + env(safe-area-inset-top));
 }
 
+/* =============================================================================
+   Repowire Design System (RDS) — cobalt, light-first.
+   Additive layer for the marketing site + any light-first surface. Semantic
+   tokens are scoped by [data-theme]; the dashboard never sets data-theme, so it
+   keeps the Copper Mesh tokens above untouched. New raw-token names never
+   collide with the copper palette. See web/app/marketing.css (scoped under
+   .rw-marketing) and docs/contributing/design-system.md.
+   ============================================================================= */
+:root {
+  /* Neutrals — warm (2% red tint), never pure gray */
+  --n-0:   #ffffff;
+  --n-25:  #fcfbfa;
+  --n-50:  #f7f6f3;
+  --n-100: #efede8;
+  --n-150: #e6e3dd;
+  --n-200: #d9d6cf;
+  --n-300: #b7b3aa;
+  --n-400: #8e8a82;
+  --n-500: #6a665f;
+  --n-600: #4e4b46;
+  --n-700: #353330;
+  --n-800: #22211f;
+  --n-900: #141413;
+  --n-950: #0b0b0a;
+
+  /* Cobalt — brand accent */
+  --cobalt-50:  #eef2ff;
+  --cobalt-100: #dde5fe;
+  --cobalt-200: #bbcaf9;
+  --cobalt-300: #8ba3f1;
+  --cobalt-400: #5778e6;
+  --cobalt-500: #2c54dd;
+  --cobalt-600: #1d40b8;
+  --cobalt-700: #1a3593;
+  --cobalt-800: #1a2d73;
+  --cobalt-900: #182554;
+
+  /* Signal */
+  --green-500: #1f8a5b;  --green-100: #ddf1e6;
+  --amber-500: #b67214;  --amber-100: #fbeacb;
+  --red-500:   #c0392b;  --red-100:   #fbdfd9;
+  --blue-500:  #2a6fdb;  --blue-100:  #dde9fb;
+
+  /* Type families: --rds-font-sans is defined on .rw-marketing (not here),
+     because it references --font-inter, which next/font sets on <body> and is
+     not in scope at :root. --font-mono reuses the dashboard's JetBrains Mono
+     variable already declared in @theme inline. */
+
+  /* Type scale — clamp() where it matters */
+  --fs-display: clamp(2.5rem, 5vw + 1rem, 4rem);
+  --fs-h1:      clamp(2rem, 3vw + 0.8rem, 2.75rem);
+  --fs-h2:      clamp(1.5rem, 1.6vw + 0.8rem, 2rem);
+  --fs-h3:      1.375rem;
+  --fs-h4:      1.125rem;
+  --fs-lead:    1.1875rem;
+  --fs-body:    1rem;
+  --fs-sm:      0.875rem;
+  --fs-xs:      0.8125rem;
+  --fs-mono:    0.875rem;
+  --fs-mono-sm: 0.8125rem;
+  --fs-label:   0.75rem;
+  --fs-eyebrow: 0.75rem;
+
+  --lh-display: 1.05;
+  --lh-heading: 1.15;
+  --lh-body:    1.55;
+  --lh-tight:   1.3;
+
+  --tracking-tight:   -0.02em;
+  --tracking-snug:    -0.01em;
+  --tracking-eyebrow:  0.08em;
+
+  --w-regular:  400;
+  --w-medium:   500;
+  --w-semibold: 600;
+  --w-bold:     700;
+
+  /* 4px grid */
+  --space-1: 4px;   --space-2: 8px;   --space-3: 12px;  --space-4: 16px;
+  --space-5: 20px;  --space-6: 24px;  --space-8: 32px;  --space-10: 40px;
+  --space-12: 48px; --space-16: 64px; --space-20: 80px; --space-24: 96px;
+
+  --container-md: 768px;
+  --container-lg: 1024px;
+  --container-xl: 1200px;
+
+  /* RDS radii — new names, do not collide with --radius* in @theme inline */
+  --rds-radius-xs:   4px;
+  --rds-radius-sm:   6px;
+  --rds-radius:      10px;
+  --rds-radius-lg:   14px;
+  --rds-radius-xl:   20px;
+  --rds-radius-2xl:  28px;
+  --rds-radius-pill: 999px;
+
+  /* Motion — new names */
+  --rds-ease:     cubic-bezier(0.32, 0.72, 0, 1);
+  --rds-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --t-fast: 120ms;
+  --t-base: 200ms;
+  --t-slow: 320ms;
+}
+
+/* RDS semantic tokens — light (default for any [data-theme] tree) */
+:root,
+[data-theme="light"] {
+  --page:             var(--n-25);
+  --surface:          var(--n-0);
+  --surface-sunken:   var(--n-50);
+  --surface-raised:   var(--n-0);
+
+  --fg:        var(--n-900);
+  --fg-muted:  var(--n-600);
+  --fg-subtle: var(--n-400);
+  --fg-faint:  var(--n-300);
+
+  --rds-border:        rgba(20, 20, 19, 0.08);
+  --rds-border-strong: rgba(20, 20, 19, 0.14);
+  --rds-border-faint:  rgba(20, 20, 19, 0.05);
+
+  --accent:         var(--cobalt-500);
+  --accent-hover:   var(--cobalt-600);
+  --accent-pressed: var(--cobalt-700);
+  --accent-soft:    var(--cobalt-50);
+  --accent-soft-fg: var(--cobalt-700);
+  --accent-ring:    rgba(44, 84, 221, 0.34);
+
+  --success:      var(--green-500);  --success-soft: var(--green-100);
+  --warning:      var(--amber-500);  --warning-soft: var(--amber-100);
+  --danger:       var(--red-500);    --danger-soft:  var(--red-100);
+  --info:         var(--blue-500);   --info-soft:    var(--blue-100);
+
+  --shadow-xs: 0 1px 1px rgba(20, 20, 19, 0.03);
+  --shadow-sm: 0 1px 2px rgba(20, 20, 19, 0.04), 0 1px 1px rgba(20, 20, 19, 0.02);
+  --shadow-md: 0 4px 12px -2px rgba(20, 20, 19, 0.06), 0 2px 4px -1px rgba(20, 20, 19, 0.04);
+  --shadow-lg: 0 16px 32px -12px rgba(20, 20, 19, 0.10), 0 4px 8px -4px rgba(20, 20, 19, 0.04);
+  --shadow-xl: 0 32px 64px -24px rgba(20, 20, 19, 0.18), 0 8px 16px -8px rgba(20, 20, 19, 0.06);
+
+  --ring: 0 0 0 2px var(--page), 0 0 0 4px var(--accent-ring);
+}
+
+/* RDS semantic tokens — warm dark */
+[data-theme="dark"] {
+  --page:           #0e0e0d;
+  --surface:        #161614;
+  --surface-sunken: #0a0a09;
+  --surface-raised: #1c1c1a;
+
+  --fg:        #f3f1ec;
+  --fg-muted:  #b5b1a8;
+  --fg-subtle: #807c74;
+  --fg-faint:  #5b5853;
+
+  --rds-border:        rgba(255, 252, 244, 0.08);
+  --rds-border-strong: rgba(255, 252, 244, 0.14);
+  --rds-border-faint:  rgba(255, 252, 244, 0.04);
+
+  --accent:         var(--cobalt-400);
+  --accent-hover:   var(--cobalt-300);
+  --accent-pressed: var(--cobalt-200);
+  --accent-soft:    rgba(87, 120, 230, 0.16);
+  --accent-soft-fg: var(--cobalt-200);
+  --accent-ring:    rgba(139, 163, 241, 0.44);
+
+  --success:      #4eb37e;  --success-soft: rgba(31, 138, 91, 0.18);
+  --warning:      #e0b14a;  --warning-soft: rgba(182, 114, 20, 0.20);
+  --danger:       #e57368;  --danger-soft:  rgba(192, 57, 43, 0.20);
+  --info:         #6ea4f0;  --info-soft:    rgba(42, 111, 219, 0.20);
+
+  --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.30);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30), 0 1px 1px rgba(0, 0, 0, 0.20);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.45), 0 2px 4px -1px rgba(0, 0, 0, 0.30);
+  --shadow-lg: 0 16px 32px -12px rgba(0, 0, 0, 0.55), 0 4px 8px -4px rgba(0, 0, 0, 0.30);
+  --shadow-xl: 0 32px 64px -24px rgba(0, 0, 0, 0.70), 0 8px 16px -8px rgba(0, 0, 0, 0.40);
+}
+
 @media (min-width: 768px) {
   :root {
     --topbar-offset: 52px;

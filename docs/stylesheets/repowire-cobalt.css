@@ -1,0 +1,130 @@
+/* Repowire Design System — cobalt, light-first, for mkdocs-material.
+   Mirrors web/app/globals.css (the RDS token layer). Keep in sync by hand.
+   Supersedes the retired Copper Mesh palette. */
+
+:root {
+  /* Cobalt brand accent */
+  --cobalt-400: #5778e6;
+  --cobalt-500: #2c54dd;
+  --cobalt-600: #1d40b8;
+  --cobalt-700: #1a3593;
+
+  /* Warm-paper neutrals (light) */
+  --n-0:   #ffffff;
+  --n-25:  #fcfbfa;
+  --n-50:  #f7f6f3;
+  --n-600: #4e4b46;
+  --n-900: #141413;
+
+  /* Warm-dark surfaces */
+  --ink-page:    #0e0e0d;
+  --ink-surface: #161614;
+  --ink-sunken:  #0a0a09;
+
+  /* Status */
+  --success: #1f8a5b;
+  --warning: #b67214;
+  --danger:  #c0392b;
+}
+
+/* Light scheme — warm paper, cobalt accent. */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color:        var(--cobalt-500);
+  --md-primary-fg-color--light: var(--cobalt-400);
+  --md-primary-fg-color--dark:  var(--cobalt-600);
+  --md-accent-fg-color:         var(--cobalt-600);
+  --md-typeset-a-color:         var(--cobalt-600);
+
+  --md-default-bg-color:          var(--n-25);
+  --md-default-fg-color:          var(--n-900);
+  --md-default-fg-color--light:   var(--n-600);
+  --md-default-fg-color--lighter: #8e8a82;
+  --md-code-bg-color:             var(--n-50);
+  --md-code-fg-color:             var(--n-900);
+}
+
+/* Dark scheme — warm-dark surfaces, cobalt-400 accent. */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:        var(--cobalt-500);
+  --md-primary-fg-color--light: var(--cobalt-400);
+  --md-primary-fg-color--dark:  var(--cobalt-600);
+  --md-accent-fg-color:         var(--cobalt-400);
+  --md-typeset-a-color:         var(--cobalt-400);
+
+  --md-default-bg-color:          var(--ink-page);
+  --md-default-fg-color:          #f3f1ec;
+  --md-default-fg-color--light:   #b5b1a8;
+  --md-default-fg-color--lighter: #807c74;
+  --md-code-bg-color:             var(--ink-sunken);
+  --md-code-fg-color:             #f3f1ec;
+}
+
+/* Quiet chrome — soft hairline, no shadow. */
+.md-header {
+  box-shadow: none;
+  border-bottom: 1px solid rgba(20, 20, 19, 0.08);
+}
+[data-md-color-scheme="slate"] .md-header {
+  border-bottom-color: rgba(255, 252, 244, 0.08);
+}
+
+/* Sentence-case, tightly tracked headings. */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Status-pill style for small label spans. */
+.md-typeset .label {
+  display: inline-block;
+  padding: 2px 8px;
+  font-family: var(--md-code-font);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 1px solid var(--cobalt-500);
+  border-radius: 999px;
+  color: var(--cobalt-600);
+}
+[data-md-color-scheme="slate"] .md-typeset .label {
+  color: var(--cobalt-400);
+}
+
+.md-typeset .doc-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.75rem;
+  margin: 1.25rem 0 2rem;
+}
+
+.md-typeset .doc-card {
+  display: block;
+  min-height: 7rem;
+  padding: 1rem;
+  border: 1px solid rgba(44, 84, 221, 0.18);
+  border-radius: 10px;
+  background: rgba(44, 84, 221, 0.04);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.md-typeset .doc-card:hover {
+  border-color: rgba(44, 84, 221, 0.4);
+  background: rgba(44, 84, 221, 0.08);
+}
+
+.md-typeset .doc-card strong,
+.md-typeset .doc-card span {
+  display: block;
+}
+
+.md-typeset .doc-card strong {
+  margin-bottom: 0.45rem;
+  color: var(--md-typeset-a-color);
+}
+
+.md-typeset .doc-card span {
+  color: var(--md-default-fg-color--light);
+}
