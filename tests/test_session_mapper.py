@@ -764,6 +764,68 @@ async def test_reconnect_updates_agent_pid_on_live_peer_and_mapping(tmp_path):
     assert m1 is not None and m1.agent_pid == 20002
 
 
+@pytest.mark.asyncio
+async def test_same_path_reconnect_preserves_persisted_peer_id_display_names(tmp_path):
+    """Daemon restart must not swap same-path peers by reconnect order.
+
+    ws-hook reconnects carry the daemon-assigned peer_id in REPOWIRE_PEER_ID.
+    When multiple peers share path/backend, that peer_id's persisted mapping is
+    the identity source of truth. Recomputing the base display name first can
+    make the first reconnect adopt another peer's mapping, causing messages to
+    route to the wrong pane.
+    """
+    workdir = tmp_path / "repowire-shared"
+    workdir.mkdir()
+    path = str(workdir)
+    registry = _make_registry(tmp_path)
+
+    first_id, first_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=path,
+        pane_id="%1",
+        agent_pid=111,
+    )
+    second_id, second_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=path,
+        pane_id="%2",
+        agent_pid=222,
+    )
+    assert first_name == "repowire-shared-claude-code"
+    assert second_name == "repowire-shared-2-claude-code"
+    registry._mappings_dirty = True
+    registry._persist_mappings()
+
+    restarted = _make_registry(tmp_path)
+    second_reconnect_id, second_reconnect_name = await restarted.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=path,
+        pane_id="%2",
+        peer_id=second_id,
+        agent_pid=222,
+    )
+    first_reconnect_id, first_reconnect_name = await restarted.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=path,
+        pane_id="%1",
+        peer_id=first_id,
+        agent_pid=111,
+    )
+
+    assert second_reconnect_id == second_id
+    assert second_reconnect_name == second_name
+    assert first_reconnect_id == first_id
+    assert first_reconnect_name == first_name
+    second_peer = await restarted.get_peer_by_pane("%2")
+    first_peer = await restarted.get_peer_by_pane("%1")
+    assert second_peer is not None and second_peer.peer_id == second_id
+    assert first_peer is not None and first_peer.peer_id == first_id
+
+
 def test_sqlite_mode_imports_legacy_sessions_json_once(tmp_path):
     mappings = {
         "repow-dev-existing": {

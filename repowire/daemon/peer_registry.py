@@ -876,19 +876,45 @@ class PeerRegistry:
                         )
                         effective_pane_id = None
 
-                # Fresh registration: daemon owns the name by default. Runtime
-                # identity certificates are daemon-minted proof of an existing
-                # peer identity, so those rehydrations must not get a new
-                # collision suffix.
-                assigned_name = display_name_override or self._build_display_name(
-                    path or "", circle, backend,
+                preferred_mapping = self._mappings.get(peer_id) if peer_id else None
+                if preferred_mapping is not None:
+                    same_backend = preferred_mapping.backend == backend
+                    same_path = (
+                        not preferred_mapping.path
+                        or not path
+                        or preferred_mapping.path == path
+                    )
+                    if not same_backend or not same_path:
+                        logger.warning(
+                            "Ignoring stale persisted peer_id claim %s: "
+                            "mapping_name=%s backend=%s path=%s claim_backend=%s "
+                            "claim_path=%s",
+                            peer_id,
+                            preferred_mapping.display_name,
+                            preferred_mapping.backend.value,
+                            preferred_mapping.path,
+                            backend.value,
+                            path,
+                        )
+                        preferred_mapping = None
+
+                # Fresh in-memory registration: daemon owns the name by
+                # default. A known persisted mapping or runtime identity
+                # certificate is daemon-minted proof of an existing peer
+                # identity, so those rehydrations must not get a new collision
+                # suffix or adopt another same-path peer's base mapping.
+                assigned_name = (
+                    display_name_override
+                    or (preferred_mapping.display_name if preferred_mapping else None)
+                    or self._build_display_name(path or "", circle, backend)
                 )
+                mapping_circle = preferred_mapping.circle if preferred_mapping else circle
                 if display_name_override:
                     for existing_id, existing in list(self._peers.items()):
                         if (
                             existing_id != peer_id
                             and existing.display_name == assigned_name
-                            and existing.circle == circle
+                            and existing.circle == mapping_circle
                             and existing.backend == backend
                             and (
                                 existing.status == PeerStatus.OFFLINE
@@ -910,7 +936,7 @@ class PeerRegistry:
                                 peer_id,
                             )
                 allocated_id = self._find_or_allocate_mapping(
-                    assigned_name, circle, backend, path, role=role,
+                    assigned_name, mapping_circle, backend, path, role=role,
                     agent_pid=agent_pid, circle_source=circle_source,
                     preferred_session_id=peer_id,
                 )
