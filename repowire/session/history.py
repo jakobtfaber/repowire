@@ -14,6 +14,7 @@ metadata to map a transcript back to a peer path:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -168,6 +169,210 @@ def _session_file_candidates(
     if backend_value == "codex":
         return discover_codex_sessions(peer_path)
     return []
+
+
+def _opencode_storage_dir() -> Path:
+    return Path.home() / ".local" / "share" / "opencode" / "storage" / "session"
+
+
+def _antigravity_cli_dir() -> Path:
+    return Path.home() / ".gemini" / "antigravity-cli"
+
+
+def _gemini_tmp_dir() -> Path:
+    return Path.home() / ".gemini" / "tmp"
+
+
+def _pi_session_map_path() -> Path:
+    return Path.home() / ".pi" / "pi-acp" / "session-map.json"
+
+
+def _claude_resumable(peer_path: str | None, runtime_session_id: str) -> bool:
+    # The id is embedded in the filename; require an exact stem match so a stale
+    # id + another session in the same cwd cannot false-positive.
+    for path in _session_file_candidates(peer_path, "claude-code", runtime_session_id):
+        if path.stem == runtime_session_id and _safe_is_file(path):
+            return True
+    return False
+
+
+def _codex_resumable(peer_path: str | None, runtime_session_id: str) -> bool:
+    for path in _session_file_candidates(peer_path, "codex", runtime_session_id):
+        if runtime_session_id in path.name and _safe_is_file(path):
+            return True
+    return False
+
+
+def _opencode_resumable(peer_path: str | None, runtime_session_id: str) -> bool:
+    # Sessions: ~/.local/share/opencode/storage/session/<projectID>/ses_<id>.json
+    # with JSON fields id + directory. The projectID dir is a hash (not derivable
+    # from cwd), so scan and match the JSON id + directory rather than the path.
+    # Require an EXACT id match: build_resume_command passes the captured id
+    # verbatim to `opencode --session <id>`, so accepting a `ses_`-prefixed
+    # variant here would validate an id the resume command can't use -> a
+    # validated-then-hard-fail path (codex review). Match the JSON id exactly.
+    root = _opencode_storage_dir()
+    if not root.is_dir():
+        return False
+    try:
+        for path in root.glob("*/ses_*.json"):
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict) or data.get("id") != runtime_session_id:
+                continue
+            if peer_path is None or _path_matches(data.get("directory"), peer_path):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _pi_resumable(peer_path: str | None, runtime_session_id: str) -> bool:
+    # ~/.pi/pi-acp/session-map.json: {"sessions": {"<id>": {sessionId, cwd,
+    # sessionFile, ...}}}. Require the mapped cwd to match and the sessionFile
+    # to exist.
+    try:
+        data = json.loads(_pi_session_map_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    entry = (data.get("sessions") or {}).get(runtime_session_id) if isinstance(data, dict) else None
+    if not isinstance(entry, dict):
+        return False
+    if peer_path is not None and not _path_matches(entry.get("cwd"), peer_path):
+        return False
+    session_file = entry.get("sessionFile")
+    return isinstance(session_file, str) and _safe_is_file(Path(session_file))
+
+
+def _antigravity_resumable(peer_path: str | None, runtime_session_id: str) -> bool:
+    # ~/.gemini/antigravity-cli/cache/last_conversations.json maps cwd -> id,
+    # with conversations/<id>.pb. Conservative: only validates the LAST
+    # conversation per cwd, so older ids false-negative to fresh+warning (safe;
+    # never false-positive). cwd must map to exactly this id AND the .pb exist.
+    cli = _antigravity_cli_dir()
+    try:
+        last = json.loads((cli / "cache" / "last_conversations.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(last, dict):
+        return False
+    if peer_path is not None:
+        mapped = next(
+            (cid for cwd, cid in last.items() if _path_matches(cwd, peer_path)), None
+        )
+        if mapped != runtime_session_id:
+            return False
+    elif runtime_session_id not in last.values():
+        return False
+    return _safe_is_file(cli / "conversations" / f"{runtime_session_id}.pb")
+
+
+def _gemini_resumable(peer_path: str | None, runtime_session_id: str) -> bool:
+    # gemini --resume accepts a full session UUID (per official docs). Sessions:
+    # ~/.gemini/tmp/<projectHash>/chats/session-<ts>-<shortid>.json with JSON
+    # fields sessionId (UUID) + projectHash, where projectHash == sha256(abs cwd)
+    # (verified locally). The session JSON usually has NO directory/cwd, so we
+    # MUST scope by projectHash to avoid resuming a same-UUID session from a
+    # different project (which would kill the pane + resume the wrong project).
+    root = _gemini_tmp_dir()
+    if not root.is_dir():
+        return False
+    expected_hash = (
+        hashlib.sha256(str(Path(peer_path).expanduser().resolve()).encode()).hexdigest()
+        if peer_path
+        else None
+    )
+    try:
+        for path in root.glob("*/chats/session-*.json"):
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict) or data.get("sessionId") != runtime_session_id:
+                continue
+            if peer_path is None:
+                return True
+            directory = data.get("directory") or data.get("cwd")
+            if directory is not None:
+                if _path_matches(directory, peer_path):
+                    return True
+                continue
+            # No directory recorded: require projectHash to match this cwd.
+            if data.get("projectHash") == expected_hash:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _safe_is_file(path: Path) -> bool:
+    try:
+        return path.expanduser().is_file()
+    except OSError:
+        return False
+
+
+# Per-backend on-disk resume validators. Backends absent from this table declare
+# a resume invocation but have no mapped session store, so their status is
+# "unvalidated_backend" (the seam falls back to fresh+warning rather than risk a
+# resume that exits hard after the pane is already killed). All six current
+# resume-capable backends are mapped below.
+_RESUME_VALIDATORS = {
+    "claude-code": _claude_resumable,
+    "codex": _codex_resumable,
+    "opencode": _opencode_resumable,
+    "pi": _pi_resumable,
+    "antigravity": _antigravity_resumable,
+    "gemini": _gemini_resumable,
+}
+
+PREVALIDATABLE_RESUME_BACKENDS = frozenset(_RESUME_VALIDATORS)
+
+
+def runtime_session_validation_status(
+    peer_path: str | None,
+    backend: str,
+    runtime_session_id: str | None,
+) -> str:
+    """Granular pre-validation status for a runtime_session_id.
+
+    Returns one of:
+    - "missing_id": no id captured
+    - "unvalidated_backend": backend resume storage not mapped (can't prove)
+    - "stale_missing_file": known backend, but no local session for the id
+    - "resumable": a local session for exactly this id exists
+
+    Resume-capable backends exit non-zero on an unknown id (no fresh fallback),
+    so a resume that kills the pane first would leave the peer dead. Each mapped
+    backend's validator proves the id maps to a real local session scoped to the
+    peer's cwd; unmapped backends stay "unvalidated_backend" so callers fall back
+    to a fresh launch instead of guessing.
+    """
+    if not runtime_session_id:
+        return "missing_id"
+    backend_value = getattr(backend, "value", backend)
+    validator = _RESUME_VALIDATORS.get(backend_value)
+    if validator is None:
+        return "unvalidated_backend"
+    return "resumable" if validator(peer_path, runtime_session_id) else "stale_missing_file"
+
+
+def runtime_session_resumable(
+    peer_path: str | None,
+    backend: str,
+    runtime_session_id: str | None,
+) -> bool:
+    """Whether a local backend session file exists for ``runtime_session_id``.
+
+    Thin bool wrapper over ``runtime_session_validation_status`` for callers
+    that only need a yes/no. See that function for the per-status semantics.
+    """
+    return (
+        runtime_session_validation_status(peer_path, backend, runtime_session_id)
+        == "resumable"
+    )
 
 
 def _load_paths(

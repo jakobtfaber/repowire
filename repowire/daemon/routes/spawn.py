@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
+from repowire.agent_backends import build_resume_command
 from repowire.config.models import AgentType, SpawnProfile, apply_spawn_profile
 from repowire.daemon.ask_tracker import QuiesceFailedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
+from repowire.daemon.resume_safety import resolve_resume_safety
 from repowire.daemon.spawn_service import SpawnService
 from repowire.hooks.utils import read_pane_runtime_metadata
 from repowire.hooks.ws_hook_supervisor import maybe_respawn
@@ -516,6 +520,7 @@ class RestartPeerResponse(BaseModel):
     circle: str
     tmux_session: str | None = None
     resume_mode: str = "fresh_runtime_context"
+    resume_warning: str | None = None
     unsupported_reason: str | None = None
     command: str | None = None
 
@@ -523,6 +528,68 @@ class RestartPeerResponse(BaseModel):
 def _command_for_backend(new_backend: AgentType) -> str | None:
     """Return the configured command for a backend/runtime profile."""
     return _runtime_commands().get(new_backend)
+
+
+@dataclass(frozen=True)
+class _RestartResume:
+    """Resolved resume decision for a restart."""
+
+    command: str          # base command, or resume command when resumable
+    mode: str             # "resumed" | "fresh_runtime_context"
+    resumable: bool       # a valid on-disk session was found and resume built
+    warning: str | None   # why context will NOT be resumed (when not resumable)
+
+
+def _resolve_restart_resume(
+    *,
+    peer: Peer,
+    resolved_path: str,
+    base_command: str,
+    state: object,
+) -> _RestartResume:
+    """Decide whether a restart can resume the backend's prior session.
+
+    Reads the peer's newest matching session binding for a runtime_session_id,
+    pre-validates that the backend session file exists on disk (both Claude and
+    Codex exit hard on an unknown id -- no fresh fallback), and builds the
+    backend resume command in the SAME cwd. Falls back to a fresh respawn with
+    an explicit warning when no resumable session is available.
+    """
+    store = getattr(state, "session_binding_store", None)
+    chosen_id: str | None = None
+    chosen_binding: Any = None
+    if store is not None:
+        # Newest binding for this peer, filtered to same backend + project path so
+        # stale cross-path/identity-reuse state isn't selected (codex review B).
+        backend_value = peer.backend.value
+        for binding in store.list_by_peer(peer.peer_id):  # ORDER BY last_seen_at DESC
+            if binding.runtime_session_id is None:
+                continue
+            if binding.backend and binding.backend != backend_value:
+                continue
+            # Compare normalized paths directly (no truthiness guard): _norm_path
+            # maps None/"" -> "", so a binding with an empty project_path won't
+            # bypass the path filter and get picked for a peer that has a real
+            # path. Matches the job_runner/session_control path-match pattern.
+            if _norm_path(binding.project_path) != _norm_path(resolved_path):
+                continue
+            chosen_id = binding.runtime_session_id
+            chosen_binding = binding
+            break
+
+    decision = resolve_resume_safety(
+        backend=peer.backend,
+        path=resolved_path,
+        runtime_session_id=chosen_id,
+        repowire_session_id=chosen_binding.repowire_session_id if chosen_binding else None,
+        # Honor a binding that recorded resume as unsupported, same as the job
+        # and session-control pathways (codex review item 3).
+        capability=chosen_binding.resume_capability if chosen_binding else None,
+    )
+    if not decision.resumable or decision.plan is None:
+        return _RestartResume(base_command, "fresh_runtime_context", False, decision.warning)
+    resume_cmd = build_resume_command(base_command, decision.plan)
+    return _RestartResume(resume_cmd, "resumed", True, None)
 
 
 @router.post("/peers/{name}/restart", response_model=RestartPeerResponse)
@@ -605,16 +672,34 @@ async def restart_peer(
 
     _validate_spawn_path(peer.path)
 
+    spawn_circle = peer.circle or "default"
+    resolved_path = str(Path(peer.path).expanduser().resolve())
+
+    # Resolve resume BEFORE the ownership refusal so the refusal can hand back a
+    # manual resume command (codex review A). Both Claude and Codex exit hard on
+    # an unknown session id (no fresh fallback), so we pre-validate the id is on
+    # disk before committing to a resume that would kill the pane (codex C).
+    resume_resolution = _resolve_restart_resume(
+        peer=peer, resolved_path=resolved_path, base_command=command, state=get_app_state(),
+    )
+    resume_command = resume_resolution.command
+    resume_mode = resume_resolution.mode
+    resume_warning = resume_resolution.warning
+
     if not _has_spawn_ownership(peer):
         detail = _durable_ownership_error_detail(peer)
         detail["error"] = "unsupported_pane_ownership"
+        if resume_resolution.resumable:
+            # We won't kill a pane we can't prove we own, but the peer IS
+            # resumable -- give the user the exact command to relaunch with
+            # context manually.
+            detail["resume_command"] = resume_command
+            detail["resume_mode"] = "manual_resume_available"
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=detail,
         )
 
-    spawn_circle = peer.circle or "default"
-    resolved_path = str(Path(peer.path).expanduser().resolve())
     if request.dry_run:
         return RestartPeerResponse(
             status="restart_available",
@@ -625,7 +710,9 @@ async def restart_peer(
             path=resolved_path,
             circle=spawn_circle,
             tmux_session=peer.tmux_session,
-            command=command,
+            command=resume_command,
+            resume_mode=resume_mode,
+            resume_warning=resume_warning,
         )
 
     state = get_app_state()
@@ -684,7 +771,7 @@ async def restart_peer(
                     path=resolved_path,
                     circle=spawn_circle,
                     backend=peer.backend,
-                    command=command,
+                    command=resume_command,
                     message=request.message,
                     role=peer.role.value,
                     peer_id=peer.peer_id,
@@ -727,7 +814,9 @@ async def restart_peer(
             path=resolved_path,
             circle=spawn_circle,
             tmux_session=result.tmux_session,
-            command=command,
+            command=resume_command,
+            resume_mode=resume_mode,
+            resume_warning=resume_warning,
         )
     finally:
         await ask_tracker.end_quiesce(peer.peer_id)
