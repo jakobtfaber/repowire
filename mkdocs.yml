@@ -16,9 +16,9 @@ theme:
   name: material
   language: en
   font:
-    text: IBM Plex Sans
+    text: Inter
     code: JetBrains Mono
-  logo: assets/logo-mark-copper.svg
+  logo: assets/logo-mark.svg
   favicon: assets/favicon.ico
   palette:
     - media: "(prefers-color-scheme: dark)"
@@ -49,7 +49,7 @@ theme:
     - search.share
 
 extra_css:
-  - stylesheets/copper-mesh.css
+  - stylesheets/repowire-cobalt.css
 
 plugins:
   - search

@@ -204,7 +204,7 @@ Hosted at repowire.io. Daemon connects outbound via WSS. Cookie-based auth for d
 
 ### Dashboard Design System
 
-See [`docs/design-system.md`](docs/design-system.md) for the full spec (color tokens, Tailwind config, responsive layout, component patterns).
+See [`docs/contributing/design-system.md`](docs/contributing/design-system.md) for the full spec (color tokens, Tailwind config, responsive layout, component patterns).
 
 ## Attachments
 

@@ -1,19 +1,26 @@
-import Navbar from '@/components/Navbar';
-import Hero from '@/components/Hero';
-import Features from '@/components/Features';
-import HowItWorks from '@/components/HowItWorks';
-import Installation from '@/components/Installation';
-import Footer from '@/components/Footer';
+import "./marketing.css";
+import TopBar from "@/components/marketing/TopBar";
+import Hero from "@/components/marketing/Hero";
+import DashboardShot from "@/components/marketing/DashboardShot";
+import Features from "@/components/marketing/Features";
+import HowItWorks from "@/components/marketing/HowItWorks";
+import CodeShowcase from "@/components/marketing/CodeShowcase";
+import CTA from "@/components/marketing/CTA";
+import Footer from "@/components/marketing/Footer";
 
 export default function Home() {
   return (
-    <main className="min-h-screen bg-surface text-on-surface selection:bg-primary/30 mesh-bg">
-      <Navbar />
-      <Hero />
-      <Features />
-      <HowItWorks />
-      <Installation />
+    <div className="rw-marketing">
+      <TopBar />
+      <main>
+        <Hero />
+        <DashboardShot />
+        <Features />
+        <HowItWorks />
+        <CodeShowcase />
+        <CTA />
+      </main>
       <Footer />
-    </main>
+    </div>
   );
 }

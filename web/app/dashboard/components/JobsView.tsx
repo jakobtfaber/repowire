@@ -233,7 +233,7 @@ export function JobsView({
       <div className="sticky top-[var(--topbar-offset)] z-10 flex flex-wrap items-center justify-between gap-3 border-b border-border-faint bg-surface-dim px-4 py-3 md:static md:px-6">
         <div>
           <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.22em] text-primary">JOBS / durable work</div>
-          <h1 className="mt-1 font-headline text-2xl font-bold text-on-surface">tracked work</h1>
+          <h1 className="mt-1 font-headline text-2xl font-semibold text-on-surface">tracked work</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <JobMetric label="active" value={activeCount} />
@@ -424,7 +424,7 @@ function JobDetail({
             <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.18em] text-outline">
               {item.type === "recurring" ? "recurring" : "job"} / {item.id}
             </p>
-            <h2 className="break-words font-headline text-xl font-bold text-on-surface">{itemTitle(item)}</h2>
+            <h2 className="break-words font-headline text-xl font-semibold text-on-surface">{itemTitle(item)}</h2>
           </div>
           <span className={cn("shrink-0 border px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.14em]", stateTone(state))}>
             {state}

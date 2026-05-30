@@ -498,11 +498,16 @@ def create_app(
             return HTMLResponse("Dashboard not found. Please run 'repowire build-ui'.")
 
         @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-        async def serve_landing():
+        async def serve_root():
+            # The local daemon is an operator surface: open the dashboard directly
+            # rather than the marketing landing page (the relay serves marketing).
+            dashboard_path = os.path.join(web_out, "dashboard.html")
+            if os.path.exists(dashboard_path):
+                return FileResponse(dashboard_path)
             index_path = os.path.join(web_out, "index.html")
             if os.path.exists(index_path):
                 return FileResponse(index_path)
-            return HTMLResponse("Landing page not found. Please run 'repowire build-ui'.")
+            return HTMLResponse("Dashboard not found. Please run 'repowire build-ui'.")
 
         app.mount("/", StaticFiles(directory=web_out), name="web_static")
 
