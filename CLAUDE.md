@@ -28,6 +28,8 @@ CI triggers PyPI publish from tags.
 - After 0.9.x → 0.10.0, 0.11.0, etc. **Never auto-increment to 1.0.0**
 - 1.0.0 is an intentional decision by Prass, not an automatic bump
 
+**Merging PRs:** squash-merge (`gh pr merge <N> --squash --delete-branch`), matching the existing PR history. Then checkout main, pull, and cut the release.
+
 ## Architecture
 
 ```
