@@ -69,6 +69,27 @@
 .rw-marketing .cta:hover { background: var(--accent-hover); }
 .rw-marketing .mobile-toggle { display: none; }
 
+/* Mobile nav dropdown — only rendered when the hamburger is toggled (≤720px). */
+.rw-marketing .mobile-menu {
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 16px 16px;
+  border-bottom: 1px solid var(--rds-border);
+  background: var(--page);
+}
+.rw-marketing .mobile-menu a {
+  padding: 10px 12px; border-radius: 8px;
+  font-size: 15px; font-weight: 500; color: var(--fg-muted);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.rw-marketing .mobile-menu a:hover { background: var(--surface-sunken); color: var(--fg); }
+.rw-marketing .mobile-menu-cta {
+  margin-top: 6px; background: var(--accent); color: #fff !important;
+  text-align: center;
+}
+.rw-marketing .mobile-menu-cta:hover { background: var(--accent-hover); color: #fff !important; }
+
 /* =========================  HERO  ========================= */
 .rw-marketing .hero {
   max-width: var(--container-xl); margin: 0 auto;
@@ -442,6 +463,7 @@
 @media (max-width: 720px) {
   .rw-marketing .topnav { display: none; }
   .rw-marketing .mobile-toggle { display: grid; }
+  .rw-marketing .mobile-menu { display: flex; }
   .rw-marketing .cta { display: none; }
   .rw-marketing .hero { padding: 48px 20px 40px; }
   .rw-marketing .features, .rw-marketing .how { padding: 56px 20px; }

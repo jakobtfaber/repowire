@@ -8,8 +8,10 @@ const STORAGE_KEY = "repowire-theme";
 type Theme = "light" | "dark";
 
 // The data-theme attribute is the source of truth: the no-flash inline script in
-// layout.tsx sets it before hydration. We read it via useSyncExternalStore so the
-// icon stays in sync without a setState-in-effect cascade or hydration mismatch.
+// layout.tsx sets it before hydration. We read it via useSyncExternalStore, which
+// renders "light" on the server (the SSR default) and re-syncs to the real client
+// value on mount. suppressHydrationWarning on the button silences the expected
+// server/client diff in aria-label + icon when the client resolves to dark.
 function subscribe(onChange: () => void) {
   const observer = new MutationObserver(onChange);
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
@@ -38,6 +40,7 @@ export default function ThemeToggle() {
     <button
       className="icon-btn"
       onClick={toggle}
+      suppressHydrationWarning
       aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
     >
       {theme === "dark" ? (

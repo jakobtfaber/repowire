@@ -36,6 +36,7 @@ export function ThemeToggle() {
   return (
     <button
       onClick={toggle}
+      suppressHydrationWarning
       aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
       className="inline-flex h-8 w-8 items-center justify-center rounded border border-border text-outline transition-colors hover:bg-surface-container-high hover:text-on-surface"
     >

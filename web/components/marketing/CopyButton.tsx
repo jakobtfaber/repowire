@@ -7,9 +7,16 @@ export default function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
 
   function copy() {
-    navigator.clipboard?.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
+    if (!navigator.clipboard) return;
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1400);
+      })
+      .catch(() => {
+        // Clipboard write was blocked/failed; don't show a false "Copied".
+      });
   }
 
   return (
