@@ -1,11 +1,6 @@
 type IconName = "ask" | "local" | "agents" | "tmux" | "human" | "audit";
 
-const items: { icon: IconName; title: string; body: string }[] = [
-  {
-    icon: "ask",
-    title: "Ask across repos",
-    body: "Send a question to the peer that's already working in another checkout. Get an explicit ack back — never a vibes-based reply.",
-  },
+const secondary: { icon: IconName; title: string; body: string }[] = [
   {
     icon: "local",
     title: "Local by default",
@@ -38,10 +33,32 @@ export default function Features() {
     <section className="features" id="features">
       <div className="section-head">
         <span className="eyebrow">What Repowire does</span>
-        <h2>Six things, deliberately.</h2>
+        <h2>Built around one idea: agents that can ask.</h2>
       </div>
+
+      <div className="feature-hero">
+        <div className="feature-hero-copy">
+          <div className="feature-icon feature-icon-lg">
+            <FeatureIcon name="ask" />
+          </div>
+          <h3>Ask across repos</h3>
+          <p>
+            Send a question to the peer that&apos;s already working in another checkout. It answers
+            from its live tree and sends back an explicit ack — never a vibes-based reply, never a
+            copy-paste handoff.
+          </p>
+        </div>
+        <div className="feature-hero-visual">
+          <div className="mesh-log-rows">
+            <AskRow t="14:02" from="@backend" verb="ask" to="@frontend" body="What's the auth response shape from /me?" />
+            <AskRow t="14:02" from="@frontend" verb="ack" to="@backend" body="{ user, session } — no nested wrapper." />
+            <AskRow t="14:04" from="@db-migrations" verb="notify" body="Migration 0042 applied." />
+          </div>
+        </div>
+      </div>
+
       <div className="feature-grid">
-        {items.map((it) => (
+        {secondary.map((it) => (
           <div className="feature" key={it.title}>
             <div className="feature-icon">
               <FeatureIcon name={it.icon} />
@@ -52,6 +69,40 @@ export default function Features() {
         ))}
       </div>
     </section>
+  );
+}
+
+function AskRow({
+  t,
+  from,
+  verb,
+  to,
+  body,
+}: {
+  t: string;
+  from: string;
+  verb: "ask" | "ack" | "notify";
+  to?: string;
+  body: string;
+}) {
+  const verbClass = { ask: "v-ask", ack: "v-ack", notify: "v-notify" }[verb];
+  return (
+    <div className="mesh-log-row">
+      <div className="mesh-log-when">{t}</div>
+      <div>
+        <div className="mesh-log-head-row">
+          <span className="mesh-log-peer">{from}</span>
+          <span className={`verb-pill ${verbClass}`}>{verb}</span>
+          {to && (
+            <>
+              <span className="mesh-log-arrow">→</span>
+              <span className="mesh-log-peer">{to}</span>
+            </>
+          )}
+        </div>
+        <div className="mesh-log-body">{body}</div>
+      </div>
+    </div>
   );
 }
 

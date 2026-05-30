@@ -6,7 +6,7 @@ export default function CTA() {
   return (
     <section className="cta-band" id="install">
       <h2>Wire up your agents in one command.</h2>
-      <p>Free, local, open source. The hosted relay starts at $0 for solo developers.</p>
+      <p>Free, local, and open source. The hosted relay is opt-in — only there for browser and phone access.</p>
       <div className="install-strip large">
         <div className="install-cmd">
           <span className="install-prompt">$</span>

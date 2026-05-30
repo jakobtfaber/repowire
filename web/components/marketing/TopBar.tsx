@@ -18,8 +18,7 @@ export default function TopBar() {
         <nav className="topnav">
           <a href="#features">Product</a>
           <a href="https://docs.repowire.io">Docs</a>
-          <a href="#pricing">Pricing</a>
-          <a href="#changelog">Changelog</a>
+          <a href="https://github.com/prassanna-ravishankar/repowire/releases">Changelog</a>
         </nav>
         <div className="top-actions">
           <ThemeToggle />

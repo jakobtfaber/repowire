@@ -1,7 +1,7 @@
 import "./marketing.css";
 import TopBar from "@/components/marketing/TopBar";
 import Hero from "@/components/marketing/Hero";
-import MeshDemo from "@/components/marketing/MeshDemo";
+import DashboardShot from "@/components/marketing/DashboardShot";
 import Features from "@/components/marketing/Features";
 import HowItWorks from "@/components/marketing/HowItWorks";
 import CodeShowcase from "@/components/marketing/CodeShowcase";
@@ -14,7 +14,7 @@ export default function Home() {
       <TopBar />
       <main>
         <Hero />
-        <MeshDemo />
+        <DashboardShot />
         <Features />
         <HowItWorks />
         <CodeShowcase />

@@ -32,7 +32,7 @@ const verbClass: Record<Verb, string> = {
   broadcast: "v-broadcast",
 };
 
-export default function MeshDemo() {
+export default function MeshDemo({ variant = "section" }: { variant?: "section" | "hero" } = {}) {
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -43,7 +43,7 @@ export default function MeshDemo() {
   const active = events[tick];
 
   return (
-    <div className="mesh-demo">
+    <div className={`mesh-demo${variant === "hero" ? " mesh-demo--hero" : ""}`}>
       <div className="mesh-canvas">
         <svg className="mesh-edges" viewBox="0 0 100 100" preserveAspectRatio="none">
           {peers.map((p, i) =>

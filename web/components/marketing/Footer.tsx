@@ -16,8 +16,7 @@ export default function Footer() {
             <div className="footer-col-title">Product</div>
             <a href="#features">Features</a>
             <a href="#how">How it works</a>
-            <a href="#pricing">Pricing</a>
-            <a href="#changelog">Changelog</a>
+            <a href="https://github.com/prassanna-ravishankar/repowire/releases">Changelog</a>
           </div>
           <div>
             <div className="footer-col-title">Developers</div>
@@ -25,13 +24,6 @@ export default function Footer() {
             <a href="https://docs.repowire.io/start/install/">Install</a>
             <a href="https://github.com/prassanna-ravishankar/repowire">GitHub</a>
             <a href="https://docs.repowire.io/reference/mcp-tools/">API reference</a>
-          </div>
-          <div>
-            <div className="footer-col-title">Company</div>
-            <a href="#about">About</a>
-            <a href="#contact">Contact</a>
-            <a href="#privacy">Privacy</a>
-            <a href="#terms">Terms</a>
           </div>
         </div>
       </div>
