@@ -22,6 +22,7 @@ export default function Footer() {
             <div className="footer-col-title">Developers</div>
             <a href="https://docs.repowire.io">Docs</a>
             <a href="https://docs.repowire.io/start/install/">Install</a>
+            <a href="https://repowire.io/dashboard">Relay dashboard</a>
             <a href="https://github.com/prassanna-ravishankar/repowire">GitHub</a>
             <a href="https://docs.repowire.io/reference/mcp-tools/">API reference</a>
           </div>

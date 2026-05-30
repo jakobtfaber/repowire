@@ -1,6 +1,6 @@
 import CopyButton from "./CopyButton";
 
-const INSTALL_CMD = "uv tool install repowire && repowire up";
+const INSTALL_CMD = "curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh";
 
 export default function CTA() {
   return (

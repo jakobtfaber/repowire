@@ -46,14 +46,10 @@ Use it when one repo needs a concrete answer from another repo, when you want a 
 ## Install
 
 ```bash
-uv tool install repowire
-```
-
-Requires macOS or Linux, Python 3.10+, and tmux. Alternatives: `pipx install repowire`, `pip install repowire`, or the interactive installer:
-
-```bash
 curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
 ```
+
+Requires macOS or Linux, Python 3.10+, and tmux. The installer detects `uv`, `pipx`, and `pip` in that order. Prefer a package manager directly? See [Install](start/install.md).
 
 ## First ask
 

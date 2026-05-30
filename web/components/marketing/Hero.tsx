@@ -2,7 +2,7 @@ import { ArrowRight } from "lucide-react";
 import CopyButton from "./CopyButton";
 import MeshDemo from "./MeshDemo";
 
-const INSTALL_CMD = "uv tool install repowire && repowire up";
+const INSTALL_CMD = "curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh";
 
 export default function Hero() {
   return (
@@ -21,7 +21,7 @@ export default function Hero() {
             Install Repowire
             <ArrowRight width={16} height={16} strokeWidth={1.75} />
           </a>
-          <a className="btn secondary" href="https://docs.repowire.io">Read the docs</a>
+          <a className="btn secondary" href="https://repowire.io/dashboard">Open relay</a>
         </div>
         <div className="install-strip">
           <div className="install-cmd">

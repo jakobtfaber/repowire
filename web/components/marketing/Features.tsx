@@ -1,30 +1,35 @@
-type IconName = "ask" | "local" | "agents" | "tmux" | "human" | "audit";
+type IconName = "ask" | "review" | "handoff" | "context" | "checkpoint" | "compare" | "escalate";
 
 const secondary: { icon: IconName; title: string; body: string }[] = [
   {
-    icon: "local",
-    title: "Local by default",
-    body: "A single daemon on port 8377 is the hub. The hosted relay is opt-in, and it's only there for browser and phone access.",
+    icon: "review",
+    title: "Cross-agent review",
+    body: "Ask the peer nearest the code to review a component, migration, prompt, or PR branch before you merge it.",
   },
   {
-    icon: "agents",
-    title: "Agent-agnostic",
-    body: "Claude Code, Codex, Gemini CLI, OpenCode, Pi — anything that can hit an HTTP endpoint can register as a peer.",
+    icon: "handoff",
+    title: "Repo-to-repo handoff",
+    body: "Ask the API repo what changed, then let the frontend peer adapt against the answer it acks back.",
   },
   {
-    icon: "tmux",
-    title: "Tmux-native",
-    body: "Sessions are named, persistent, and steerable. Repowire never owns the agent's process; it just helps them talk.",
+    icon: "context",
+    title: "Live context lookup",
+    body: "Ask another session for the exact file, endpoint, schema, or command output from its own checkout.",
   },
   {
-    icon: "human",
-    title: "Human in the loop",
-    body: "Watch the mesh from the dashboard. Pause an agent, redirect a question, or step in mid-conversation.",
+    icon: "checkpoint",
+    title: "Checkpoint with closure",
+    body: "Use ask when a status update must close cleanly. Open threads keep resurfacing until the peer acks.",
   },
   {
-    icon: "audit",
-    title: "Audit trail by default",
-    body: "Every ask / ack / notify is logged with provenance. Replay a run, export a transcript, or git-commit it.",
+    icon: "compare",
+    title: "Divergent second opinion",
+    body: "Ask a different backend to critique an approach while the first agent keeps the original thread moving.",
+  },
+  {
+    icon: "escalate",
+    title: "Human escalation",
+    body: "Route the same ask shape through Telegram, Slack, or the dashboard when a person needs to decide.",
   },
 ];
 
@@ -44,7 +49,7 @@ export default function Features() {
           <h3>Ask across repos</h3>
           <p>
             Send a question to the peer that&apos;s already working in another checkout. It answers
-            from its live tree and sends back an explicit ack — never a vibes-based reply, never a
+            from its live tree and sends back an explicit ack, never a vibes-based reply or a
             copy-paste handoff.
           </p>
         </div>
@@ -57,7 +62,7 @@ export default function Features() {
         </div>
       </div>
 
-      <div className="feature-grid">
+      <div className="feature-grid feature-grid-six">
         {secondary.map((it) => (
           <div className="feature" key={it.title}>
             <div className="feature-icon">
@@ -122,46 +127,53 @@ function FeatureIcon({ name }: { name: IconName }) {
           <path d="M16 18l6-6-6-6M8 6l-6 6 6 6" />
         </svg>
       );
-    case "local":
+    case "review":
       return (
         <svg {...props}>
-          <rect x="3" y="4" width="18" height="12" rx="2" />
-          <line x1="8" y1="20" x2="16" y2="20" />
-          <line x1="12" y1="16" x2="12" y2="20" />
+          <path d="M4 5h16v12H7l-3 3z" />
+          <path d="M8 10h8" />
+          <path d="M8 13h5" />
         </svg>
       );
-    case "agents":
+    case "handoff":
       return (
         <svg {...props}>
-          <circle cx="9" cy="9" r="2.5" />
-          <circle cx="17" cy="13" r="2" />
-          <circle cx="7" cy="17" r="2" />
-          <line x1="10.5" y1="10.5" x2="15.5" y2="12.5" />
-          <line x1="8" y1="15" x2="10" y2="11" />
+          <path d="M7 7h10" />
+          <path d="M14 4l3 3-3 3" />
+          <path d="M17 17H7" />
+          <path d="M10 14l-3 3 3 3" />
         </svg>
       );
-    case "tmux":
+    case "context":
       return (
         <svg {...props}>
-          <rect x="3" y="3" width="18" height="18" rx="2" />
-          <line x1="12" y1="3" x2="12" y2="21" />
-          <line x1="3" y1="12" x2="12" y2="12" />
+          <circle cx="11" cy="11" r="7" />
+          <path d="M16.5 16.5 21 21" />
+          <path d="M8 11h6" />
+          <path d="M11 8v6" />
         </svg>
       );
-    case "human":
+    case "checkpoint":
+      return (
+        <svg {...props}>
+          <path d="M20 6 9 17l-5-5" />
+          <path d="M4 20h16" />
+        </svg>
+      );
+    case "compare":
+      return (
+        <svg {...props}>
+          <path d="M5 7h14" />
+          <path d="M7 7l3 12" />
+          <path d="M17 7l-3 12" />
+          <path d="M3 19h18" />
+        </svg>
+      );
+    case "escalate":
       return (
         <svg {...props}>
           <circle cx="12" cy="8" r="4" />
           <path d="M4 21a8 8 0 0 1 16 0" />
-        </svg>
-      );
-    case "audit":
-      return (
-        <svg {...props}>
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-          <polyline points="14 2 14 8 20 8" />
-          <line x1="8" y1="13" x2="16" y2="13" />
-          <line x1="8" y1="17" x2="13" y2="17" />
         </svg>
       );
   }
