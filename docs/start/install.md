@@ -2,32 +2,23 @@
 
 Repowire runs on macOS and Linux with Python 3.10+ and tmux.
 
-## Recommended: uv
-
-```bash
-uv tool install repowire
-```
-
-Fast, isolated, and the way the project itself is developed.
-
-## Alternatives
-
-```bash
-pipx install repowire
-pip install repowire
-```
-
-Use `pipx` if you want isolation without uv. Use plain `pip` only inside a virtualenv you control.
-
-## Interactive installer
-
-Use this when you want setup to choose the available package manager for you.
+## Recommended
 
 ```bash
 curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
 ```
 
-The installer detects `uv`, `pipx`, and `pip` in that order and falls through to whichever it finds. It then drops you into [setup](setup.md).
+The installer detects `uv`, `pipx`, and `pip` in that order, installs Repowire with the first available package manager, then drops you into [setup](setup.md).
+
+## Alternatives
+
+```bash
+uv tool install repowire
+pipx install repowire
+pip install repowire
+```
+
+Use `uv` for the fastest isolated install. Use `pipx` if you want isolation without uv. Use plain `pip` only inside a virtualenv you control.
 
 ## What gets installed
 

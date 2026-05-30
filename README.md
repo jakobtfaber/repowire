@@ -34,15 +34,11 @@ Repowire runs locally by default through a daemon on your machine. The hosted re
 **1. Install Repowire and wire your agents.**
 
 ```bash
-uv tool install repowire    # or: pipx install repowire / pip install repowire
+curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
 repowire setup
 ```
 
-Or use the interactive installer:
-
-```bash
-curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
-```
+The installer detects `uv`, `pipx`, and `pip` in that order.
 
 **2. Open your normal agent CLIs.**
 
