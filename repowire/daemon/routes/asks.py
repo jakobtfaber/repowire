@@ -35,7 +35,7 @@ from repowire.daemon.peer_delivery import peer_delivery_from_state
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
 from repowire.daemon.routes._shared import OkResponse
 from repowire.daemon.state.session_bindings import resolve_repowire_session_id
-from repowire.daemon.websocket_transport import TransportError
+from repowire.daemon.websocket_transport import DeliveryInjectionError, TransportError
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import Peer
 
@@ -353,6 +353,7 @@ async def open_ask(
     peer_registry = get_peer_registry()
     state = get_app_state()
     ask_tracker = state.ask_tracker
+    trace = getattr(state, "delivery_trace_store", None)
     await peer_registry.lazy_repair()
 
     peer = await _get_peer_or_http(request.to_peer, circle=request.circle)
@@ -405,6 +406,16 @@ async def open_ask(
             },
         ) from e
 
+    if trace is not None:
+        trace.record(
+            trace_id=cid, kind="ask", stage="created",
+            peer_id=peer.peer_id, from_peer_id=from_peer_id,
+        )
+        trace.record(
+            trace_id=cid, kind="ask", stage="resolved_peer",
+            peer_id=peer.peer_id, from_peer_id=from_peer_id,
+        )
+
     async def _on_acp_complete(
         correlation_id: str, reply: str | None, error: str | None,
     ) -> None:
@@ -422,7 +433,12 @@ async def open_ask(
             registry=peer_registry,
             state=state,
         )
-        await peer_delivery.deliver_ask(
+        if trace is not None:
+            trace.record(
+                trace_id=cid, kind="ask", stage="routed",
+                peer_id=peer.peer_id, from_peer_id=from_peer_id,
+            )
+        ask_outcome = await peer_delivery.deliver_ask(
             from_peer=from_peer_id,
             to_peer=peer.peer_id,
             text=request.text,
@@ -433,8 +449,35 @@ async def open_ask(
             on_acp_complete=_on_acp_complete,
         )
     except ValueError as e:
+        if trace is not None:
+            trace.record(
+                trace_id=cid, kind="ask", stage="resolve_failed", status="fail",
+                peer_id=peer.peer_id, detail={"error": str(e)},
+            )
         await ask_tracker.close(cid, reason="evicted")
         raise HTTPException(status_code=404, detail=str(e))
+    except DeliveryInjectionError as e:
+        # The hook was reached but the pane rejected/failed injection. The
+        # connection is alive (not a CLI-queue case) — record the TRUTHFUL
+        # terminal outcome, close fail-loud, and surface 503.
+        if trace is not None:
+            trace.record_outcome(
+                trace_id=cid,
+                kind="ask",
+                peer_id=peer.peer_id,
+                from_peer_id=from_peer_id,
+                transport="ws",
+                hook_delivery=e.hook_delivery,
+            )
+        await ask_tracker.close(cid, reason="send_failed")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "injection_failed",
+                "hint": f"Ask injection failed for {request.to_peer}: {e}",
+                "correlation_id": cid,
+            },
+        )
     except TransportError as e:
         if _uses_cli_polling_fallback(peer):
             queue = getattr(state, "queued_delivery_store", None)
@@ -457,6 +500,11 @@ async def open_ask(
                 peer.peer_id,
                 e,
             )
+            if trace is not None:
+                trace.record(
+                    trace_id=cid, kind="ask", stage="pending",
+                    peer_id=peer.peer_id, detail={"transport": "cli_polling_queue"},
+                )
             if request.reply_to:
                 prior = await ask_tracker.close(request.reply_to, reason="reply_to")
                 if prior is None:
@@ -465,10 +513,28 @@ async def open_ask(
                         request.reply_to,
                     )
             return AskResponse(correlation_id=cid)
+        if trace is not None:
+            trace.record(
+                trace_id=cid, kind="ask", stage="no_connection", status="fail",
+                peer_id=peer.peer_id, detail={"error": str(e)},
+            )
         await ask_tracker.close(cid, reason="send_failed")
         raise HTTPException(
             status_code=503,
             detail=f"Peer {request.to_peer} has no live connection: {e}",
+        )
+
+    # Send succeeded: record the TRUTHFUL terminal stage from the transport
+    # outcome (pane_injected only on a real ws-hook injected receipt; otherwise
+    # websocket_sent/unverified for ACP or legacy no-ack hooks).
+    if trace is not None:
+        trace.record_outcome(
+            trace_id=cid,
+            kind="ask",
+            peer_id=peer.peer_id,
+            from_peer_id=from_peer_id,
+            transport=ask_outcome.transport,
+            hook_delivery=ask_outcome.hook_delivery,
         )
 
     # Send succeeded: close any prior thread referenced by reply_to.
@@ -509,6 +575,7 @@ async def ack_ask(
     peer_registry = get_peer_registry()
     state = get_app_state()
     ask_tracker = state.ask_tracker
+    trace = getattr(state, "delivery_trace_store", None)
 
     existing = await ask_tracker.get(request.correlation_id)
     if existing is None:
@@ -597,6 +664,16 @@ async def ack_ask(
             has_attachments=False,
         )
         await ask_tracker.close(request.correlation_id, reason="ack")
+
+    if trace is not None:
+        trace.record(
+            trace_id=request.correlation_id, kind="ask", stage="acked",
+            peer_id=existing.to_peer_id, from_peer_id=existing.from_peer_id,
+        )
+        trace.record(
+            trace_id=request.correlation_id, kind="ask", stage="closed",
+            peer_id=existing.to_peer_id, from_peer_id=existing.from_peer_id,
+        )
 
     return OkResponse()
 

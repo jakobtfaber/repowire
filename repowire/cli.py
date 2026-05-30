@@ -3116,6 +3116,172 @@ def peer_restart(
         console.print(f"  tmux: {data.get('tmux_session')}")
 
 
+@peer.command(name="doctor")
+@click.argument("name")
+@click.option("--circle", "-c", help="Circle to scope display-name lookup")
+@click.option("--json", "json_out", is_flag=True, help="Emit the raw report as JSON")
+@click.option(
+    "--fix",
+    is_flag=True,
+    help="Attempt a non-destructive rehook when an inbound-down contradiction is found",
+)
+def peer_doctor(name: str, circle: str | None, json_out: bool, fix: bool) -> None:
+    """Deep diagnostic for a peer; exits nonzero on error-severity contradictions."""
+    import json as _json
+    from urllib.parse import quote
+
+    data = _daemon_request_json(
+        "GET",
+        f"/peers/{quote(name, safe='')}/doctor",
+        params={"circle": circle} if circle else None,
+        not_found_msg=f"Peer '{name}' not found",
+        error_prefix="Failed to run doctor",
+    )
+
+    if json_out:
+        click.echo(_json.dumps(data, indent=2))
+    else:
+        _render_doctor_report(data)
+
+    codes = {c.get("code") for c in data.get("contradictions", [])}
+    if fix and ({"ONLINE_BUT_NO_WS", "PANE_MISSING"} & codes):
+        console.print("\n[dim]--fix: attempting non-destructive rehook...[/]")
+        _rehook_peer(name, circle=circle, apply=True)
+
+    if any(c.get("severity") == "error" for c in data.get("contradictions", [])):
+        raise SystemExit(1)
+
+
+def _rehook_peer(name: str, *, circle: str | None, apply: bool) -> None:
+    """Call the rehook endpoint and print the outcome. Shared by `peer rehook` + doctor --fix."""
+    from urllib.parse import quote
+
+    body: dict[str, object] = {"apply": apply}
+    if circle:
+        body["circle"] = circle
+    data = _daemon_request_json(
+        "POST",
+        f"/peers/{quote(name, safe='')}/rehook",
+        json_body=body,
+        not_found_msg=f"Peer '{name}' not found",
+        error_prefix="Failed to rehook",
+        timeout=20.0,
+    )
+
+    acted = data.get("acted")
+    mark = "[green]✓[/]" if acted else "[yellow]·[/]"
+    console.print(
+        f"  {mark} rehook {data.get('display_name')}: "
+        f"reason={data.get('reason')} "
+        f"respawned={data.get('ws_hook_respawned')} "
+        f"acted={acted}"
+    )
+
+
+def _render_doctor_report(d: dict) -> None:
+    """Pretty-print a DoctorReport dict."""
+    console.print(
+        f"\n[bold]peer doctor:[/] [cyan]{d.get('display_name')}[/] "
+        f"([dim]{d.get('peer_id')}[/])\n"
+    )
+    console.print("[bold]Identity[/]")
+    console.print(f"  status      {d.get('status')}    turn_state  {d.get('turn_state') or '-'}")
+    console.print(f"  backend     {d.get('backend')}    circle      {d.get('circle')}")
+    console.print(f"  machine     {d.get('machine')}    role        {d.get('role')}")
+    console.print(f"  last_seen   {d.get('last_seen') or '-'}")
+    if d.get("pane_id"):
+        console.print(f"  pane_id     {d.get('pane_id')}")
+
+    locality = (
+        "local machine"
+        if d.get("is_local_machine")
+        else "remote machine - local probes unavailable"
+    )
+    console.print(f"\n[bold]Inbound reachability[/]   [dim]({locality})[/]")
+    console.print(f"  ws_connected      {'yes' if d.get('ws_connected') else 'no'}")
+    pane_exists = d.get("tmux_pane_exists")
+    pane_str = "unavailable" if pane_exists is None else ("yes" if pane_exists else "no")
+    ev = d.get("tmux_evidence")
+    if ev:
+        pane_str += f"   ({d.get('pane_id')} → {ev.get('tmux_session')}, pid {ev.get('pane_pid')})"
+    console.print(f"  tmux_pane_exists  {pane_str}")
+    if d.get("hook_meta_available"):
+        console.print(
+            f"  hook_meta         peer_id={d.get('hook_meta_peer_id')} "
+            f"name={d.get('hook_meta_display_name')}"
+        )
+    else:
+        console.print("  hook_meta         unavailable")
+    pid_alive = d.get("agent_pid_alive")
+    pid_str = "unavailable" if pid_alive is None else ("alive" if pid_alive else "DEAD")
+    console.print(f"  agent_pid         {d.get('agent_pid') or '-'}  ({pid_str})")
+
+    console.print("\n[bold]Asks[/]")
+    age = d.get("oldest_pending_age_seconds")
+    age_str = f"  oldest {int(age // 60)}m ago ({d.get('oldest_pending_cid')})" if age else ""
+    console.print(f"  pending inbound   {d.get('pending_inbound_count', 0)}{age_str}")
+
+    contradictions = d.get("contradictions", [])
+    if not contradictions:
+        console.print("\n[green]✓ No contradictions detected[/]")
+        return
+    console.print(f"\n[bold]Contradictions ({len(contradictions)})[/]")
+    for c in contradictions:
+        mark = "[red]✗[/]" if c.get("severity") == "error" else "[yellow]●[/]"
+        console.print(f"  {mark} {c.get('code')}   {c.get('detail')}")
+
+
+@main.command(name="trace")
+@click.argument("trace_id")
+@click.option("--json", "json_out", is_flag=True, help="Emit the raw trace as JSON")
+def trace_cmd(trace_id: str, json_out: bool) -> None:
+    """Show the delivery stages for an ask (correlation_id) or notify (delivery_id)."""
+    import json as _json
+    from urllib.parse import quote
+
+    data = _daemon_request_json(
+        "GET",
+        f"/traces/{quote(trace_id, safe='')}",
+        not_found_msg=f"No delivery trace for '{trace_id}'",
+        error_prefix="Failed to fetch trace",
+        timeout=10.0,
+    )
+
+    if json_out:
+        click.echo(_json.dumps(data, indent=2))
+    else:
+        console.print(
+            f"\n[bold]trace:[/] [cyan]{data.get('trace_id')}[/] "
+            f"([dim]{data.get('kind')}[/])\n"
+        )
+        for s in data.get("stages", []):
+            mark = "[red]✗[/]" if s.get("status") == "fail" else "[green]·[/]"
+            peer_str = f"  → {s.get('peer_id')}" if s.get("peer_id") else ""
+            stage_name = s.get("stage", "")
+            console.print(
+                f"  {mark} [{s.get('seq')}] {stage_name:<16} {s.get('ts')}{peer_str}"
+            )
+
+    if any(s.get("status") == "fail" for s in data.get("stages", [])):
+        raise SystemExit(1)
+
+
+@peer.command(name="rehook")
+@click.argument("name")
+@click.option("--circle", "-c", help="Circle to scope display-name lookup")
+@click.option("--apply", is_flag=True, help="Act instead of dry-run (default is dry-run)")
+def peer_rehook(name: str, circle: str | None, apply: bool) -> None:
+    """Re-establish a peer's inbound ws-hook without killing the pane.
+
+    Defaults to a dry-run report; pass --apply to act. A ping-healthy peer is
+    never disconnected. This is non-destructive — for a destructive restart use
+    `repowire peer restart`.
+    """
+    if not apply:
+        console.print("[dim](dry-run — pass --apply to act)[/]")
+    _rehook_peer(name, circle=circle, apply=apply)
+
+
 @peer.command(name="ask")
 @click.argument("name")
 @click.argument("query")
@@ -3221,6 +3387,49 @@ def _auth_headers() -> dict[str, str]:
     except Exception:
         return {}
     return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _daemon_request_json(
+    method: str,
+    path: str,
+    *,
+    not_found_msg: str,
+    error_prefix: str,
+    json_body: dict | None = None,
+    params: dict | None = None,
+    timeout: float = 15.0,
+) -> dict:
+    """Call a daemon endpoint and return parsed JSON, raising ClickException on failure.
+
+    Centralizes the connect-error / 404 / HTTPStatusError-detail handling shared
+    by the diagnostic CLI commands (doctor, trace, rehook).
+    """
+    import httpx
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.request(
+                method,
+                f"{_get_daemon_url()}{path}",
+                json=json_body,
+                params=params,
+                headers={**_auth_headers()},
+            )
+            if resp.status_code == 404:
+                raise click.ClickException(not_found_msg)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise click.ClickException(
+            "Cannot connect to daemon. Run 'repowire serve' first."
+        ) from None
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text
+        try:
+            detail = e.response.json().get("detail", detail)
+        except ValueError:
+            pass
+        raise click.ClickException(f"{error_prefix}: {detail}") from e
 
 
 def _resolve_peer_id_for_asks(

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import socket
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -16,6 +17,11 @@ from repowire.agent_backends import agent_backend_for, resume_capability_for_reg
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
+from repowire.daemon.diagnostics import (
+    DoctorReport,
+    build_doctor_report,
+    compute_inbound_status,
+)
 from repowire.daemon.peer_registry import (
     CircleSource,
     PaneHijackRejectedError,
@@ -102,10 +108,20 @@ class PeerInfo(BaseModel):
     last_seen: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     description: str = ""
+    # inbound health (populated by _peer_to_info_with_health; defaults keep
+    # backward compatibility for callers using the plain converter)
+    ws_connected: bool = False
+    hook_supports_receipts: bool = False
+    last_successful_injection_at: str | None = None
+    last_injection_failure_at: str | None = None
+    pending_ask_count: int = 0
+    oldest_pending_age_seconds: float | None = None
+    pane_safe: bool | None = None
+    inbound_status: str = "offline"
 
 
 def _peer_to_info(p: Peer) -> PeerInfo:
-    """Convert a Peer model to a PeerInfo API response."""
+    """Convert a Peer model to a PeerInfo API response (no inbound-health probe)."""
     return PeerInfo(
         peer_id=p.peer_id,
         name=p.display_name,
@@ -122,6 +138,66 @@ def _peer_to_info(p: Peer) -> PeerInfo:
         metadata=p.metadata,
         description=p.description,
     )
+
+
+async def _peer_to_info_with_health(
+    p: Peer,
+    *,
+    transport: Any,
+    ask_tracker: Any,
+    injection_times: dict[tuple[str, str], str] | None = None,
+    pane_safe: bool | None = None,
+) -> PeerInfo:
+    """Convert a Peer to PeerInfo with derived inbound-health fields.
+
+    Reads ws connection from transport, receipt capability from metadata
+    (falling back to an observed delivery_ack in the trace ledger), last
+    injection success/failure from a pre-fetched ledger snapshot
+    (``injection_times`` maps ``(peer_id, stage) -> ts``; the caller fetches it
+    once off-thread to avoid per-peer DB round trips), and pending-ask state
+    from the ask tracker. ``pane_safe`` is left None (unprobed) in list views;
+    the single-peer / doctor paths may pass a real probe result.
+    """
+    info = _peer_to_info(p)
+
+    ws_connected = bool(transport.is_connected(p.peer_id)) if transport is not None else False
+
+    capabilities = p.metadata.get("capabilities") if isinstance(p.metadata, dict) else None
+    advertises = isinstance(capabilities, list) and "delivery_receipts" in capabilities
+
+    times = injection_times or {}
+    last_success_at = times.get((p.peer_id, "pane_injected"))
+    last_failure_at = times.get((p.peer_id, "injection_failed"))
+    # Observed delivery_ack (any pane_injected/injection_failed row) implies the
+    # hook speaks the modern receipt protocol even if metadata is stale.
+    observed_receipt = last_success_at is not None or last_failure_at is not None
+    hook_supports_receipts = advertises or observed_receipt
+
+    pending_count = 0
+    oldest_age: float | None = None
+    if ask_tracker is not None:
+        pending = await ask_tracker.pending_for_peer(p.peer_id, max_results=50, direction="inbound")
+        pending_count = len(pending)
+        if pending:
+            oldest = pending[-1]
+            oldest_age = (datetime.now(timezone.utc) - oldest.created_at).total_seconds()
+
+    info.ws_connected = ws_connected
+    info.hook_supports_receipts = hook_supports_receipts
+    info.last_successful_injection_at = last_success_at
+    info.last_injection_failure_at = last_failure_at
+    info.pending_ask_count = pending_count
+    info.oldest_pending_age_seconds = oldest_age
+    info.pane_safe = pane_safe
+    info.inbound_status = compute_inbound_status(
+        is_offline=p.status == PeerStatus.OFFLINE,
+        ws_connected=ws_connected,
+        hook_supports_receipts=hook_supports_receipts,
+        pane_safe=pane_safe,
+        last_success_at=last_success_at,
+        last_failure_at=last_failure_at,
+    )
+    return info
 
 
 class PeersResponse(BaseModel):
@@ -249,7 +325,29 @@ async def list_peers(
     if circle is not None and circle != "*":
         peers = [p for p in peers if p.circle == circle or p.bypasses_circles]
 
-    return PeersResponse(peers=[_peer_to_info(p) for p in peers])
+    state = get_app_state()
+    transport = getattr(state, "transport", None)
+    ask_tracker = getattr(state, "ask_tracker", None)
+    trace_store = getattr(state, "delivery_trace_store", None)
+    # Fetch all peers' injection-stage times in ONE off-thread query rather than
+    # 2 synchronous DB hits per peer.
+    injection_times: dict[tuple[str, str], str] = {}
+    if trace_store is not None and peers:
+        injection_times = await asyncio.to_thread(
+            trace_store.latest_stages_for_peers, [p.peer_id for p in peers]
+        )
+    infos = await asyncio.gather(
+        *(
+            _peer_to_info_with_health(
+                p,
+                transport=transport,
+                ask_tracker=ask_tracker,
+                injection_times=injection_times,
+            )
+            for p in peers
+        )
+    )
+    return PeersResponse(peers=list(infos))
 
 
 @router.get("/peers/by-pane/{pane_id}", response_model=PeerInfo)
@@ -336,12 +434,52 @@ async def get_peer(
             detail=str(exc),
         ) from exc
     if peer:
-        return _peer_to_info(peer)
+        state = get_app_state()
+        trace_store = getattr(state, "delivery_trace_store", None)
+        injection_times: dict[tuple[str, str], str] = {}
+        if trace_store is not None:
+            injection_times = await asyncio.to_thread(
+                trace_store.latest_stages_for_peers, [peer.peer_id]
+            )
+        return await _peer_to_info_with_health(
+            peer,
+            transport=getattr(state, "transport", None),
+            ask_tracker=getattr(state, "ask_tracker", None),
+            injection_times=injection_times,
+        )
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Peer not found: {identifier}",
     )
+
+
+@router.get("/peers/{identifier}/doctor", response_model=DoctorReport)
+async def peer_doctor(
+    identifier: str,
+    circle: str | None = Query(None),
+    _: str | None = Depends(require_auth),
+) -> DoctorReport:
+    """Operator-facing deep diagnostic for a peer.
+
+    Explicit, deeper counterpart to automatic lazy repair: runs lazy_repair
+    first to reconcile state, then re-resolves the peer (repair may have
+    demoted/reaped it) and assembles a read-only DoctorReport surfacing
+    inbound-reachability evidence and any contradictions.
+    """
+    peer_registry = get_peer_registry()
+    await peer_registry.lazy_repair()
+    try:
+        peer = await peer_registry.get_peer(identifier, circle=circle)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if peer is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {identifier}",
+        )
+    state = get_app_state()
+    return await build_doctor_report(peer, state.transport, state.ask_tracker)
 
 
 class RegisterResponse(BaseModel):

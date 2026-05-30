@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import os
+import socket
 from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -155,16 +156,24 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # If the client provides a peer_id (ws-hook reconnecting after HTTP
         # pre-registration), the daemon takes over the existing peer.
         claimed_peer_id = data.get("peer_id")
+        connect_metadata: dict[str, object] = {}
+        hook_version = data.get("hook_version")
+        if isinstance(hook_version, int):
+            connect_metadata["hook_version"] = hook_version
+        capabilities = data.get("capabilities")
+        if isinstance(capabilities, list):
+            connect_metadata["capabilities"] = [c for c in capabilities if isinstance(c, str)]
         peer_id, assigned_name = await peer_registry.allocate_and_register(
             circle=circle,
             backend=backend,
             path=path,
             pane_id=pane_id,
             tmux_session=tmux_session,
-            machine=os.environ.get("HOSTNAME", "unknown"),
+            machine=os.environ.get("HOSTNAME") or socket.gethostname(),
             role=role,
             peer_id=claimed_peer_id,
             circle_source=cast(CircleSource | None, circle_source),
+            metadata=connect_metadata or None,
         )
         session_id = peer_id
 

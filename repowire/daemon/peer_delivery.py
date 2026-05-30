@@ -22,11 +22,12 @@ from repowire.daemon.state.session_bindings import resolve_repowire_session_id
 from repowire.daemon.transport_router import (
     AskCompletion,
     AskEnvelope,
+    AskTransportResult,
     NotifyEnvelope,
     PeerTransportRouter,
     transport_router_from_state,
 )
-from repowire.daemon.websocket_transport import TransportError
+from repowire.daemon.websocket_transport import DeliveryInjectionError, TransportError
 from repowire.protocol.messages import AttachmentRef
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ class NotifyDeliveryResult:
     to_peer_id: str
     to_peer_name: str
     hook_delivery: dict | None = None
+    delivery_id: str | None = None
+    transport: Literal["ws", "acp"] = "ws"
     repowire_session_id: str | None = None
     from_repowire_session_id: str | None = None
     to_repowire_session_id: str | None = None
@@ -207,8 +210,14 @@ class PeerDeliveryService:
         bypass_circle: bool = False,
         circle: str | None = None,
         attachments: list[AttachmentRef] | tuple[AttachmentRef, ...] | None = None,
+        delivery_id: str | None = None,
     ) -> NotifyDeliveryResult:
-        """Send a notification and return an explicit delivery outcome."""
+        """Send a notification and return an explicit delivery outcome.
+
+        ``delivery_id`` lets the caller fix the wire delivery id so it matches
+        the value used as a delivery-trace id; when omitted the transport mints
+        its own. The chosen id is echoed back in the result.
+        """
         from_obj, target = await self._registry.check_access(
             from_peer=from_peer,
             to_peer=to_peer,
@@ -229,7 +238,7 @@ class PeerDeliveryService:
             to_repowire_session_id=to_session_id,
         )
         try:
-            transport_result = await self._router().send_notify(envelope)
+            transport_result = await self._router().send_notify(envelope, delivery_id)
         except TransportError as exc:
             await self._mark_transport_unreachable(
                 target,
@@ -277,6 +286,7 @@ class PeerDeliveryService:
                 from_peer_name=envelope.from_peer_name,
                 to_peer_id=target.peer_id,
                 to_peer_name=target.display_name,
+                delivery_id=delivery_id,
                 repowire_session_id=to_session_id,
                 from_repowire_session_id=from_session_id,
                 to_repowire_session_id=to_session_id,
@@ -310,6 +320,8 @@ class PeerDeliveryService:
             to_peer_id=target.peer_id,
             to_peer_name=target.display_name,
             hook_delivery=hook_delivery,
+            delivery_id=transport_result.delivery_id or delivery_id,
+            transport=transport_result.transport,
             repowire_session_id=transport_result.repowire_session_id,
             from_repowire_session_id=transport_result.from_repowire_session_id,
             to_repowire_session_id=transport_result.to_repowire_session_id,
@@ -327,8 +339,12 @@ class PeerDeliveryService:
         circle: str | None = None,
         attachments: list[AttachmentRef] | tuple[AttachmentRef, ...] | None = None,
         on_acp_complete: AskCompletion | None = None,
-    ) -> None:
-        """Deliver an already-registered ask using ACP-before-WS routing."""
+    ) -> AskTransportResult:
+        """Deliver an already-registered ask using ACP-before-WS routing.
+
+        Returns the transport outcome (which path delivered + any ws-hook
+        injection receipt) so callers can record truthful delivery-trace stages.
+        """
         from_obj, target = await self._registry.check_access(
             from_peer=from_peer,
             to_peer=to_peer,
@@ -342,7 +358,7 @@ class PeerDeliveryService:
         to_session_id = self._session_id_for_peer(target)
 
         try:
-            await self._router().send_ask(
+            return await self._router().send_ask(
                 AskEnvelope(
                     from_peer_id=from_peer_id,
                     from_peer_name=from_peer_name,
@@ -357,6 +373,11 @@ class PeerDeliveryService:
                 ),
                 on_acp_complete=completion,
             )
+        except DeliveryInjectionError:
+            # The hook was reached but injection failed/was rejected at the pane.
+            # The connection is alive, so do NOT mark the peer unreachable;
+            # propagate so the route can record injection_failed + 503.
+            raise
         except TransportError as exc:
             await self._mark_transport_unreachable(
                 target,

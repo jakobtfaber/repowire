@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -101,6 +102,10 @@ class NotifyResponse(BaseModel):
             "Optional ws-hook terminal injection receipt. Missing means the "
             "recipient hook is older or did not ack before the daemon returned."
         ),
+    )
+    delivery_id: str | None = Field(
+        None,
+        description="Wire delivery id; also the trace id for `repowire trace <id>`.",
     )
 
 
@@ -222,6 +227,8 @@ async def notify_peer(
 
     peer_registry = get_peer_registry()
     state = get_app_state()
+    trace = getattr(state, "delivery_trace_store", None)
+    delivery_id = f"notif-delivery-{uuid4().hex[:8]}"
     await peer_registry.lazy_repair()
 
     try:
@@ -230,6 +237,11 @@ async def notify_peer(
             registry=peer_registry,
             state=state,
         )
+        if trace is not None:
+            trace.record(
+                trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
+                stage="created", detail={"to_peer": request.to_peer},
+            )
         delivery = await peer_delivery.notify_result(
             from_peer=request.from_peer,
             to_peer=request.to_peer,
@@ -237,7 +249,35 @@ async def notify_peer(
             bypass_circle=request.bypass_circle,
             circle=request.circle,
             attachments=request.attachments,
+            delivery_id=delivery_id,
         )
+        if trace is not None:
+            trace.record(
+                trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
+                stage="resolved_peer", peer_id=delivery.to_peer_id,
+                from_peer_id=delivery.from_peer_id,
+            )
+            # A BUSY recipient queues the paste; record that, but do NOT let it
+            # suppress a real hook receipt — if the hook acked, the terminal
+            # outcome must still be traced.
+            if delivery.queued:
+                trace.record(
+                    trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
+                    stage="pending", peer_id=delivery.to_peer_id,
+                    detail={"reason": "recipient_busy"},
+                )
+            if delivery.hook_delivery is not None or not delivery.queued:
+                # Truthful terminal stage from the hook receipt (not assumed),
+                # using the transport the router actually chose.
+                trace.record_outcome(
+                    trace_id=delivery_id,
+                    kind="notify",
+                    peer_id=delivery.to_peer_id,
+                    from_peer_id=delivery.from_peer_id,
+                    transport=delivery.transport,
+                    hook_delivery=delivery.hook_delivery,
+                    delivery_id=delivery_id,
+                )
         return NotifyResponse(
             status=delivery.status,
             delivery_state=delivery.delivery_state,
@@ -252,6 +292,7 @@ async def notify_peer(
             from_repowire_session_id=delivery.from_repowire_session_id,
             to_repowire_session_id=delivery.to_repowire_session_id,
             hook_delivery=delivery.hook_delivery,
+            delivery_id=delivery.delivery_id or delivery_id,
         )
     except ValueError as e:
         msg = str(e)
@@ -285,6 +326,11 @@ async def notify_peer(
             },
         )
     except TransportError as e:
+        if trace is not None:
+            trace.record(
+                trace_id=delivery_id, delivery_id=delivery_id, kind="notify",
+                stage="no_connection", status="fail", detail={"error": str(e)},
+            )
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
