@@ -4167,6 +4167,54 @@ def config_path() -> None:
     console.print(str(Config.get_config_path()))
 
 
+@config.command(name="get")
+@click.argument("key")
+@click.option("--json", "as_json", is_flag=True, help="Emit the value as JSON")
+def config_get(key: str, as_json: bool) -> None:
+    """Print a config value by dotted key, e.g. skills.default_reviewer_backend.
+
+    Read-only seam for skills/scripts to resolve defaults without parsing the
+    yaml themselves. Prints nothing (exit 0) when the value is unset so callers
+    can fall back; exits 2 on an unknown key path.
+    """
+    import sys
+
+    from repowire.config.models import load_config
+
+    cfg = load_config()
+    # Skill backend keys resolve through SkillsConfig.resolve() so an operator who
+    # sets only skills.default_backend still gets it for every per-skill key.
+    skill_backend_keys = {
+        "default_reviewer_backend",
+        "default_planner_backend",
+        "default_delegate_backend",
+    }
+    parts = key.split(".")
+    if len(parts) == 2 and parts[0] == "skills" and parts[1] in skill_backend_keys:
+        resolved = cfg.skills.resolve(parts[1])
+        if resolved is None:
+            return
+        click.echo(json.dumps(resolved, default=str) if as_json else str(resolved))
+        return
+
+    node: object = cfg
+    for part in parts:
+        if hasattr(node, part):
+            node = getattr(node, part)
+        else:
+            console.print(f"unknown config key: {key}", highlight=False)
+            sys.exit(2)
+    if node is None:
+        return  # unset → empty output, exit 0 so callers fall back
+    if as_json:
+        try:
+            click.echo(json.dumps(node, default=str))
+        except TypeError:
+            click.echo(json.dumps(str(node)))
+    else:
+        click.echo(str(node))
+
+
 @main.group(hidden=True)
 def hook() -> None:
     """Internal hook handlers (called by Claude Code or Codex)."""
