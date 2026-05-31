@@ -318,6 +318,50 @@ class UpdatesConfig(BaseModel):
     )
 
 
+# Default tools gated by the PreToolUse remote-approval hook: mutating/shell
+# actions only. Read-only tools (Read/Glob/Grep/LS) are intentionally excluded
+# so the approval prompt fires on consequential actions, not every file read.
+DEFAULT_REMOTE_APPROVAL_TOOLS = ("Bash", "Edit", "Write", "MultiEdit", "NotebookEdit")
+
+# Never gate these read-only tools — approving every file read is pure friction.
+# Filtered out of gated_tools even if a user configures them.
+READ_ONLY_TOOLS = frozenset({"Read", "Glob", "Grep", "LS"})
+
+
+class RemoteToolApprovalConfig(BaseModel):
+    """PreToolUse hooks-path remote approval (Claude Code).
+
+    When enabled, a PreToolUse hook posts a blocking choice-question to the
+    daemon for the gated tools and awaits an allow/deny from a human surface
+    (dashboard / Telegram) or a peer, denying on timeout. Off-by-default; the
+    installer only registers the hook when ``enabled`` is true.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = Field(default=False, description="Gate gated_tools behind remote approval")
+    gated_tools: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_REMOTE_APPROVAL_TOOLS),
+        description="Tool names that require approval; never gate read-only tools",
+    )
+    timeout_seconds: float = Field(
+        default=45.0,
+        description="Requested wait; the daemon clamps to its blocking-question max",
+    )
+
+    @field_validator("gated_tools")
+    @classmethod
+    def _drop_read_only_tools(cls, tools: list[str]) -> list[str]:
+        """Read-only tools are never gated, even if configured (codex review)."""
+        return [t for t in tools if t not in READ_ONLY_TOOLS]
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _positive_timeout(cls, value: float) -> float:
+        """A non-positive timeout would crash the hook HTTP path, not deny cleanly."""
+        return value if value > 0 else 45.0
+
+
 class ExperimentsConfig(BaseModel):
     """Feature flags for experimental subsystems.
 
@@ -327,6 +371,8 @@ class ExperimentsConfig(BaseModel):
         experiments:
           acp_broker_client: true
           chat_turn_streaming: true
+          remote_tool_approval:
+            enabled: true
 
     Promote to a stable surface or remove once an experiment concludes —
     don't let entries linger.
@@ -358,6 +404,11 @@ class ExperimentsConfig(BaseModel):
             "Deprecated compatibility knob. The daemon state store is SQLite-backed; "
             "legacy JSON files are import-only sources for migrated domains."
         ),
+    )
+
+    remote_tool_approval: RemoteToolApprovalConfig = Field(
+        default_factory=RemoteToolApprovalConfig,
+        description="PreToolUse hooks-path remote tool approval (Claude Code).",
     )
 
 
