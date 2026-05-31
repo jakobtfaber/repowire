@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import socket
 from datetime import datetime, timezone
 from typing import Any
@@ -22,6 +23,7 @@ from repowire.daemon.diagnostics import (
     build_doctor_report,
     compute_inbound_status,
 )
+from repowire.daemon.orphan_panes import find_orphan_panes
 from repowire.daemon.peer_registry import (
     CircleSource,
     PaneHijackRejectedError,
@@ -29,6 +31,9 @@ from repowire.daemon.peer_registry import (
 )
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
 from repowire.daemon.state.session_bindings import SessionBinding
+from repowire.hooks._tmux import list_all_panes
+from repowire.hooks.utils import clear_pane_runtime_state
+from repowire.hooks.ws_hook_supervisor import link_spawn_ws_hook
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus, TurnState
 from repowire.session.history import (
     HistoryLoadResult,
@@ -366,6 +371,220 @@ async def get_peer_by_pane(
     )
 
 
+class OrphanPaneInfo(BaseModel):
+    """An unregistered local tmux pane (orphan-adoption candidate)."""
+
+    pane_id: str
+    pid: int
+    command: str
+    cwd: str
+    session: str
+    window: str
+    detected_backend: str = Field(description="Backend hint from the pane command; display only")
+    confidence: str = Field(
+        description="'hint' when the command matched a known agent, else 'unknown'"
+    )
+
+
+class OrphanPanesResponse(BaseModel):
+    panes: list[OrphanPaneInfo]
+
+
+@router.get("/panes/orphans", response_model=OrphanPanesResponse)
+async def list_orphan_panes(
+    _: str | None = Depends(require_auth),
+) -> OrphanPanesResponse:
+    """List local tmux panes not bound to any registered peer.
+
+    Discovery for ``repowire link``: a pane whose agent never registered still
+    shows up here, with a display-only backend hint. No command filtering — the
+    full unregistered list is returned so the diagnostic cases this surfaces
+    aren't hidden. Empty when tmux is unavailable (this is a local-host concern).
+    """
+    peer_registry = get_peer_registry()
+    peers = await peer_registry.get_all_peers()
+    registered_pane_ids = {p.pane_id for p in peers if p.pane_id}
+    orphans = find_orphan_panes(registered_pane_ids)
+    return OrphanPanesResponse(panes=[OrphanPaneInfo(**o) for o in orphans])
+
+
+# tmux pane ids look like %42. Refuse anything else before we register/spawn.
+_PANE_ID_RE = re.compile(r"^%\d+$")
+# How long to wait for the freshly-spawned ws-hook to register a live WS before
+# declaring the transport unestablished (and rolling the link back).
+_LINK_WS_WAIT_SECONDS = 8.0
+_LINK_WS_POLL_SECONDS = 0.25
+
+
+class LinkPaneRequest(BaseModel):
+    """Adopt an orphan tmux pane into the mesh (register + establish transport)."""
+
+    backend: AgentType = Field(..., description="Required: the agent running in the pane")
+    name: str | None = Field(
+        None,
+        pattern=r"^[a-zA-Z0-9._-]+$",
+        description="Optional display name; defaults to a backend/cwd-derived name",
+    )
+    circle: str | None = Field(None, description="Circle to register the peer into")
+    cwd: str | None = Field(None, description="Pane working directory (for hook spawn)")
+
+
+class LinkPaneResponse(BaseModel):
+    """Result of a link attempt. ``linked`` is true ONLY with a live transport."""
+
+    linked: bool
+    pane_id: str
+    peer_id: str | None = None
+    display_name: str | None = None
+    transport_connected: bool = False
+    reason: str
+    repair_hint: str | None = None
+
+
+@router.post("/panes/{pane_id}/link", response_model=LinkPaneResponse)
+async def link_pane(
+    pane_id: str,
+    request: LinkPaneRequest,
+    _: str | None = Depends(require_auth),
+) -> LinkPaneResponse:
+    """Adopt an orphan pane: register a peer for it AND establish inbound WS.
+
+    Fail-closed against ghosts: a link is reported successful ONLY when a live
+    ws-hook connection is observed. If the hook can't be spawned or the WS
+    doesn't connect within the wait window, the registration is rolled back so
+    no transportless peer is left in the roster, and a repair hint is returned.
+
+    Same-host only — the daemon cannot spawn a hook into a foreign pane.
+    """
+    if not _PANE_ID_RE.match(pane_id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid tmux pane id: {pane_id!r} (expected like %42)",
+        )
+
+    peer_registry = get_peer_registry()
+    state = get_app_state()
+    transport = state.transport
+
+    existing = await peer_registry.get_peer_by_pane(pane_id)
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "already_linked",
+                "hint": f"Pane {pane_id} is already bound to peer {existing.display_name}.",
+                "peer_id": existing.peer_id,
+            },
+        )
+
+    # Resolve cwd from the live pane when the caller didn't supply one — the
+    # daemon owns discovery, so the CLI/dashboard copy command stays simple
+    # (just --pane + --backend). The ws-hook spawn needs a real cwd for Popen;
+    # an empty cwd would fail every adoption.
+    cwd = request.cwd
+    if not cwd:
+        cwd = next(
+            (p["cwd"] for p in await asyncio.to_thread(list_all_panes) if p["pane_id"] == pane_id),
+            None,
+        )
+    if not cwd:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "pane_not_found",
+                "hint": f"No live tmux pane {pane_id} to resolve a working directory from.",
+            },
+        )
+
+    name = request.name or _link_default_name(request.backend, cwd)
+    reg = RegisterPeerRequest(
+        name=name,
+        path=cwd,
+        machine=socket.gethostname(),
+        pane_id=pane_id,
+        backend=request.backend,
+        circle=request.circle,
+        circle_source="fallback",
+        role=PeerRole.AGENT,
+    )
+    # persist_binding=False: a rolled-back link must leave NO durable binding /
+    # birth-certificate residue. unregister_peer only clears registry/mappings;
+    # an orphan has no runtime session id to bind anyway (resume unavailable
+    # until its hooks report one).
+    peer_id, display_name, _pane_assigned, _cert = await _register_peer_impl(
+        reg, persist_binding=False
+    )
+
+    # First-adoption spawn (NOT maybe_respawn — that refuses without a prior
+    # pidfile, which an orphan never has). This writes pane metadata, claims the
+    # flock, and launches the ws-hook; then we verify a live WS actually
+    # connected before calling the link successful.
+    spawned = await asyncio.to_thread(
+        link_spawn_ws_hook,
+        pane_id,
+        peer_id=peer_id,
+        display_name=display_name,
+        backend=request.backend.value,
+        cwd=cwd,
+    )
+    connected = spawned and await _await_ws_connected(
+        transport, peer_id, _LINK_WS_WAIT_SECONDS
+    )
+
+    if connected:
+        return LinkPaneResponse(
+            linked=True,
+            pane_id=pane_id,
+            peer_id=peer_id,
+            display_name=display_name,
+            transport_connected=True,
+            reason="linked",
+        )
+
+    # Hard rollback: no live transport → don't leave a ghost peer behind. Clear
+    # the pane runtime state we wrote so a later SessionStart/link isn't confused.
+    await asyncio.to_thread(clear_pane_runtime_state, pane_id)
+    rolled_back = await peer_registry.unregister_peer(peer_id)
+    if not spawned:
+        reason = "ws_hook_spawn_failed"
+    elif rolled_back:
+        reason = "transport_unestablished"
+    else:
+        reason = "transport_unestablished_rollback_failed"
+    return LinkPaneResponse(
+        linked=False,
+        pane_id=pane_id,
+        peer_id=peer_id if not rolled_back else None,
+        display_name=display_name if not rolled_back else None,
+        transport_connected=False,
+        reason=reason,
+        repair_hint=(
+            "The ws-hook did not connect. Confirm the pane is a live local agent "
+            f"and retry: repowire link --pane {pane_id} --backend {request.backend.value}"
+        ),
+    )
+
+
+def _link_default_name(backend: AgentType, cwd: str | None) -> str:
+    """A stable-ish default display name for a linked pane."""
+    leaf = (cwd or "").rstrip("/").rsplit("/", 1)[-1] or "peer"
+    return f"{leaf}-{backend.value}"
+
+
+async def _await_ws_connected(transport: Any, peer_id: str, timeout: float) -> bool:
+    """Poll for a live WS connection for ``peer_id`` up to ``timeout`` seconds."""
+    if transport is None:
+        return False
+    deadline = timeout
+    waited = 0.0
+    while waited < deadline:
+        if transport.is_connected(peer_id):
+            return True
+        await asyncio.sleep(_LINK_WS_POLL_SECONDS)
+        waited += _LINK_WS_POLL_SECONDS
+    return transport.is_connected(peer_id)
+
+
 @router.post(
     "/peers/claim-role",
     response_model=ClaimRoleResponse,
@@ -513,6 +732,8 @@ class ValidateBirthCertificateResponse(BaseModel):
 
 async def _register_peer_impl(
     request: RegisterPeerRequest,
+    *,
+    persist_binding: bool = True,
 ) -> tuple[str, str, bool, dict[str, Any] | None]:
     """Shared implementation for peer registration endpoints.
 
@@ -522,6 +743,12 @@ async def _register_peer_impl(
     sticky-orchestrator branch refused to displace a live orchestrator. When no
     pane_id was requested, pane_assigned defaults to True (vacuously: nothing
     to assign).
+
+    ``persist_binding=False`` skips the session-binding observation + birth
+    certificate. Pane adoption (``link``) uses this so a registration that is
+    rolled back on a failed transport leaves no durable binding/cert residue
+    (``unregister_peer`` only clears registry/mappings). A linked peer has no
+    runtime session id anyway until its hooks report one.
     """
     circle = request.circle or "global"
     runtime_session_id = _runtime_session_id_from_metadata(request.metadata)
@@ -555,7 +782,7 @@ async def _register_peer_impl(
         ) from exc
     binding_store = getattr(get_app_state(), "session_binding_store", None)
     birth_certificate: dict[str, Any] | None = None
-    if binding_store is not None:
+    if binding_store is not None and persist_binding:
         try:
             binding_store.upsert_observation(
                 peer_id=peer_id,
