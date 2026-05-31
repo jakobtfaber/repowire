@@ -7,3 +7,4 @@
 - [Tmux must stay optional](project_tmux_optional.md) — tmux is a removable adapter, never a core dependency; may be dropped entirely
 - [Lifecycle hooks architecture](project_lifecycle_hooks.md) — provider-agnostic /hooks/lifecycle/* endpoints, tmux hooks via set-hook -g
 - [Pane takeover semantics](project_pane_takeover.md) — same-pane restarts are fresh takeovers; clear pane state and dedupe Codex tmux registration
+- [Telegram brevity](feedback_telegram_brevity.md) — notify_peer messages to the human must be short/phone-readable; lead with the point, detail goes in PR/vault/beads
