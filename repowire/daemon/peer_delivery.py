@@ -14,6 +14,10 @@ from typing import Any, Literal, cast
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, Config
+from repowire.daemon.acp_reconcile import (
+    record_acp_ask_operation,
+    settle_acp_ask_operation,
+)
 from repowire.daemon.ask_tracker import AskerIdentity, AskTracker
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
@@ -40,11 +44,23 @@ class NotifyDeliveryResult:
     ``status`` is the legacy compact value returned by older call sites.
     ``delivery_state`` and ``reason`` make the same outcome explicit so
     clients do not need to infer BUSY queueing or transport success.
+
+    ``reason`` is honest about what was actually proven:
+      * ``transport_delivered`` — written to the recipient's live WS transport.
+      * ``broker_accepted`` — an ACP notify was accepted by the broker (the
+        prompt task was dispatched). It is *not* a runtime-receipt: the ACP
+        reply is discarded for fire-and-forget notify, so the daemon never
+        learns whether the runtime completed it. ``delivery_state`` is still
+        ``delivered`` (the broker took ownership), but clients that want a real
+        receipt must not read ``broker_accepted`` as one.
+      * ``recipient_busy`` / ``queued_delivery`` — held for later delivery.
     """
 
     status: Literal["sent", "queued"]
     delivery_state: Literal["delivered", "queued"]
-    reason: Literal["transport_delivered", "recipient_busy", "queued_delivery"]
+    reason: Literal[
+        "transport_delivered", "broker_accepted", "recipient_busy", "queued_delivery"
+    ]
     from_peer_id: str | None
     from_peer_name: str
     to_peer_id: str
@@ -78,6 +94,7 @@ class PeerDeliveryService:
         ask_tracker: AskTracker | None = None,
         session_binding_store: Any | None = None,
         queued_delivery_store: SQLiteQueuedDeliveryStore | None = None,
+        operation_store: Any | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -86,6 +103,7 @@ class PeerDeliveryService:
         self._ask_tracker = ask_tracker
         self._session_binding_store = session_binding_store
         self._queued_delivery_store = queued_delivery_store
+        self._operation_store = operation_store
 
     def _session_id_for_peer(self, peer: Any | None) -> str | None:
         return resolve_repowire_session_id(self._session_binding_store, peer=peer)
@@ -308,9 +326,18 @@ class PeerDeliveryService:
         delivery_state: Literal["delivered", "queued"] = (
             "queued" if delivery_status == "queued" else "delivered"
         )
-        reason: Literal["transport_delivered", "recipient_busy", "queued_delivery"] = (
-            "recipient_busy" if delivery_status == "queued" else "transport_delivered"
-        )
+        reason: Literal[
+            "transport_delivered", "broker_accepted", "recipient_busy", "queued_delivery"
+        ]
+        if delivery_status == "queued":
+            reason = "recipient_busy"
+        elif transport_result.transport == "acp":
+            # ACP notify is fire-and-forget: the broker accepted the prompt
+            # task but the runtime receipt is discarded, so don't claim
+            # transport_delivered (which means "written to a live WS").
+            reason = "broker_accepted"
+        else:
+            reason = "transport_delivered"
         return NotifyDeliveryResult(
             status=delivery_status,
             delivery_state=delivery_state,
@@ -356,6 +383,20 @@ class PeerDeliveryService:
         completion = on_acp_complete or self._default_acp_completion()
         from_session_id = self._session_id_for_peer(from_obj)
         to_session_id = self._session_id_for_peer(target)
+
+        # ACP asks are delivered by a daemon-owned background task whose closure
+        # is lost on restart. Record a durable operation BEFORE the task is
+        # scheduled so a startup sweep can fail it and notify the asker.
+        if self._operation_store is not None and self._router().acp_route(target) is not None:
+            operation_id = record_acp_ask_operation(
+                self._operation_store,
+                correlation_id=correlation_id,
+                from_peer_id=from_peer_id,
+                from_peer_name=from_peer_name,
+                to_peer_id=target.peer_id,
+                to_peer_name=target.display_name,
+            )
+            completion = self._settling_completion(completion, operation_id)
 
         try:
             return await self._router().send_ask(
@@ -479,6 +520,27 @@ class PeerDeliveryService:
         if self._transport_router is None:
             raise RuntimeError("PeerTransportRouter not configured")
         return self._transport_router
+
+    def _settling_completion(
+        self, inner: AskCompletion, operation_id: str | None,
+    ) -> AskCompletion:
+        """Wrap an ACP completion so it settles the durable operation.
+
+        Runs the real completion first (deliver the ack/error), then marks the
+        ``acp_ask`` operation terminal. Settling never raises into delivery.
+        """
+        if operation_id is None:
+            return inner
+
+        async def _settle(
+            correlation_id: str, reply: str | None, error: str | None,
+        ) -> None:
+            try:
+                await inner(correlation_id, reply, error)
+            finally:
+                settle_acp_ask_operation(self._operation_store, operation_id, error=error)
+
+        return cast(AskCompletion, _settle)
 
     def _default_acp_completion(self) -> AskCompletion:
         if self._ask_tracker is None:
@@ -610,4 +672,5 @@ def peer_delivery_from_state(
         ask_tracker=getattr(state, "ask_tracker", None),
         session_binding_store=getattr(state, "session_binding_store", None),
         queued_delivery_store=getattr(state, "queued_delivery_store", None),
+        operation_store=getattr(state, "operation_store", None),
     )
