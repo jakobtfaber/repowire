@@ -44,6 +44,46 @@ async def test_job_create_posts_json_with_caller_peer_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_job_create_forwards_recurring_execution_fields() -> None:
+    with (
+        patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock),
+        patch("repowire.mcp.server._get_my_peer_identifier", new_callable=AsyncMock) as peer,
+        patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock) as request,
+    ):
+        peer.return_value = "repow-default-creator"
+        request.return_value = {
+            "calendar_id": "cal-abc123",
+            "recurring_id": "cal-abc123",
+            "calendar": {"state": "active"},
+        }
+
+        result = await _tool("job_create")(
+            title="Daily brief",
+            prompt="write the brief",
+            path="/tmp/brief",
+            backend="codex",
+            cron="@daily",
+            process_scope="per_fire",
+            continuity="resume",
+            result_surface="telegram",
+        )
+
+    request.assert_awaited_once()
+    method, path, body = request.await_args.args[:3]
+    assert method == "POST"
+    assert path == "/jobs"
+    assert body["created_by_peer_id"] == "repow-default-creator"
+    assert body["prompt"] == "write the brief"
+    assert body["path"] == "/tmp/brief"
+    assert body["backend"] == "codex"
+    assert body["cron"] == "@daily"
+    assert body["process_scope"] == "per_fire"
+    assert body["continuity"] == "resume"
+    assert body["result_surface"] == "telegram"
+    assert json.loads(result)["calendar_id"] == "cal-abc123"
+
+
+@pytest.mark.asyncio
 async def test_job_list_passes_filters_and_returns_json() -> None:
     with (
         patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock),

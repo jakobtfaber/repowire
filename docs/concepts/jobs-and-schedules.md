@@ -21,6 +21,10 @@ Jobs are durable work records. They are useful when an orchestrator or human nee
 repowire jobs create "Daily brief" --path .repowire/agents/daily-brief --backend codex --cron "@daily" --prompt "Prepare the brief."
 ```
 
+The MCP surface is `job_create(..., path=..., backend=..., cron=...)`; `schedule_cron`
+is only for recurring mesh messages to an existing peer, not durable executor
+jobs.
+
 For unassigned path/backend jobs, each run uses a short-lived executor process
 by default. Recurring jobs use `continuity=resume` to keep the backend-native
 runtime session id as the continuity handle for the next fire; one-shot jobs

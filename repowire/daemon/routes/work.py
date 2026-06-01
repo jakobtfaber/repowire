@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
@@ -18,6 +18,8 @@ router = APIRouter(tags=["work"])
 
 
 class WorkCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str = ""
     kind: str = "general"
     created_by_peer_id: str | None = None

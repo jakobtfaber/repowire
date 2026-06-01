@@ -758,14 +758,23 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         request: dict | None = None,
         deadline_at: str | None = None,
         expires_at: str | None = None,
+        prompt: str | None = None,
+        prompt_file: str | None = None,
+        path: str | None = None,
+        backend: str | None = None,
+        profile: str | None = None,
+        due_at: str | None = None,
+        cron: str | None = None,
+        result_surface: str | None = None,
         process_scope: str | None = None,
         continuity: str | None = None,
         provenance: dict | None = None,
     ) -> str:
         """[Repowire mesh] Create a durable tracked work job.
 
-        Returns the daemon JSON response as a string. The caller's peer_id is
-        sent as created_by_peer_id when available.
+        Pass `cron` to create a recurring durable-job template (`cal-*`) rather
+        than a one-shot work item. The caller's peer_id is sent as
+        created_by_peer_id when available.
         """
         await _ensure_registered(strict=True)
         created_by = await _get_my_peer_identifier()
@@ -787,6 +796,14 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             "scope": scope,
             "deadline_at": deadline_at,
             "expires_at": expires_at,
+            "prompt": prompt,
+            "prompt_file": prompt_file,
+            "path": path,
+            "backend": backend,
+            "profile": profile,
+            "due_at": due_at,
+            "cron": cron,
+            "result_surface": result_surface,
             "process_scope": process_scope,
             "continuity": continuity,
             "provenance": provenance,

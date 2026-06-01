@@ -220,6 +220,14 @@ async def test_jobs_create_rejects_due_at_and_cron_together(env) -> None:
     assert "not both" in created.json()["detail"]
 
 
+async def test_jobs_create_rejects_unknown_fields(env) -> None:
+    r = await env.post("/jobs", json={"title": "Daily brief", "cronn": "@daily"})
+
+    assert r.status_code == 422
+    assert r.json()["detail"][0]["type"] == "extra_forbidden"
+    assert r.json()["detail"][0]["loc"] == ["body", "cronn"]
+
+
 async def test_jobs_list_and_show_include_recurring_calendar(env) -> None:
     created = await env.post("/jobs", json={"title": "Daily brief", "cron": "@daily"})
     calendar_id = created.json()["calendar_id"]
