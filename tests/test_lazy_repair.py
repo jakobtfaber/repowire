@@ -150,6 +150,7 @@ class TestLazyRepairDebounce:
         transport = MagicMock(spec=WebSocketTransport)
         transport.is_connected = MagicMock(return_value=True)
         transport.ping = AsyncMock(return_value={"type": "pong", "pane_alive": False})
+        transport.disconnect = AsyncMock(return_value=True)
         qt = MagicMock()
         qt.cancel_queries_to_peer = AsyncMock(return_value=0)
         manager = _make_manager(transport=transport, query_tracker=qt)
@@ -162,6 +163,27 @@ class TestLazyRepairDebounce:
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.OFFLINE
         transport.ping.assert_awaited_once_with(peer.peer_id, timeout=1.0)
+        transport.disconnect.assert_awaited_once_with(peer.peer_id)
+
+    async def test_connected_peer_ping_timeout_is_not_demoted(self):
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.is_connected = MagicMock(return_value=True)
+        transport.ping = AsyncMock(side_effect=asyncio.TimeoutError("no pong"))
+        transport.disconnect = AsyncMock(return_value=True)
+        qt = MagicMock()
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
+        manager = _make_manager(transport=transport, query_tracker=qt)
+
+        peer = _make_peer(pane_id="%5", status=PeerStatus.ONLINE)
+        await manager.register_peer(peer)
+
+        await manager.lazy_repair()
+
+        result = await manager.get_peer(peer.peer_id)
+        assert result.status == PeerStatus.ONLINE
+        transport.ping.assert_awaited_once_with(peer.peer_id, timeout=1.0)
+        transport.disconnect.assert_not_awaited()
+        qt.cancel_queries_to_peer.assert_not_called()
 
     async def test_disconnected_pane_peer_with_live_runtime_stays_live(self):
         transport = MagicMock(spec=WebSocketTransport)

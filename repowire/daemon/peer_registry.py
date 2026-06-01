@@ -2281,17 +2281,21 @@ class PeerRegistry:
                 and transport.is_connected(p.peer_id)
             ]
 
-        async def check(peer_id: str) -> tuple[str, bool]:
+        async def check(peer_id: str) -> tuple[str, bool | None]:
             try:
                 pong = await transport.ping(peer_id, timeout=1.0)
                 return peer_id, bool(pong.get("pane_alive", True))
+            except TimeoutError:
+                return peer_id, None
+            except asyncio.TimeoutError:
+                return peer_id, None
             except Exception:
-                return peer_id, False
+                return peer_id, None
 
         results = await asyncio.gather(*(check(peer_id) for peer_id in targets))
         count = 0
         for peer_id, pane_alive in results:
-            if pane_alive:
+            if pane_alive is not False:
                 # Recovered (or never broken): allow a future PANE_MISSING to re-emit.
                 self._clear_contradiction(peer_id, diag.PANE_MISSING)
                 continue

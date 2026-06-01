@@ -8,7 +8,7 @@ The practical consequence: a fully idle mesh consumes near-zero CPU. Peers do no
 
 The mesh is a routing hub, not a monitoring system. If you want certainty about a peer's state, address the peer — its `Stop` hook will refresh `last_seen` on its way out, and the next MCP call from anywhere will run `lazy_repair()` and reconcile.
 
-The corollary: `list_peers` results are *eventually consistent*. A peer that crashed without a clean `Stop` may still show `online` for up to a minute until the next lazy repair sees missing runtime evidence or stale `last_seen` and demotes it. A peer whose WebSocket hook disconnected but whose tmux pane or agent process is still present may remain `online`/`busy`; delivery over that missing inbound transport still fails explicitly.
+The corollary: `list_peers` results are *eventually consistent*. A peer that crashed without a clean `Stop` may still show `online` for up to a minute until the next lazy repair sees missing runtime evidence or stale `last_seen` and demotes it. A peer whose WebSocket hook disconnected but whose tmux pane or agent process is still present may remain `online`/`busy`; delivery over that missing inbound transport still fails explicitly. For connected pane-backed peers, lazy repair demotes only when the hook explicitly reports `pane_alive=false`; a missed ping is treated as inconclusive so the daemon does not silently drop a still-open WebSocket binding.
 
 ## What this rules out
 
