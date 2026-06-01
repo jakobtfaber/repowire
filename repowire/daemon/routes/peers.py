@@ -364,7 +364,19 @@ async def get_peer_by_pane(
     peer_registry = get_peer_registry()
     peer = await peer_registry.get_peer_by_pane(pane_id)
     if peer:
-        return _peer_to_info(peer)
+        state = get_app_state()
+        trace_store = getattr(state, "delivery_trace_store", None)
+        injection_times: dict[tuple[str, str], str] = {}
+        if trace_store is not None:
+            injection_times = await asyncio.to_thread(
+                trace_store.latest_stages_for_peers, [peer.peer_id]
+            )
+        return await _peer_to_info_with_health(
+            peer,
+            transport=getattr(state, "transport", None),
+            ask_tracker=getattr(state, "ask_tracker", None),
+            injection_times=injection_times,
+        )
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"No peer for pane: {pane_id}",

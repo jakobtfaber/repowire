@@ -873,6 +873,27 @@ class PeerRegistry:
         should_redeliver = False
 
         async with self._lock:
+            if peer_id is None and path and role == PeerRole.ORCHESTRATOR:
+                folder = self._sanitize_folder_name(Path(path).name)
+                expected_name = display_name_override or f"{folder}-{backend.value}"
+                candidates = [
+                    sid for sid, peer in self._peers.items()
+                    if peer.display_name == expected_name
+                    and peer.circle == circle
+                    and peer.backend == backend
+                    and peer.path == path
+                    and peer.status == PeerStatus.OFFLINE
+                ]
+                if len(candidates) == 1:
+                    peer_id = candidates[0]
+                    logger.info(
+                        "Reclaiming offline peer %s for %s@%s via "
+                        "display_name/backend/path reconnect",
+                        peer_id,
+                        expected_name,
+                        circle,
+                    )
+
             # Reconnect: if caller provides a peer_id that exists, take over
             # only when it still describes the same peer identity. Stale pane
             # metadata can otherwise bind another pane's WebSocket to this id.

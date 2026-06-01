@@ -77,7 +77,7 @@ Repowire keeps a small SQLite-backed delivery queue for peers that miss a live W
 - `delivery_queue_ttl_seconds`: how long a queued delivery remains drainable. Default: `86400` (24 h). Set `0` to disable queued delivery.
 - `delivery_queue_max_per_peer`: maximum queued rows retained per peer. Default: `100`. Oldest rows are evicted when the cap is exceeded. Set `0` to disable queued delivery.
 
-Draining is delete-on-read through the Stop hook or `repowire peer deliveries`, so the same queued paste is not replayed indefinitely. Ask reminders are separate: open asks continue to appear through `/asks/pending` until closed.
+Queued notifications may also replay on a successful WebSocket reconnect for the same peer. Other draining is delete-on-read through the Stop hook or `repowire peer deliveries`, so the same queued paste is not replayed indefinitely. Ask reminders are separate: open asks continue to appear through `/asks/pending` until closed.
 
 ## `daemon.orchestrator_recall`
 

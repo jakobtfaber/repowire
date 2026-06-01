@@ -17,10 +17,12 @@ from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import health, messages, peers, websocket
 from repowire.daemon.routes import spawn as spawn_routes
+from repowire.daemon.state.database import StateDatabase
+from repowire.daemon.state.queued_deliveries import SQLiteQueuedDeliveryStore
 from repowire.daemon.websocket_transport import WebSocketTransport
 
 
-def _make_app(tmp_path: Path, auth_token: str | None = None):
+def _make_app(tmp_path: Path, auth_token: str | None = None, *, with_queue: bool = False):
     """Build app with WebSocket endpoint."""
     cfg = Config(daemon=DaemonConfig(auth_token=auth_token))
     transport = WebSocketTransport()
@@ -35,6 +37,16 @@ def _make_app(tmp_path: Path, auth_token: str | None = None):
     )
     registry._events_path = tmp_path / "events.json"
     registry._events.clear()
+    state_db = StateDatabase(tmp_path / "state.db") if with_queue else None
+    queue = (
+        SQLiteQueuedDeliveryStore(
+            state_db,
+            ttl_seconds=cfg.daemon.delivery_queue_ttl_seconds,
+            max_per_peer=cfg.daemon.delivery_queue_max_per_peer,
+        )
+        if state_db is not None
+        else None
+    )
 
     from fastapi import FastAPI
 
@@ -44,11 +56,15 @@ def _make_app(tmp_path: Path, auth_token: str | None = None):
         query_tracker=tracker,
         message_router=router,
         peer_registry=registry,
+        queued_delivery_store=queue,
         relay_mode=False,
+        state_db=state_db,
     )
     init_deps(cfg, registry, app_state)
 
     app = FastAPI()
+    if queue is not None:
+        app.state.queued_delivery_store = queue
     app.include_router(health.router)
     app.include_router(peers.router)
     app.include_router(messages.router)
@@ -344,6 +360,79 @@ class TestWebSocketConnect:
             async with AsyncClient(transport=t, base_url="http://test") as c:
                 r = await c.get(f"/peers/{assigned_name}")
                 assert r.json()["status"] == "online"
+
+        cleanup_deps()
+
+    async def test_ws_reconnect_reclaims_offline_same_identity_and_flushes_queue(self, tmp_path):
+        app = _make_app(tmp_path, with_queue=True)
+
+        t = ASGITransport(app=app)
+        async with AsyncClient(transport=t, base_url="http://test") as c:
+            reg = await c.post("/peers", json={
+                "name": "orchestrator",
+                "path": "/tmp/orchestrator",
+                "circle": "default",
+                "backend": "claude-code",
+                "role": "orchestrator",
+                "pane_id": "%old",
+                "metadata": {"hook_session_id": "orch-runtime"},
+            })
+            assert reg.status_code == 200, reg.text
+            peer_id = reg.json()["peer_id"]
+            assigned_name = reg.json()["display_name"]
+            assert assigned_name == "orchestrator-claude-code"
+
+            state = app.state  # type: ignore[attr-defined]
+            state.queued_delivery_store.enqueue(
+                peer_id=peer_id,
+                kind="notify",
+                from_peer_name="repowire-codex",
+                to_peer_name=assigned_name,
+                text="[ack #ask-a4e0a845 from @repowire-codex] done",
+            )
+            assert state.queued_delivery_store.count_for_peer(peer_id) == 1
+
+        async with AsyncClient(
+            transport=ASGIWebSocketTransport(app), base_url="http://test"
+        ) as client, aconnect_ws("/ws", client) as ws:
+            await ws.send_json({
+                "type": "connect",
+                "display_name": "orchestrator-claude-code",
+                "circle": "default",
+                "backend": "claude-code",
+                "path": "/tmp/orchestrator",
+                "pane_id": "%7",
+                "role": "orchestrator",
+                "hook_version": 1,
+                "capabilities": ["delivery_receipts"],
+            })
+            resp = json.loads(await ws.receive_text())
+            assert resp["type"] == "connected"
+            assert resp["session_id"] == peer_id
+
+            notify = json.loads(await ws.receive_text())
+            assert notify["type"] == "notify"
+            assert notify["from_peer"] == "repowire-codex"
+            assert "ask-a4e0a845" in notify["text"]
+            await ws.send_json({
+                "type": "delivery_ack",
+                "delivery_id": notify["delivery_id"],
+                "status": "injected",
+            })
+            await asyncio.sleep(1.0)
+
+            async with AsyncClient(transport=t, base_url="http://test") as c:
+                r = await c.get(f"/peers/{peer_id}")
+                body = r.json()
+                assert body["status"] == "online"
+                assert body["ws_connected"] is True
+                by_pane = await c.get("/peers/by-pane/%257")
+                assert by_pane.status_code == 200
+                by_pane_body = by_pane.json()
+                assert by_pane_body["peer_id"] == peer_id
+                assert by_pane_body["ws_connected"] is True
+                assert by_pane_body["inbound_status"] == "online"
+                assert state.queued_delivery_store.count_for_peer(peer_id) == 0
 
         cleanup_deps()
 

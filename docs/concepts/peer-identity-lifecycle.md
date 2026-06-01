@@ -60,6 +60,8 @@ A reconnect may reclaim an existing `peer_id` only when the claim still describe
 
 If the check fails, the stale `peer_id` claim is ignored and the daemon allocates or adopts a different identity. This prevents an old environment variable or stale pane metadata from binding a different session's WebSocket to the wrong peer.
 
+Orchestrator reconnects get one additional bounded repair path because they are long-lived control peers. If an orchestrator hook reconnects without a `peer_id`, the daemon may adopt exactly one offline peer in the same circle with the same canonical display name, backend, role, and project path. That preserves queued deliveries across daemon restarts or WebSocket churn without allowing general path-based identity takeover.
+
 ## Linking an orphan pane (link vs spawn)
 
 When an agent is already running in a local tmux pane but never registered — hooks or MCP did not fire — the daemon cannot see it. `GET /panes/orphans` lists every unregistered local pane (with a display-only backend hint), and `repowire link --pane %NN --backend X` adopts one intentionally.

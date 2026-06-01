@@ -46,6 +46,8 @@ Claude Code, Codex, and Gemini use lifecycle hooks for registration/status/chat 
 
 Default message delivery still uses tmux injection plus Stop-hook reminders for unacked asks. The MCP server lazily registers on tool calls so runtimes that initialize late, especially Codex, still get a peer identity before routing.
 
+If a hook-backed orchestrator reconnects after daemon restart or WebSocket churn without carrying its prior `peer_id`, the daemon may reclaim the existing offline identity when the role, display name, circle, backend, and path match unambiguously. Queued notifications for that peer are replayed over the renewed WebSocket before falling back to Stop-hook or CLI draining.
+
 ### OpenCode plugin and Pi extension
 
 OpenCode does not expose the same hook shape, so Repowire installs a TypeScript plugin. The plugin holds a WebSocket connection to the daemon and bridges OpenCode session events into the same peer/message model. Pi uses Repowire's extension path when setup detects the `pi` CLI or config.

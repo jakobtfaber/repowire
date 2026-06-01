@@ -5,6 +5,7 @@ Handles Claude Code, OpenCode, and Codex connections via a single WebSocket prot
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -18,6 +19,7 @@ from repowire.config.models import AgentType
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.peer_registry import CircleSource
 from repowire.daemon.routes._shared import is_valid_identifier
+from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import PeerRole, PeerStatus, TurnState
 
 if TYPE_CHECKING:
@@ -192,6 +194,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "display_name": assigned_name,
         })
         logger.info(f"WebSocket connected: {assigned_name}@{circle} ({session_id}, {backend})")
+        asyncio.create_task(
+            _flush_queued_notifies(session_id, state),
+            name=f"flush-queued-{session_id[:12]}",
+        )
 
         # Message loop
         while True:
@@ -230,6 +236,51 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             removed = await transport.disconnect(session_id, websocket)
             if removed:
                 await query_tracker.cancel_queries_to_peer(session_id)
+
+
+async def _flush_queued_notifies(session_id: str, state: Any, *, max_results: int = 50) -> None:
+    """Best-effort replay of queued notify/ack rows on fresh WS connect."""
+    queue = getattr(state, "queued_delivery_store", None)
+    router = getattr(state, "message_router", None)
+    peer_registry = getattr(state, "peer_registry", None)
+    if queue is None or router is None or peer_registry is None:
+        return
+    peer = await peer_registry.get_peer(session_id)
+    if peer is None:
+        return
+    try:
+        queued = queue.list_for_peer(session_id, max_results=max_results)
+    except AttributeError:
+        return
+    for delivery in queued:
+        if delivery.kind != "notify":
+            continue
+        try:
+            await router.send_notification(
+                from_peer=delivery.from_peer_name,
+                to_session_id=session_id,
+                to_peer_name=peer.display_name,
+                text=delivery.text,
+                intended_recipient_name=delivery.to_peer_name,
+                attachments=delivery.attachments or [],
+                delivery_id=delivery.delivery_id,
+            )
+        except TransportError:
+            logger.info(
+                "Queued notify replay stopped for %s after transport failure (%s)",
+                session_id,
+                delivery.delivery_id,
+            )
+            return
+        except Exception:
+            logger.warning(
+                "Queued notify replay failed for %s (%s)",
+                session_id,
+                delivery.delivery_id,
+                exc_info=True,
+            )
+            return
+        queue.delete(delivery.delivery_id)
 
 
 async def _handle_message(

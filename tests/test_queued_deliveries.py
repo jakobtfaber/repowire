@@ -133,6 +133,30 @@ def test_store_expires_caps_and_drains_without_duplicates(tmp_path: Path) -> Non
         db.close()
 
 
+def test_store_lists_without_deleting_and_deletes_after_handoff(tmp_path: Path) -> None:
+    db = StateDatabase(tmp_path / "state.db")
+    try:
+        store = SQLiteQueuedDeliveryStore(db, ttl_seconds=60, max_per_peer=10)
+        queued = store.enqueue(
+            peer_id="peer-1",
+            kind="notify",
+            from_peer_name="alice",
+            to_peer_name="bob",
+            text="offline ack",
+        )
+        assert queued is not None
+
+        listed = store.list_for_peer("peer-1")
+        assert [d.delivery_id for d in listed] == [queued.delivery_id]
+        assert store.count_for_peer("peer-1") == 1
+
+        assert store.delete(queued.delivery_id) is True
+        assert store.count_for_peer("peer-1") == 0
+        assert store.delete(queued.delivery_id) is False
+    finally:
+        db.close()
+
+
 async def test_notify_transport_failure_queues_and_drains(tmp_path: Path) -> None:
     app, state = _make_app(tmp_path)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

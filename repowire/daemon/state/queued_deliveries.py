@@ -148,6 +148,43 @@ class SQLiteQueuedDeliveryStore:
                 )
         return [self._row_to_delivery(row) for row in rows]
 
+    def list_for_peer(
+        self,
+        peer_id: str,
+        *,
+        max_results: int = 50,
+        now: datetime | None = None,
+    ) -> list[QueuedDelivery]:
+        """Return unexpired deliveries for one peer without deleting them."""
+        base = now or datetime.now(timezone.utc)
+        if base.tzinfo is None:
+            base = base.replace(tzinfo=timezone.utc)
+        cutoff = base.astimezone(timezone.utc).isoformat()
+        limit = max(0, max_results)
+        if limit <= 0:
+            return []
+        with self._conn:
+            self._delete_expired_locked(cutoff)
+            rows = self._conn.execute(
+                """
+                SELECT * FROM queued_deliveries
+                WHERE peer_id = ? AND expires_at > ?
+                ORDER BY created_at ASC, delivery_id ASC
+                LIMIT ?
+                """,
+                (peer_id, cutoff, limit),
+            ).fetchall()
+        return [self._row_to_delivery(row) for row in rows]
+
+    def delete(self, delivery_id: str) -> bool:
+        """Delete one queued delivery after confirmed handoff."""
+        with self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM queued_deliveries WHERE delivery_id = ?",
+                (delivery_id,),
+            )
+        return cursor.rowcount > 0
+
     def count_for_peer(self, peer_id: str) -> int:
         row = self._conn.execute(
             "SELECT COUNT(*) FROM queued_deliveries WHERE peer_id = ?",
