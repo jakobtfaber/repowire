@@ -79,6 +79,45 @@ async def test_sticky_orchestrator_pane_blocks_displacement(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_same_path_orchestrator_restart_reuses_sticky_identity(
+    tmp_path: Path,
+) -> None:
+    """A same-workspace SessionStart that omitted role/peer_id is a reconnect,
+    not a new pane-less agent twin."""
+    registry = _make_registry(tmp_path)
+    path = "/home/u/.repowire/orchestrator"
+    orch_id, orch_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=path,
+        pane_id=PANE,
+        role=PeerRole.ORCHESTRATOR,
+        machine="m",
+    )
+
+    claim_id, claim_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=path,
+        pane_id=PANE,
+        machine="m2",
+        agent_pid=222,
+        metadata={"hook_session_id": "restart-session"},
+    )
+
+    assert claim_id == orch_id
+    assert claim_name == orch_name
+    peers = await registry.get_all_peers()
+    assert [p.display_name for p in peers] == [orch_name]
+    orch = await registry.get_peer(orch_id)
+    assert orch is not None
+    assert orch.role == PeerRole.ORCHESTRATOR
+    assert orch.pane_id == PANE
+    assert orch.agent_pid == 222
+    assert orch.metadata["hook_session_id"] == "restart-session"
+
+
+@pytest.mark.asyncio
 async def test_temp_peer_exit_leaves_orchestrator_intact(tmp_path: Path) -> None:
     """After the temp peer goes OFFLINE (its WS closes), the orchestrator
     still owns the pane and is reachable -- no manual repair needed."""

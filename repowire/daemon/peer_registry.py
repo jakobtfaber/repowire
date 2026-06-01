@@ -997,6 +997,55 @@ class PeerRegistry:
                 if pane_id:
                     sticky_holder = self._is_fresh_orchestrator_pane(pane_id)
                     if sticky_holder is not None:
+                        same_sticky_identity = (
+                            sticky_holder.backend == backend
+                            and sticky_holder.circle == circle
+                            and bool(path)
+                            and sticky_holder.path == path
+                        )
+                        if same_sticky_identity:
+                            old_status = sticky_holder.status
+                            sticky_holder.status = initial_status
+                            sticky_holder.last_seen = datetime.now(timezone.utc)
+                            if turn_state is not None:
+                                sticky_holder.turn_state = turn_state
+                            self._emit_status_change(
+                                sticky_holder, old_status, initial_status
+                            )
+                            if machine != "unknown":
+                                sticky_holder.machine = machine
+                            if agent_pid is not None:
+                                sticky_holder.agent_pid = agent_pid
+                                mapping = self._mappings.get(sticky_holder.peer_id)
+                                if (
+                                    mapping is not None
+                                    and mapping.agent_pid != agent_pid
+                                ):
+                                    mapping.agent_pid = agent_pid
+                                    self._mappings_dirty = True
+                            if metadata:
+                                sticky_holder.metadata = {
+                                    **sticky_holder.metadata,
+                                    **metadata,
+                                }
+                            logger.info(
+                                "Reusing sticky orchestrator identity %s (%s) "
+                                "for same path/backend registration on pane %s",
+                                sticky_holder.display_name,
+                                sticky_holder.peer_id,
+                                pane_id,
+                            )
+                            result_peer_id = sticky_holder.peer_id
+                            result_name = sticky_holder.display_name
+                            should_redeliver = True
+                            if self._ask_tracker is not None:
+                                asyncio.create_task(
+                                    self._redeliver_pending_replies(
+                                        sticky_holder.peer_id
+                                    ),
+                                    name=f"redeliver-{sticky_holder.peer_id[:12]}",
+                                )
+                            return sticky_holder.peer_id, sticky_holder.display_name
                         logger.warning(
                             "Sticky orchestrator pane: not displacing %s (%s) "
                             "on pane %s; new peer registers without pane ownership "

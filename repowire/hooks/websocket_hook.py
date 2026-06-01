@@ -632,6 +632,8 @@ async def main() -> int:
                         "display_name": response.get("display_name", display_name),
                         "peer_id": session_id,
                     })
+                    if _cached_agent_pid is not None:
+                        metadata["agent_pid"] = _cached_agent_pid
                     write_pane_runtime_metadata(pane_id, metadata)
                 else:
                     logger.error(f"Unexpected response: {response}, retrying...")
