@@ -1394,6 +1394,7 @@ class PeerRegistry:
                 registry=self,
                 message_router=self._router,
             ),
+            config=Config(daemon=self._daemon, experiments=self._experiments),
             ask_tracker=self._ask_tracker,
             session_binding_store=getattr(self, "_session_binding_store", None),
         )

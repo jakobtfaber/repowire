@@ -20,6 +20,7 @@ from repowire.daemon.acp_reconcile import (
 )
 from repowire.daemon.ask_tracker import AskerIdentity, AskTracker
 from repowire.daemon.message_router import MessageRouter
+from repowire.daemon.orchestrator_recall import maybe_add_orchestrator_recall
 from repowire.daemon.peer_registry import PeerRegistry, normalize_identity_path
 from repowire.daemon.state.queued_deliveries import SQLiteQueuedDeliveryStore
 from repowire.daemon.state.session_bindings import resolve_repowire_session_id
@@ -92,6 +93,7 @@ class PeerDeliveryService:
         registry: PeerRegistry,
         message_router: MessageRouter,
         transport_router: PeerTransportRouter | None = None,
+        config: Config | None = None,
         ask_tracker: AskTracker | None = None,
         session_binding_store: Any | None = None,
         queued_delivery_store: SQLiteQueuedDeliveryStore | None = None,
@@ -100,6 +102,7 @@ class PeerDeliveryService:
         self._registry = registry
         self._message_router = message_router
         self._transport_router = transport_router
+        self._config = config or Config()
         self._ask_tracker = ask_tracker
         self._session_binding_store = session_binding_store
         self._queued_delivery_store = queued_delivery_store
@@ -245,11 +248,18 @@ class PeerDeliveryService:
         from_session_id = self._session_id_for_peer(from_obj)
         to_session_id = self._session_id_for_peer(target)
         attachment_tuple = tuple(attachments or ())
+        delivery_text = maybe_add_orchestrator_recall(
+            text,
+            config=self._config,
+            target=target,
+            from_peer_name=from_obj.display_name if from_obj else from_peer,
+            from_peer_id=from_obj.peer_id if from_obj else None,
+        )
         envelope = NotifyEnvelope(
             from_peer_id=from_obj.peer_id if from_obj else None,
             from_peer_name=from_obj.display_name if from_obj else from_peer,
             target=target,
-            text=text,
+            text=delivery_text,
             intended_recipient_name=to_peer,
             attachments=attachment_tuple,
             from_repowire_session_id=from_session_id,
@@ -272,7 +282,7 @@ class PeerDeliveryService:
                 from_peer_id=envelope.from_peer_id,
                 from_peer_name=envelope.from_peer_name,
                 to_peer_name=target.display_name,
-                text=text,
+                text=delivery_text,
                 attachments=[a.model_dump(exclude_none=True) for a in envelope.attachments],
             )
             if queued is None:
@@ -282,7 +292,7 @@ class PeerDeliveryService:
                 {
                     "from": envelope.from_peer_name,
                     "to": target.display_name,
-                    "text": text,
+                    "text": delivery_text,
                     "from_peer_id": envelope.from_peer_id,
                     "to_peer_id": target.peer_id,
                     "delivery_status": "queued",
@@ -384,6 +394,13 @@ class PeerDeliveryService:
         completion = on_acp_complete or self._default_acp_completion()
         from_session_id = self._session_id_for_peer(from_obj)
         to_session_id = self._session_id_for_peer(target)
+        delivery_text = maybe_add_orchestrator_recall(
+            text,
+            config=self._config,
+            target=target,
+            from_peer_name=from_peer_name,
+            from_peer_id=from_peer_id,
+        )
 
         # ACP asks are delivered by a daemon-owned background task whose closure
         # is lost on restart. Record a durable operation BEFORE the task is
@@ -405,7 +422,7 @@ class PeerDeliveryService:
                     from_peer_id=from_peer_id,
                     from_peer_name=from_peer_name,
                     target=target,
-                    text=text,
+                    text=delivery_text,
                     correlation_id=correlation_id,
                     reply_to=reply_to,
                     intended_recipient_name=to_peer,
@@ -696,6 +713,7 @@ def peer_delivery_from_state(
         registry=registry,
         message_router=getattr(state, "message_router"),
         transport_router=transport_router,
+        config=config,
         ask_tracker=getattr(state, "ask_tracker", None),
         session_binding_store=getattr(state, "session_binding_store", None),
         queued_delivery_store=getattr(state, "queued_delivery_store", None),

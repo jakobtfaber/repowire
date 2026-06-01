@@ -194,6 +194,38 @@ class SpawnSettings(BaseModel):
         return self
 
 
+class OrchestratorRecallConfig(BaseModel):
+    """Daemon-side inbound recall triage for orchestrator peers."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Prefix inbound asks/notifies to role=orchestrator peers with "
+            "relevant local orchestrator memory context."
+        ),
+    )
+    max_hits: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description="Maximum memory hits to inject into one inbound delivery.",
+    )
+    max_chars: int = Field(
+        default=900,
+        ge=120,
+        le=4000,
+        description="Maximum characters in the injected recall block.",
+    )
+    max_file_chars: int = Field(
+        default=12000,
+        ge=1000,
+        le=100000,
+        description="Maximum characters read from any one recall source file.",
+    )
+
+
 class DaemonConfig(BaseModel):
     """Configuration for the daemon process."""
 
@@ -252,6 +284,12 @@ class DaemonConfig(BaseModel):
         description=(
             "Maximum queued deliveries retained per peer. Oldest rows are "
             "evicted when the cap is exceeded. Set to 0 to disable."
+        ),
+    )
+    orchestrator_recall: OrchestratorRecallConfig = Field(
+        default_factory=OrchestratorRecallConfig,
+        description=(
+            "Daemon-side inbound recall triage for role=orchestrator peers."
         ),
     )
 

@@ -9,6 +9,11 @@ daemon:
   auth_token: "rw_local_..."
   delivery_queue_ttl_seconds: 86400
   delivery_queue_max_per_peer: 100
+  orchestrator_recall:
+    enabled: true
+    max_hits: 3
+    max_chars: 900
+    max_file_chars: 12000
   mcp_http:
     enabled: false
     bind: "localhost-only"
@@ -73,6 +78,22 @@ Repowire keeps a small SQLite-backed delivery queue for peers that miss a live W
 - `delivery_queue_max_per_peer`: maximum queued rows retained per peer. Default: `100`. Oldest rows are evicted when the cap is exceeded. Set `0` to disable queued delivery.
 
 Draining is delete-on-read through the Stop hook or `repowire peer deliveries`, so the same queued paste is not replayed indefinitely. Ask reminders are separate: open asks continue to appear through `/asks/pending` until closed.
+
+## `daemon.orchestrator_recall`
+
+Daemon-side inbound recall triage for peers registered with `role=orchestrator`.
+Before an ask or notification is handed to the transport, the daemon does a
+bounded lexical scan of the orchestrator workspace context (`comms.md`,
+`projects.md`, and `memory/*.md`) using the inbound text plus sender/target
+metadata. When there is a match, the delivered message is prefixed with a small
+`[repowire recall]` block containing the top hits. The hook is keyed only off
+the peer's registered role; it does not depend on persona text or any runtime
+self-attestation.
+
+- `enabled`: turn recall injection on/off. Default: `true`.
+- `max_hits`: maximum matched files to include. Default: `3`.
+- `max_chars`: maximum injected block size. Default: `900`.
+- `max_file_chars`: maximum characters read from any one source file. Default: `12000`.
 
 ## `daemon.spawn`
 
