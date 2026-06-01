@@ -51,7 +51,7 @@ class TestInstallHooks:
             assert args[1] == "set-hook"
             assert args[2] in ("-g", "-gw")
             assert "[42]" in args[3]
-            assert args[4].startswith("run-shell ")
+            assert args[4].startswith("run-shell -b -- ")
 
     def test_window_hooks_use_gw_flag(self):
         with patch("subprocess.run") as mock_run:
@@ -93,6 +93,20 @@ class TestInstallHooks:
         for call in mock_run.call_args_list:
             tmux_cmd = call[0][0][4]
             assert "10.0.0.1:9999" in tmux_cmd
+
+    def test_curl_payloads_are_quoted_for_tmux_parser(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            install_hooks()
+
+        tmux_commands = {
+            call[0][0][3].split("[")[0]: call[0][0][4]
+            for call in mock_run.call_args_list
+        }
+
+        assert tmux_commands["pane-exited"].startswith("run-shell -b -- '")
+        assert '"Content-Type: application/json"' in tmux_commands["pane-exited"]
+        assert '\\"#{pane_id}\\"' in tmux_commands["pane-exited"]
 
 
 class TestUninstallHooks:

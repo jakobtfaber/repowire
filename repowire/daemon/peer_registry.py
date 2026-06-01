@@ -938,7 +938,14 @@ class PeerRegistry:
                             continue
                         if existing.last_seen is None:
                             continue
-                        if (now - existing.last_seen).total_seconds() > tolerance:
+                        recently_seen = (
+                            (now - existing.last_seen).total_seconds() <= tolerance
+                        )
+                        transport_connected = (
+                            self._transport is not None
+                            and self._transport.is_connected(existing.peer_id)
+                        )
+                        if not (recently_seen or transport_connected):
                             continue
                         logger.error(
                             "Rejecting pane-hijack SessionStart claim: "

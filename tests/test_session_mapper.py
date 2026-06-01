@@ -3,6 +3,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -609,6 +610,46 @@ async def test_relaunch_after_crash_allowed_when_existing_peer_is_stale(tmp_path
     )
     new_peer = await registry.get_peer_by_pane("%2")
     assert new_peer is not None and new_peer.peer_id == new_id
+
+
+@pytest.mark.asyncio
+async def test_pane_hijack_rejected_when_existing_peer_is_idle_but_connected(tmp_path):
+    """An idle pane owner may have old last_seen, but a live ws-hook still proves
+    it owns the pane. Subprocess agents inheriting TMUX_PANE must not displace it.
+    """
+    from repowire.daemon.peer_registry import PaneHijackRejectedError
+
+    registry = _make_registry(tmp_path)
+    transport = MagicMock()
+    transport.is_connected.return_value = True
+    registry._transport = transport
+
+    parent_agent_pid = 33333
+    parent_id, _ = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/oldproj",
+        pane_id="%2",
+        agent_pid=parent_agent_pid,
+    )
+    tolerance = registry.heartbeat_tolerance()
+    stale_when = datetime.now(timezone.utc) - timedelta(seconds=tolerance * 4)
+    parent = await registry.get_peer(parent_id)
+    assert parent is not None
+    parent.last_seen = stale_when
+
+    with pytest.raises(PaneHijackRejectedError):
+        await registry.allocate_and_register(
+            circle="default",
+            backend=AgentType.CODEX,
+            path="/tmp/sub-agent",
+            pane_id="%2",
+            agent_pid=44444,
+            parent_pid=parent_agent_pid,
+        )
+
+    peer = await registry.get_peer_by_pane("%2")
+    assert peer is not None and peer.peer_id == parent_id
 
 
 @pytest.mark.asyncio

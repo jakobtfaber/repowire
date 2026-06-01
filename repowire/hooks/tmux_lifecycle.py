@@ -9,6 +9,7 @@ This is the ONLY module that knows about `tmux set-hook`.
 from __future__ import annotations
 
 import logging
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -92,7 +93,7 @@ def install_hooks(host: str = "127.0.0.1", port: int = 8377) -> list[str]:
             .replace("{port}", str(port))
             .replace("{script}", script)
         )
-        tmux_cmd = f'run-shell "{cmd}"'
+        tmux_cmd = f"run-shell -b -- {shlex.quote(cmd)}"
         result = subprocess.run(
             ["tmux", "set-hook", flag, f"{hook_name}[{_HOOK_INDEX}]", tmux_cmd],
             capture_output=True,
