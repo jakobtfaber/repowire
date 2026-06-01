@@ -80,12 +80,18 @@ async def test_sticky_orchestrator_pane_blocks_displacement(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_same_path_orchestrator_restart_reuses_sticky_identity(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """A same-workspace SessionStart that omitted role/peer_id is a reconnect,
     not a new pane-less agent twin."""
     registry = _make_registry(tmp_path)
-    path = "/home/u/.repowire/orchestrator"
+    config_dir = tmp_path / "cfg"
+    monkeypatch.setattr(
+        "repowire.orchestrator.workspace.Config.get_config_dir",
+        lambda: config_dir,
+    )
+    path = str(config_dir / "orchestrator")
     orch_id, orch_name = await registry.allocate_and_register(
         circle="default",
         backend=AgentType.CLAUDE_CODE,
@@ -115,6 +121,47 @@ async def test_same_path_orchestrator_restart_reuses_sticky_identity(
     assert orch.pane_id == PANE
     assert orch.agent_pid == 222
     assert orch.metadata["hook_session_id"] == "restart-session"
+
+
+@pytest.mark.asyncio
+async def test_same_path_non_config_orchestrator_does_not_reuse_sticky_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A peer cannot become/reuse orchestrator authority just by path/name shape."""
+    registry = _make_registry(tmp_path)
+    config_dir = tmp_path / "cfg"
+    monkeypatch.setattr(
+        "repowire.orchestrator.workspace.Config.get_config_dir",
+        lambda: config_dir,
+    )
+    wrong_path = str(tmp_path / "other" / "orchestrator")
+    orch_id, orch_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=wrong_path,
+        pane_id=PANE,
+        role=PeerRole.ORCHESTRATOR,
+        machine="m",
+    )
+
+    claim_id, claim_name = await registry.allocate_and_register(
+        circle="default",
+        backend=AgentType.CLAUDE_CODE,
+        path=wrong_path,
+        pane_id=PANE,
+        machine="m2",
+    )
+
+    assert claim_id != orch_id
+    assert claim_name != orch_name
+    holder = await registry.get_peer(orch_id)
+    claim = await registry.get_peer(claim_id)
+    assert holder is not None and claim is not None
+    assert holder.pane_id == PANE
+    assert holder.role == PeerRole.ORCHESTRATOR
+    assert claim.pane_id is None
+    assert claim.role == PeerRole.AGENT
 
 
 @pytest.mark.asyncio

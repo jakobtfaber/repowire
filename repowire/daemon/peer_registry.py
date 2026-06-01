@@ -72,6 +72,19 @@ def normalize_identity_path(raw: str) -> str:
         return os.path.normpath(raw)
 
 
+def _is_configured_orchestrator_path(raw: str | None) -> bool:
+    """Return True when ``raw`` is the configured orchestrator workspace path."""
+    if not raw:
+        return False
+    try:
+        from repowire.orchestrator.workspace import workspace_path
+
+        expected = normalize_identity_path(str(workspace_path()))
+    except Exception:  # noqa: BLE001 - path check must fail closed
+        return False
+    return normalize_identity_path(raw) == expected
+
+
 class PaneHijackRejectedError(Exception):
     """Raised by allocate_and_register when a fresh SessionStart claim is
     rejected because it appears to be a subprocess of the pane's existing
@@ -1000,8 +1013,8 @@ class PeerRegistry:
                         same_sticky_identity = (
                             sticky_holder.backend == backend
                             and sticky_holder.circle == circle
-                            and bool(path)
-                            and sticky_holder.path == path
+                            and _is_configured_orchestrator_path(sticky_holder.path)
+                            and _is_configured_orchestrator_path(path)
                         )
                         if same_sticky_identity:
                             old_status = sticky_holder.status
