@@ -24,11 +24,15 @@ Otherwise, all three must hold:
 
 If any fails: abort, answer directly, optionally offer `/adhd <problem>` as an explicit follow-up.
 
+**Optional base folder.** The invocation may specify a base folder for the diverge/deepen peers (e.g. `/adhd <problem> --base /path/to/dir`, or the user naming a directory). If given, root every per-frame peer dir under that base (`<base>/adhd-<frame>/`) instead of the default `/tmp`. If not given, default to `/tmp/adhd-<frame>/`. Either way the per-peer isolation rule below still holds — one folder per peer, never a shared path.
+
 ## Phase 1 — Diverge
 
 Pick 5 frames from the table below. For code-shaped problems: 4 `code` or `design` tags plus 1 `wild`. Otherwise mix.
 
-For each frame, `spawn_peer` in the user's workspace with a description like `adhd-diverge: <frame>` and a seeded message containing the frame's vantage prompt, the problem, any user-provided context, and this instruction:
+For each frame, `spawn_peer` into its **own folder** — not the orchestrator's workspace and not a folder shared with another branch. Spawning all diverge peers into one shared path (especially the orchestrator's own workspace) collapses them into a colliding display-name family (`orchestrator-2`, `-3`, ...), pollutes that workspace's identity space, and tangles the peer registry. Use `<base>/adhd-<frame>/` where `<base>` is the user-supplied base folder from Pre-flight, or `/tmp` if none was given (so the default is `/tmp/adhd-<frame>/`). A per-branch git worktree is also fine. One folder per peer keeps names clean (`adhd-<frame>`), keeps branches truly isolated, and keeps cleanup simple.
+
+Spawn each with a description like `adhd-diverge: <frame>` and a seeded message containing the frame's vantage prompt, the problem, any user-provided context, and this instruction:
 
 > You are in DIVERGENT mode. Generator only, no critic. Generate 6 short distinct ideas under this frame. Each idea is one phrase or one sentence. Do not evaluate, rank, or hedge. The first three obvious answers everyone would give are banned — push past them into the awkward middle. Output a JSON array only, no prose: `[{"text": "...", "rationale": "..."}, ...]`.
 
