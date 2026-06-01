@@ -97,7 +97,10 @@ def _orchestrator_self_claim_allowed(peer: dict) -> bool:
 
 
 async def _resolve_circle_for_send(
-    peer_name: str, explicit_circle: str | None, my_circle: str | None
+    peer_name: str,
+    explicit_circle: str | None,
+    my_circle: str | None,
+    my_role: str | None = None,
 ) -> str | None:
     """Resolve which circle to pass to /ask or /notify for `peer_name`.
 
@@ -112,11 +115,14 @@ async def _resolve_circle_for_send(
         return explicit_circle
     if my_circle:
         try:
-            await daemon_request(
+            result = await daemon_request(
                 "GET",
                 f"/peers/{quote(peer_name, safe='')}",
                 params={"circle": my_circle},
             )
+            resolved_circle = result.get("circle")
+            if isinstance(resolved_circle, str) and resolved_circle:
+                return resolved_circle
             return my_circle
         except DaemonHTTPError as e:
             if e.status != 404:
@@ -130,7 +136,7 @@ async def _resolve_circle_for_send(
                 return my_circle  # let daemon return its own 404 on the send
             raise
         role = (result.get("role") or "").lower()
-        if role in _BYPASS_ROLES:
+        if my_role in _BYPASS_ROLES or role in _BYPASS_ROLES:
             return result.get("circle")
         return my_circle  # no bypass match; force daemon to 404 in caller's circle
     return None
@@ -939,9 +945,9 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             correlation_id for tracking this ask thread
         """
         await _ensure_registered(strict=True)
-        from_peer_name, my_circle, _ = await _get_my_identity()
+        from_peer_name, my_circle, my_role = await _get_my_identity()
         from_peer = _cached_peer_id or from_peer_name
-        effective_circle = await _resolve_circle_for_send(peer_name, circle, my_circle)
+        effective_circle = await _resolve_circle_for_send(peer_name, circle, my_circle, my_role)
         body: dict = {
             "from_peer": from_peer,
             "to_peer": peer_name,
@@ -1147,9 +1153,9 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             Correlation ID (format: notif-XXXXXXXX) for tracking.
         """
         await _ensure_registered(strict=True)
-        from_peer_name, my_circle, _ = await _get_my_identity()
+        from_peer_name, my_circle, my_role = await _get_my_identity()
         from_peer = _cached_peer_id or from_peer_name
-        effective_circle = await _resolve_circle_for_send(peer_name, circle, my_circle)
+        effective_circle = await _resolve_circle_for_send(peer_name, circle, my_circle, my_role)
         correlation_id = f"notif-{uuid4().hex[:8]}"
         body: dict = {
             "from_peer": from_peer,

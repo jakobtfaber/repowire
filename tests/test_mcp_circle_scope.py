@@ -201,6 +201,59 @@ class TestAskNotifyCircleResolution:
         assert captured["body"]["circle"] == "team-a"
 
     @pytest.mark.asyncio
+    async def test_ask_uses_resolved_circle_for_peer_id_lookup(self):
+        _seed_identity("me", "team-a", "agent", peer_id="repow-team-a-me")
+        ask = _get_ask_tool()
+        captured: dict = {}
+
+        async def fake_request(method, path, body=None, params=None):
+            if path.startswith("/peers/") and method == "GET":
+                # Peer-id lookup is globally unique on the daemon side, so it
+                # may return a peer outside the requested circle.
+                return {
+                    "peer_id": "repow-team-b-bob",
+                    "display_name": "bob",
+                    "circle": "team-b",
+                    "role": "agent",
+                }
+            if path == "/ask":
+                captured["body"] = body
+                return {"correlation_id": "ask-peer-id"}
+            return {}
+
+        with patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=fake_request)):
+            await ask("repow-team-b-bob", "hi")
+
+        assert captured["body"]["circle"] == "team-b"
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_ask_can_resolve_cross_circle_agent(self):
+        _seed_identity("orch", "default", "orchestrator", peer_id="repow-default-orch")
+        ask = _get_ask_tool()
+        captured: dict = {}
+
+        async def fake_request(method, path, body=None, params=None):
+            if path.startswith("/peers/") and method == "GET":
+                if params and params.get("circle") == "default":
+                    raise DaemonHTTPError(404, "not in default")
+                return {
+                    "peer_id": "repow-team-b-bob",
+                    "display_name": "bob",
+                    "circle": "team-b",
+                    "role": "agent",
+                }
+            if path == "/ask":
+                captured["body"] = body
+                return {"correlation_id": "ask-orch"}
+            return {}
+
+        with patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=fake_request)):
+            await ask("bob", "hi")
+
+        assert captured["body"]["from_peer"] == "repow-default-orch"
+        assert captured["body"]["circle"] == "team-b"
+
+    @pytest.mark.asyncio
     async def test_ask_falls_back_to_bypass_role_globally(self):
         _seed_identity("me", "team-a", "agent")
         ask = _get_ask_tool()
