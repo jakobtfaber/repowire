@@ -91,7 +91,7 @@ outbound = await client.pending_asks(peer_id=peer.peer_id, direction="outbound")
 
 ## Spawning and lifecycle
 
-`spawn` launches a new agent session subject to `daemon.spawn.commands` and `daemon.spawn.allowed_paths`. `spawn_config` reports which backend launch profiles and optional model profiles are configured. Pass `profile` to append args from `daemon.spawn.profiles.<backend>.<profile>`. Omit `circle` to use the daemon default (`default`), or pass it explicitly for another circle. `kill_peer` terminates a peer only when the daemon can verify the target pane by spawn ownership or matching pane `peer_id` metadata.
+`spawn` launches a new agent session subject to `daemon.spawn.commands` and `daemon.spawn.allowed_paths`. `spawn_config` reports which backend launch profiles and optional model profiles are configured. Pass `profile` to append args from `daemon.spawn.profiles.<backend>.<profile>`. Omit `circle` to use the daemon default (`default`), or pass it explicitly for another circle. `kill_peer` always removes the peer from the mesh registry. It kills the backing tmux pane only when the daemon can verify the target pane by spawn ownership or matching pane `peer_id` metadata; otherwise the response reports `tmux_killed=null`.
 
 `restart_peer` resumes a peer on the same backend, path, circle, role, and mesh identity. It refuses cross-host peers, missing/stale backend resume ids, and unverified live panes. Manually attached peers can be restarted when their pane metadata proves the target `peer_id`; cwd/path match alone is not enough.
 

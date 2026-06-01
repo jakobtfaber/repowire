@@ -293,7 +293,7 @@ The spawned agent self-registers via its `SessionStart` hook within a few second
 kill_peer(peer_identifier: str, circle: str | None = None) -> str
 ```
 
-Terminate a peer by name or `peer_id`. The tmux pane is killed only when the daemon can prove it belongs to that peer: current/durable Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target peer. Path match alone is not destructive proof. If the pane cannot be verified, the call fails and leaves the registry row intact. If `tmux kill-pane` fails after verification, the call fails loudly and also leaves the peer registered for inspection.
+Terminate a peer by name or `peer_id`. The mesh registration is always removed once the peer resolves unambiguously. The tmux pane is killed only when the daemon can prove it belongs to that peer: current/durable Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target peer. Path match alone is not destructive proof. If the pane cannot be verified, the call succeeds with a skipped tmux-kill note so stale/manual peers can be retired from the mesh without touching tmux. If `tmux kill-pane` fails after verification, the call fails loudly and leaves the peer registered for inspection.
 
 ## Review queue
 

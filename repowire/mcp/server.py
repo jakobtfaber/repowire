@@ -1421,9 +1421,10 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         The peer is always deregistered from the mesh. The tmux pane behind
         it is only killed if the daemon can prove Repowire spawned it, either
         from current in-memory ownership or durable spawn ownership plus live
-        tmux evidence. Externally attached peers and stale/mismatched pane
-        records are deregistered without touching tmux — verify and follow up
-        with `tmux kill-pane` if the pane survives.
+        tmux evidence, or if live pane metadata names the target peer_id.
+        Externally attached peers and stale/mismatched pane records are
+        deregistered without touching tmux — verify and follow up with
+        `tmux kill-pane` if the pane survives.
 
         Args:
             peer_identifier: peer_id or display name from list_peers.

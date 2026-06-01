@@ -568,10 +568,8 @@ async def kill_registered_peer(
     peer = _peer_with_adopted_ownership(resolved)
     proof = _destructive_pane_proof(peer)
     if not proof.ok or not proof.pane_id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=_pane_control_error_detail(peer, proof),
-        )
+        await peer_registry.unregister_peer(peer.peer_id)
+        return KillResponse(tmux_killed=None)
 
     tmux_killed = kill_pane(proof.pane_id)
     if not tmux_killed:

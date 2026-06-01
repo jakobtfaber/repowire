@@ -452,7 +452,7 @@ class TestKillPeer:
         assert "Ambiguous peer identifier" in detail["error"]
         assert {p["circle"] for p in detail["candidates"]} == {"5", "6"}
 
-    async def test_kill_peer_without_pane_id_refuses_and_keeps_peer(self, client):
+    async def test_kill_peer_without_pane_id_deregisters_without_tmux(self, client):
         registry = get_peer_registry()
         peer_id, _name = await registry.allocate_and_register(
             circle="5",
@@ -462,11 +462,11 @@ class TestKillPeer:
 
         r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
 
-        assert r.status_code == 409
-        assert r.json()["detail"]["error"] == "missing_pane"
-        assert await registry.get_peer(peer_id) is not None
+        assert r.status_code == 200
+        assert r.json()["tmux_killed"] is None
+        assert await registry.get_peer(peer_id) is None
 
-    async def test_kill_peer_opencode_attached_without_metadata_refuses(
+    async def test_kill_peer_opencode_attached_without_metadata_deregisters_only(
         self, client, monkeypatch
     ):
         """OpenCode plugin sends BOTH tmux_session and pane_id from any user
@@ -501,9 +501,9 @@ class TestKillPeer:
 
         r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
 
-        assert r.status_code == 409
-        assert r.json()["detail"]["error"] == "missing_pane_metadata"
-        assert await registry.get_peer(peer_id) is not None
+        assert r.status_code == 200
+        assert r.json()["tmux_killed"] is None
+        assert await registry.get_peer(peer_id) is None
 
     async def test_kill_peer_claude_sessionstart_metadata_kills_manual_pane(
         self, client, monkeypatch
@@ -561,7 +561,9 @@ class TestKillPeer:
         assert await registry.get_peer(peer_id) is not None
         assert "%7" in spawn_routes._SPAWNED_PANE_IDS
 
-    async def test_kill_peer_post_restart_without_metadata_refuses(self, client, monkeypatch):
+    async def test_kill_peer_post_restart_without_metadata_deregisters_only(
+        self, client, monkeypatch,
+    ):
         """After daemon restart, pane id alone is not destructive proof."""
         registry = get_peer_registry()
         peer_id, _name = await registry.allocate_and_register(
@@ -581,8 +583,9 @@ class TestKillPeer:
 
         r = await client.post("/kill-peer", json={"peer_identifier": peer_id})
 
-        assert r.status_code == 409
-        assert await registry.get_peer(peer_id) is not None
+        assert r.status_code == 200
+        assert r.json()["tmux_killed"] is None
+        assert await registry.get_peer(peer_id) is None
 
 
 # -- Events --
