@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from repowire.agent_backends import AgentResumePlan
 from repowire.config.models import AgentType, Config
 from repowire.daemon.ask_tracker import AskTracker
 from repowire.daemon.deps import cleanup_deps, init_deps
@@ -112,6 +113,32 @@ def _spawn_result(pane_id: str = "%202") -> SpawnResult:
     )
 
 
+def _patch_resume():
+    def fake_resolve_resume_safety(
+        *,
+        backend,
+        path,
+        runtime_session_id,
+        repowire_session_id,
+        capability=None,
+    ):
+        return SimpleNamespace(
+            resumable=True,
+            warning=None,
+            plan=AgentResumePlan(
+                backend=backend,
+                runtime_session_id=runtime_session_id or "test-session",
+                repowire_session_id=repowire_session_id,
+                capability=capability or {},
+            ),
+        )
+
+    return patch(
+        "repowire.daemon.session_resume.resolve_resume_safety",
+        side_effect=fake_resolve_resume_safety,
+    )
+
+
 class TestRestartPeerRoute:
     async def test_daemon_spawn_records_durable_ownership(self, env, tmp_path):
         result = SpawnResult(
@@ -152,7 +179,8 @@ class TestRestartPeerRoute:
 
         with patch.object(spawn_routes, "kill_pane", return_value=True) as mock_kill, \
             patch.object(spawn_routes, "spawn_peer", return_value=_spawn_result()) as mock_spawn, \
-            patch.object(spawn_routes, "post_spawn_warmup", new_callable=AsyncMock):
+            patch.object(spawn_routes, "post_spawn_warmup", new_callable=AsyncMock), \
+            _patch_resume():
             response = await env.client.post(
                 f"/peers/{name}/restart",
                 json={"message": "reload context"},
@@ -164,7 +192,7 @@ class TestRestartPeerRoute:
         assert body["restarted"] is True
         assert body["peer_id"] == peer.peer_id
         assert body["display_name"] == peer.display_name
-        assert body["resume_mode"] == "fresh_runtime_context"
+        assert body["resume_mode"] == "resumed"
         mock_kill.assert_called_once_with("%101")
         spawn_cfg = mock_spawn.call_args.args[0]
         assert spawn_cfg.peer_id == peer.peer_id
@@ -183,7 +211,8 @@ class TestRestartPeerRoute:
         spawn_routes._SPAWNED_PANE_IDS.add("%101")
 
         with patch.object(spawn_routes, "kill_pane") as mock_kill, \
-            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+            _patch_resume():
             response = await env.client.post(
                 f"/peers/{name}/restart",
                 json={"dry_run": True},
@@ -228,7 +257,8 @@ class TestRestartPeerRoute:
         )
 
         with patch.object(spawn_routes, "kill_pane") as mock_kill, \
-            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+            _patch_resume():
             response = await env.client.post(
                 f"/peers/{name}/restart",
                 json={"dry_run": True},
@@ -282,7 +312,8 @@ class TestRestartPeerRoute:
                 "spawn_peer",
                 return_value=_spawn_result("%202"),
             ) as mock_spawn, \
-            patch.object(spawn_routes, "post_spawn_warmup", new_callable=AsyncMock):
+            patch.object(spawn_routes, "post_spawn_warmup", new_callable=AsyncMock), \
+            _patch_resume():
             response = await env.client.post(
                 f"/peers/{name}/restart",
                 json={"message": "restart orchestrator"},
@@ -340,7 +371,8 @@ class TestRestartPeerRoute:
         )
 
         with patch.object(spawn_routes, "kill_pane") as mock_kill, \
-            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+            _patch_resume():
             response = await env.client.post(
                 f"/peers/{name}/restart",
                 json={"dry_run": True},
@@ -386,7 +418,8 @@ class TestRestartPeerRoute:
         )
 
         with patch.object(spawn_routes, "kill_pane") as mock_kill, \
-            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+            _patch_resume():
             response = await env.client.post(
                 f"/peers/{name}/restart",
                 json={"dry_run": True},
@@ -433,7 +466,8 @@ class TestRestartPeerRoute:
         monkeypatch.setattr("repowire.spawn_ownership.probe_tmux_pane", fake_probe)
 
         with patch.object(spawn_routes, "kill_pane") as mock_kill, \
-            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+            _patch_resume():
             response = await env.client.post(
                 f"/peers/{name}/restart",
                 json={"dry_run": True},
@@ -441,7 +475,7 @@ class TestRestartPeerRoute:
 
         assert response.status_code == 409
         detail = response.json()["detail"]
-        assert detail["error"] == "unsupported_pane_ownership"
+        assert detail["error"] == "ambiguous_ownership"
         assert "Multiple durable Repowire spawn ownership proofs" in detail["hint"]
         mock_kill.assert_not_called()
         mock_spawn.assert_not_called()
@@ -482,7 +516,8 @@ class TestRestartPeerRoute:
         monkeypatch.setattr("repowire.spawn_ownership.probe_tmux_pane", fake_probe)
 
         with patch.object(spawn_routes, "kill_pane") as mock_kill, \
-            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+            _patch_resume():
             response = await env.client.post(
                 f"/peers/{name}/restart",
                 json={"dry_run": True},
@@ -490,7 +525,7 @@ class TestRestartPeerRoute:
 
         assert response.status_code == 409
         detail = response.json()["detail"]
-        assert detail["error"] == "unsupported_pane_ownership"
+        assert detail["error"] == "ambiguous_ownership"
         assert "Multiple durable Repowire spawn ownership proofs" in detail["hint"]
         mock_kill.assert_not_called()
         mock_spawn.assert_not_called()
@@ -511,7 +546,8 @@ class TestRestartPeerRoute:
         monkeypatch.setattr("repowire.spawn_ownership.probe_tmux_pane", lambda _pane_id: None)
 
         with patch.object(spawn_routes, "kill_pane") as mock_kill, \
-            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+            _patch_resume():
             response = await env.client.post(
                 f"/peers/{name}/restart",
                 json={"dry_run": True},
@@ -519,7 +555,7 @@ class TestRestartPeerRoute:
 
         assert response.status_code == 409
         detail = response.json()["detail"]
-        assert detail["error"] == "unsupported_pane_ownership"
+        assert detail["error"] == "pane_not_live"
         assert "not visible in tmux" in detail["hint"]
         mock_kill.assert_not_called()
         mock_spawn.assert_not_called()
@@ -575,7 +611,8 @@ class TestRestartPeerRoute:
         monkeypatch.setattr("repowire.spawn_ownership.probe_tmux_pane", lambda _pane_id: None)
 
         with patch.object(spawn_routes, "kill_pane") as mock_kill, \
-            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+            _patch_resume():
             response = await env.client.post(
                 f"/peers/{name}/restart",
                 json={"dry_run": True},
@@ -583,20 +620,33 @@ class TestRestartPeerRoute:
 
         assert response.status_code == 409
         detail = response.json()["detail"]
-        assert detail["error"] == "unsupported_pane_ownership"
+        assert detail["error"] == "pane_not_live"
         assert "not visible in tmux" in detail["hint"]
         mock_kill.assert_not_called()
         mock_spawn.assert_not_called()
 
-    async def test_non_daemon_owned_pane_is_refused(self, env, tmp_path):
+    async def test_non_daemon_owned_pane_without_metadata_is_refused(
+        self, env, tmp_path, monkeypatch
+    ):
         name = await _register(env.client, path=str(tmp_path), pane_id="%external")
+        monkeypatch.setattr(
+            spawn_routes,
+            "probe_tmux_pane",
+            lambda pane_id: TmuxPaneEvidence(
+                pane_id=pane_id,
+                tmux_session="default:manual",
+                current_path=str(tmp_path),
+                pane_pid="12345",
+            ),
+        )
 
         with patch.object(spawn_routes, "kill_pane") as mock_kill, \
-            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+            _patch_resume():
             response = await env.client.post(f"/peers/{name}/restart", json={})
 
         assert response.status_code == 409
-        assert response.json()["detail"]["error"] == "unsupported_pane_ownership"
+        assert response.json()["detail"]["error"] == "missing_pane_metadata"
         mock_kill.assert_not_called()
         mock_spawn.assert_not_called()
         assert await env.registry.get_peer(name) is not None
@@ -615,7 +665,8 @@ class TestRestartPeerRoute:
         )
 
         with patch.object(spawn_routes, "kill_pane") as mock_kill, \
-            patch.object(spawn_routes, "spawn_peer") as mock_spawn:
+            patch.object(spawn_routes, "spawn_peer") as mock_spawn, \
+            _patch_resume():
             response = await env.client.post(f"/peers/{name}/restart", json={})
 
         assert response.status_code == 409
@@ -633,7 +684,8 @@ class TestRestartPeerRoute:
         spawn_routes._SPAWNED_PANE_IDS.add("%101")
 
         with patch.object(spawn_routes, "kill_pane", return_value=True), \
-            patch.object(spawn_routes, "spawn_peer", side_effect=RuntimeError("tmux failed")):
+            patch.object(spawn_routes, "spawn_peer", side_effect=RuntimeError("tmux failed")), \
+            _patch_resume():
             response = await env.client.post(f"/peers/{name}/restart", json={})
 
         assert response.status_code == 500

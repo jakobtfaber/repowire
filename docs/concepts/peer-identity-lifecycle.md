@@ -30,7 +30,7 @@ order is:
 | 2 | Daemon-minted runtime identity envelope | Authoritative handoff proof | Birth certificate minted during SessionStart registration so MCP can adopt a peer identity without path search. |
 | 3 | Local pane runtime metadata plus process proof | Local adoption proof | Valid only when backend, daemon peer id, and owning agent process match the current MCP process. |
 | 4 | Durable `SessionMapping` / session binding records | Compatibility and provenance | Useful for restoring circle, role, description, runtime session pointers, and history relationships; not pane ownership proof. |
-| 5 | Durable spawn ownership plus live tmux evidence | Destructive-action proof | Authorizes kill/restart of a daemon-spawned pane. It does not prove caller identity for MCP tools. |
+| 5 | Durable spawn ownership, or live pane metadata with matching `peer_id` | Destructive-action proof | Authorizes kill/restart of a verified pane. Path/cwd alone is not destructive proof. |
 | 6 | Display name, path, backend, machine, `last_seen` | Hints and filters only | Never sufficient by themselves to impersonate a peer or choose among ambiguous candidates. |
 
 This hierarchy keeps three concerns separate:
@@ -38,8 +38,8 @@ This hierarchy keeps three concerns separate:
 - Routing identity: the daemon `peer_id` names the live peer.
 - Runtime/session provenance: runtime session ids and session bindings explain
   where history and control state came from.
-- Pane ownership: spawn ownership records decide whether Repowire may kill or
-  restart a tmux pane.
+- Pane ownership: spawn ownership records or matching pane `peer_id` metadata
+  decide whether Repowire may kill or restart a tmux pane.
 
 Project path is deliberately downgraded to metadata. It is useful for display
 name allocation, filtering, history discovery, and human context, but path is
@@ -114,7 +114,8 @@ strict outbound tools; it should not silently adopt identity from path alone.
 
 Birth certificates do not make the daemon the owner of raw transcript history
 and do not authorize destructive pane actions. Runtime session ids remain source
-history/provenance. Spawn ownership remains the kill/restart proof.
+history/provenance. Destructive controls still require spawn ownership or live
+pane metadata that names the target `peer_id`.
 
 ## Display-name ambiguity
 

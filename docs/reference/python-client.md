@@ -91,11 +91,16 @@ outbound = await client.pending_asks(peer_id=peer.peer_id, direction="outbound")
 
 ## Spawning and lifecycle
 
-`spawn` launches a new agent session subject to `daemon.spawn.commands` and `daemon.spawn.allowed_paths`. `spawn_config` reports which backend launch profiles and optional model profiles are configured. Pass `profile` to append args from `daemon.spawn.profiles.<backend>.<profile>`. Omit `circle` to use the daemon default (`default`), or pass it explicitly for another circle. `kill_peer` terminates a peer cleanly.
+`spawn` launches a new agent session subject to `daemon.spawn.commands` and `daemon.spawn.allowed_paths`. `spawn_config` reports which backend launch profiles and optional model profiles are configured. Pass `profile` to append args from `daemon.spawn.profiles.<backend>.<profile>`. Omit `circle` to use the daemon default (`default`), or pass it explicitly for another circle. `kill_peer` terminates a peer only when the daemon can verify the target pane by spawn ownership or matching pane `peer_id` metadata.
 
-`restart_peer` intentionally restarts a daemon-spawned peer on the same backend, path, circle, role, and mesh identity. It refuses cross-host peers and panes the daemon cannot prove it spawned with explicit ownership proof plus live tmux evidence. Manually attached peers, stale pane records, and mismatched live pane evidence are refused instead of killed.
+`restart_peer` resumes a peer on the same backend, path, circle, role, and mesh identity. It refuses cross-host peers, missing/stale backend resume ids, and unverified live panes. Manually attached peers can be restarted when their pane metadata proves the target `peer_id`; cwd/path match alone is not enough.
 
-Restart is same-window/name first, not same-pane: tmux allocates a fresh pane through the normal spawn path after the old proven pane is killed. The response includes `resume_mode`; `fresh_runtime_context` reloads startup context but does not guarantee transcript replay, selected spawn profile, or exact backend conversation resume, even if the configured backend command happens to include its own native resume flags.
+Restart is same-window/name first, not same-pane: tmux allocates a fresh pane through the normal spawn path after the old verified pane is killed. The response includes `resume_mode=resumed`; if no valid backend session is available, the API returns `409 resume_unavailable` before killing anything.
+
+`resume_session` is the session-native equivalent for a detached durable
+Repowire session id. It validates the captured backend runtime id against local
+session storage, fails on active/stale/unsupported sessions, and can either
+inspect (`dry_run=True`) or spawn the backend resume (`dry_run=False`).
 
 ```python
 info = await client.spawn_config()
@@ -111,6 +116,14 @@ if "claude-code" in info.commands:
 
 restart = await client.restart_peer("project-c-claude-code", dry_run=True)
 print(restart.status, restart.resume_mode)
+
+resumed = await client.resume_session(
+    "rw-session-abc123",
+    dry_run=False,
+    profile="fast",
+    message="continue",
+)
+print(resumed.action, resumed.spawned_display_name)
 ```
 
 ## Errors

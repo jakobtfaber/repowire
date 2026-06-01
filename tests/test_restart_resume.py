@@ -1,5 +1,4 @@
-"""Tests for durable-resume restart (t0p): restart resumes the backend session
-when a valid runtime_session_id is on disk, else fresh + warning."""
+"""Tests for durable-resume restart: restart only proceeds with a valid resume."""
 
 from __future__ import annotations
 
@@ -26,6 +25,7 @@ from repowire.daemon.state.database import StateDatabase
 from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 from repowire.daemon.websocket_transport import WebSocketTransport
 from repowire.spawn import SpawnResult
+from repowire.spawn_ownership import TmuxPaneEvidence
 
 
 def _make_app(tmp_path: Path):
@@ -85,20 +85,19 @@ async def env(tmp_path, monkeypatch):
 
 
 async def _register(
-    client, *, path: str, backend: str = "claude-code", pane_id: str = "%101"
+    client, *, path: str, backend: str = "claude-code", pane_id: str | None = "%101"
 ) -> dict:
-    r = await client.post(
-        "/peers",
-        json={
-            "name": Path(path).name,
-            "path": path,
-            "circle": "default",
-            "backend": backend,
-            "machine": socket.gethostname(),
-            "role": "agent",
-            "pane_id": pane_id,
-        },
-    )
+    payload = {
+        "name": Path(path).name,
+        "path": path,
+        "circle": "default",
+        "backend": backend,
+        "machine": socket.gethostname(),
+        "role": "agent",
+    }
+    if pane_id is not None:
+        payload["pane_id"] = pane_id
+    r = await client.post("/peers", json=payload)
     assert r.status_code == 200, r.text
     rr = await client.get(f"/peers/{r.json()['display_name']}")
     return rr.json()
@@ -259,10 +258,82 @@ class TestRestartResume:
         assert body["resume_warning"] is None
         assert f"--resume {sid}" in captured["command"]
 
+    async def test_offline_paneless_peer_resumes_without_kill(self, env, tmp_path, monkeypatch):
+        home = tmp_path / "home_paneless"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        path = str(tmp_path / "projPaneless")
+        Path(path).mkdir(parents=True, exist_ok=True)
+        info = await _register(env.client, path=path, pane_id=None)
+        await env.registry.mark_offline(info["peer_id"])
+        sid = "99999999-aaaa-bbbb-cccc-dddddddddddd"
+        _write_claude_session(home, str(Path(path).resolve()), sid)
+        _bind(env.binding_store, peer_id=info["peer_id"], backend="claude-code",
+              project_path=str(Path(path).resolve()), runtime_session_id=sid)
+
+        captured = {}
+        def fake_spawn(cfg):
+            captured["command"] = cfg.command
+            return _spawn_result()
+
+        with patch.object(spawn_routes, "kill_pane") as mock_kill, \
+            patch.object(spawn_routes, "spawn_peer", side_effect=fake_spawn), \
+            patch.object(spawn_routes, "post_spawn_warmup"):
+            r = await env.client.post(f"/peers/{info['display_name']}/restart", json={})
+
+        assert r.status_code == 200, r.text
+        assert r.json()["resume_mode"] == "resumed"
+        mock_kill.assert_not_called()
+        assert f"--resume {sid}" in captured["command"]
+
+    async def test_manual_live_peer_with_metadata_kills_then_resumes(
+        self, env, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home_manual"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        path = str(tmp_path / "projManual")
+        Path(path).mkdir(parents=True, exist_ok=True)
+        info = await _register(env.client, path=path, pane_id="%303")
+        sid = "88888888-aaaa-bbbb-cccc-dddddddddddd"
+        _write_claude_session(home, str(Path(path).resolve()), sid)
+        _bind(env.binding_store, peer_id=info["peer_id"], backend="claude-code",
+              project_path=str(Path(path).resolve()), runtime_session_id=sid)
+        monkeypatch.setattr(
+            spawn_routes,
+            "probe_tmux_pane",
+            lambda pane_id: TmuxPaneEvidence(
+                pane_id=pane_id,
+                tmux_session="default:manual",
+                current_path=str(Path(path).resolve()),
+                pane_pid="12345",
+            ),
+        )
+        monkeypatch.setattr(
+            spawn_routes,
+            "read_pane_runtime_metadata",
+            lambda _pane_id: {"peer_id": info["peer_id"]},
+        )
+
+        captured = {}
+        def fake_spawn(cfg):
+            captured["command"] = cfg.command
+            return _spawn_result()
+
+        with patch.object(spawn_routes, "kill_pane", return_value=True) as mock_kill, \
+            patch.object(spawn_routes, "spawn_peer", side_effect=fake_spawn), \
+            patch.object(spawn_routes, "post_spawn_warmup"):
+            r = await env.client.post(f"/peers/{info['display_name']}/restart", json={})
+
+        assert r.status_code == 200, r.text
+        assert r.json()["resume_mode"] == "resumed"
+        mock_kill.assert_called_once_with("%303")
+        assert f"--resume {sid}" in captured["command"]
+
     async def test_empty_path_binding_not_selected(self, env, tmp_path, monkeypatch):
         # gemini-review regression: a binding with an EMPTY project_path must not
         # bypass the path filter and get picked for a peer that has a real path
-        # (would resume an unrelated/wrong session). It should fall back to fresh.
+        # (would resume an unrelated/wrong session). Strict restart should refuse.
         home = tmp_path / "home_ep"
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
@@ -282,10 +353,10 @@ class TestRestartResume:
             patch.object(spawn_routes, "spawn_peer", return_value=_spawn_result()), \
             patch.object(spawn_routes, "post_spawn_warmup"):
             r = await env.client.post(f"/peers/{info['display_name']}/restart", json={})
-        assert r.status_code == 200, r.text
-        assert r.json()["resume_mode"] == "fresh_runtime_context"
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["error"] == "resume_unavailable"
 
-    async def test_fresh_when_no_session_id(self, env, tmp_path):
+    async def test_refuses_when_no_session_id(self, env, tmp_path):
         path = str(tmp_path / "proj2")
         Path(path).mkdir(parents=True, exist_ok=True)
         info = await _register(env.client, path=path, pane_id="%101")
@@ -295,12 +366,12 @@ class TestRestartResume:
             patch.object(spawn_routes, "spawn_peer", return_value=_spawn_result()), \
             patch.object(spawn_routes, "post_spawn_warmup"):
             r = await env.client.post(f"/peers/{info['display_name']}/restart", json={})
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["resume_mode"] == "fresh_runtime_context"
-        assert "no captured backend session id" in body["resume_warning"]
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert detail["error"] == "resume_unavailable"
+        assert "no captured backend session id" in detail["resume_warning"]
 
-    async def test_fresh_when_session_id_stale(self, env, tmp_path):
+    async def test_refuses_when_session_id_stale(self, env, tmp_path):
         # Binding has an id, but NO session file on disk -> must not try to resume
         # (would die hard), restart fresh with a warning instead.
         path = str(tmp_path / "proj3")
@@ -314,10 +385,10 @@ class TestRestartResume:
             patch.object(spawn_routes, "spawn_peer", return_value=_spawn_result()), \
             patch.object(spawn_routes, "post_spawn_warmup"):
             r = await env.client.post(f"/peers/{info['display_name']}/restart", json={})
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["resume_mode"] == "fresh_runtime_context"
-        assert "no local session file" in body["resume_warning"]
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert detail["error"] == "resume_unavailable"
+        assert "no local session file" in detail["resume_warning"]
 
     async def test_stale_id_with_other_session_in_cwd_does_not_resume(
         self, env, tmp_path, monkeypatch
@@ -342,12 +413,12 @@ class TestRestartResume:
             patch.object(spawn_routes, "spawn_peer", return_value=_spawn_result()), \
             patch.object(spawn_routes, "post_spawn_warmup"):
             r = await env.client.post(f"/peers/{info['display_name']}/restart", json={})
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["resume_mode"] == "fresh_runtime_context"
-        assert "no local session file" in body["resume_warning"]
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert detail["error"] == "resume_unavailable"
+        assert "no local session file" in detail["resume_warning"]
 
-    async def test_non_owned_resumable_refusal_includes_resume_command(
+    async def test_non_owned_live_pane_without_metadata_refuses_before_resume(
         self, env, tmp_path, monkeypatch
     ):
         home = tmp_path / "home4"
@@ -360,10 +431,17 @@ class TestRestartResume:
         _write_claude_session(home, str(Path(path).resolve()), sid)
         _bind(env.binding_store, peer_id=info["peer_id"], backend="claude-code",
               project_path=str(Path(path).resolve()), runtime_session_id=sid)
-        # NOT in _SPAWNED_PANE_IDS -> ownership refusal
+        monkeypatch.setattr(
+            spawn_routes,
+            "probe_tmux_pane",
+            lambda pane_id: TmuxPaneEvidence(
+                pane_id=pane_id,
+                tmux_session="default:manual",
+                current_path=str(Path(path).resolve()),
+                pane_pid="12345",
+            ),
+        )
         r = await env.client.post(f"/peers/{info['display_name']}/restart", json={})
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert detail["error"] == "unsupported_pane_ownership"
-        assert detail.get("resume_mode") == "manual_resume_available"
-        assert f"--resume {sid}" in detail.get("resume_command", "")
+        assert detail["error"] == "missing_pane_metadata"

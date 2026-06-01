@@ -150,7 +150,7 @@ def test_peer_restart_posts_request_and_prints_response(monkeypatch) -> None:
             "path": "/tmp/proj",
             "circle": "default",
             "tmux_session": "default:proj",
-            "resume_mode": "fresh_runtime_context",
+            "resume_mode": "resumed",
             "command": "claude",
         },
     )
@@ -179,7 +179,7 @@ def test_peer_restart_posts_request_and_prints_response(monkeypatch) -> None:
         "message": "reload context",
     }
     assert "Restarted" in result.output
-    assert "fresh_runtime_context" in result.output
+    assert "resumed" in result.output
     assert "default:proj" in result.output
 
 
@@ -197,7 +197,7 @@ def test_peer_restart_dry_run_output(monkeypatch) -> None:
             "path": "/tmp/proj",
             "circle": "default",
             "tmux_session": "default:proj",
-            "resume_mode": "fresh_runtime_context",
+            "resume_mode": "resumed",
         },
     )
 
@@ -228,6 +228,83 @@ def test_peer_restart_prints_http_error_detail(monkeypatch) -> None:
     assert result.exit_code != 0
     assert "Failed to restart peer" in result.output
     assert "unsupported_pane_ownership" in result.output
+
+
+def test_session_resume_posts_request_and_prints_response(monkeypatch) -> None:
+    client = _make_client(monkeypatch)
+    client.post.return_value = _response(
+        200,
+        {
+            "ok": True,
+            "repowire_session_id": "rw-session-abc123",
+            "session_status": "resumable",
+            "status": "resume_available",
+            "capability": "supported",
+            "message": "Backend resume spawned for this runtime session.",
+            "backend": "codex",
+            "runtime_session_id": "codex-runtime-1",
+            "action": "spawned",
+            "spawned_display_name": "repo-codex",
+            "tmux_session": "0:repo",
+            "pane_id": "%99",
+        },
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "session",
+            "resume",
+            "rw-session-abc123",
+            "--profile",
+            "fast",
+            "--message",
+            "continue",
+            "--from-peer",
+            "dashboard",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert client.post.call_args.args[0].endswith(
+        "/sessions/rw-session-abc123/controls/resume"
+    )
+    assert client.post.call_args.kwargs["json"] == {
+        "dry_run": False,
+        "profile": "fast",
+        "message": "continue",
+        "from_peer": "dashboard",
+    }
+    assert "Resumed session" in result.output
+    assert "repo-codex" in result.output
+    assert "%99" in result.output
+
+
+def test_session_resume_dry_run_json(monkeypatch) -> None:
+    client = _make_client(monkeypatch)
+    client.post.return_value = _response(
+        200,
+        {
+            "ok": True,
+            "repowire_session_id": "rw-session-abc123",
+            "session_status": "resumable",
+            "status": "resume_available",
+            "capability": "supported",
+            "message": "Backend resume is available for this runtime session.",
+            "backend": "codex",
+            "runtime_session_id": "codex-runtime-1",
+            "action": "inspect",
+        },
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["session", "resume", "rw-session-abc123", "--dry-run", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert client.post.call_args.kwargs["json"] == {"dry_run": True}
+    assert '"action": "inspect"' in result.output
 
 
 # --- peer asks -----------------------------------------------------------------

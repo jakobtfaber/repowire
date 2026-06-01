@@ -207,6 +207,12 @@ class TestLazyRepairDebounce:
             "repowire.daemon.peer_registry.os.kill",
             lambda _pid, _sig: (_ for _ in ()).throw(ProcessLookupError()),
         )
+        monkeypatch.setattr(
+            "repowire.daemon.peer_registry.subprocess.run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                args=["tmux"], returncode=1, stdout="", stderr="can't find pane",
+            ),
+        )
 
         await manager.lazy_repair()
 

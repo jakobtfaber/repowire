@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -92,7 +93,15 @@ async def test_restart_peer_client_posts_payload(client: AsyncRepowireClient, tm
                     pane_id="%88",
                 ),
             ), \
-            patch.object(spawn_routes, "post_spawn_warmup", new_callable=AsyncMock):
+            patch.object(spawn_routes, "post_spawn_warmup", new_callable=AsyncMock), \
+            patch.object(
+                spawn_routes,
+                "resume_target",
+                return_value=SimpleNamespace(
+                    command="claude --resume test-session",
+                    tmux_session="default:proj",
+                ),
+            ):
             result = await client.restart_peer(
                 registered.peer_id,
                 circle="default",
@@ -106,7 +115,47 @@ async def test_restart_peer_client_posts_payload(client: AsyncRepowireClient, tm
     assert result.status == "restarted"
     assert result.restarted is True
     assert result.peer_id == registered.peer_id
-    assert result.resume_mode == "fresh_runtime_context"
+    assert result.resume_mode == "resumed"
+
+
+async def test_resume_session_client_posts_payload(client: AsyncRepowireClient):
+    client._request = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "ok": True,
+            "repowire_session_id": "rw-session-abc123",
+            "session_status": "resumable",
+            "status": "resume_available",
+            "capability": "supported",
+            "message": "Backend resume spawned for this runtime session.",
+            "backend": "codex",
+            "runtime_session_id": "codex-runtime-1",
+            "action": "spawned",
+            "spawned_display_name": "repo-codex",
+            "tmux_session": "0:repo",
+            "pane_id": "%99",
+        }
+    )
+
+    result = await client.resume_session(
+        "rw-session-abc123",
+        dry_run=False,
+        profile="fast",
+        message="continue",
+        from_peer="dashboard",
+    )
+
+    client._request.assert_awaited_once_with(  # type: ignore[attr-defined]
+        "POST",
+        "/sessions/rw-session-abc123/controls/resume",
+        json={
+            "dry_run": False,
+            "profile": "fast",
+            "message": "continue",
+            "from_peer": "dashboard",
+        },
+    )
+    assert result.action == "spawned"
+    assert result.spawned_display_name == "repo-codex"
 
 
 def test_client_peer_defaults_to_daemon_default_circle():

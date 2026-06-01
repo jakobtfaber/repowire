@@ -2072,6 +2072,80 @@ def agents() -> None:
     pass
 
 
+@main.group()
+def session() -> None:
+    """Inspect and control durable Repowire sessions."""
+    pass
+
+
+@session.command(name="resume")
+@click.argument("repowire_session_id")
+@click.option("--dry-run", is_flag=True, help="Inspect resume availability only")
+@click.option("--profile", help="Spawn profile to apply when resuming")
+@click.option("--message", "-m", help="Optional startup nudge for the resumed runtime")
+@click.option("--from-peer", help="Caller peer identity")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON status instead of text")
+def session_resume_cmd(
+    repowire_session_id: str,
+    dry_run: bool,
+    profile: str | None,
+    message: str | None,
+    from_peer: str | None,
+    as_json: bool,
+) -> None:
+    """Resume a detached durable session with the backend's native resume."""
+    from urllib.parse import quote
+
+    import httpx
+
+    body: dict[str, object] = {"dry_run": dry_run}
+    if profile:
+        body["profile"] = profile
+    if message:
+        body["message"] = message
+    if from_peer:
+        body["from_peer"] = from_peer
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(
+                f"{_get_daemon_url()}/sessions/"
+                f"{quote(repowire_session_id, safe='')}/controls/resume",
+                json=body,
+            )
+            if resp.status_code == 404:
+                raise click.ClickException(f"Session '{repowire_session_id}' not found")
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.ConnectError:
+        raise click.ClickException(
+            "Cannot connect to daemon. Run 'repowire serve' first."
+        ) from None
+    except httpx.HTTPStatusError as e:
+        raise click.ClickException(
+            f"Failed to resume session: {_http_error_detail(e)}"
+        ) from e
+
+    if as_json:
+        console.print_json(data=data)
+        return
+
+    action = "Resumed" if data.get("action") == "spawned" else "Resume available for"
+    console.print(
+        f"[green]✓[/] {action} session "
+        f"[cyan]{data.get('repowire_session_id', repowire_session_id)}[/]"
+    )
+    console.print(f"  backend: {data.get('backend')}")
+    if data.get("runtime_session_id"):
+        console.print(f"  runtime: {data.get('runtime_session_id')}")
+    if data.get("spawned_display_name"):
+        console.print(f"  peer: {data.get('spawned_display_name')}")
+    if data.get("tmux_session"):
+        console.print(f"  tmux: {data.get('tmux_session')}")
+    if data.get("pane_id"):
+        console.print(f"  pane: {data.get('pane_id')}")
+
+
 @agents.command(name="create")
 @click.argument("name")
 @click.option("--path", "path_raw", help="Scaffold path (default: .repowire/agents/NAME)")

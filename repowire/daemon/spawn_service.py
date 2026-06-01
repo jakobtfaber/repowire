@@ -124,6 +124,7 @@ class SpawnService:
                     command=command,
                     message=message,
                     role=role.value,
+                    peer_id=peer_id,
                 )
             )
         except (ValueError, RuntimeError) as e:

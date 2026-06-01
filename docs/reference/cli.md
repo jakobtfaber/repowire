@@ -110,11 +110,11 @@ For Antigravity interop checks, `python3 scripts/agy_interop_smoke.py --run-cli-
 
 `peer claim-role orchestrator` repairs an existing registered peer when the durable session mapping has the wrong role after daemon restart. It updates the live peer and its persisted session mapping, demoting offline or stale orchestrator holders in the same circle. It refuses to demote a fresh online/busy holder, even with `--force`; stop the current holder first if you intentionally need to replace it. Omit `--peer` only from inside a registered peer shell where Repowire can discover the current peer.
 
-`peer restart` intentionally restarts a daemon-spawned peer on the same backend, path, circle, role, and mesh identity. It is for reloading runtime startup context such as `AGENTS.md` or an orchestrator `SOUL.md` without changing the address other peers use. The daemon only preserves the same `peer_id` through the normal exact backend+path reconnect path; it does not force-rebind arbitrary peer IDs. Restart is same-host and requires explicit Repowire spawn ownership proof plus live tmux evidence for the recorded pane. If the peer was attached manually, or if the recorded pane is gone or no longer matches the proof, the daemon cannot prove it is safe to kill and the command refuses instead of touching the pane. Use `--dry-run` to check whether a peer is restartable.
+`peer restart` restarts a peer on the same backend, path, circle, role, and mesh identity by using the backend's native resume command. It is for continuing the same backend conversation without changing the address other peers use. The daemon only preserves the same `peer_id` through the normal exact backend+path reconnect path; it does not force-rebind arbitrary peer IDs. Restart is same-host and strict: Repowire must first validate a captured runtime session id against local backend session storage. If no valid resume is available, restart refuses before killing anything.
 
 Restart is same-window/name first, not same-pane. Killing a tmux pane destroys that pane, so this slice respawns through the normal Repowire spawn path and lets tmux allocate a fresh pane/window name using the existing naming rules. The response may include the new `tmux_session`, but it does not promise the same pane id.
 
-Restart resumes the backend's prior conversation when possible. If the peer has a captured runtime session id (all backends capture it from the hook payload) and a matching local session is found on disk, restart relaunches with the backend's native resume command in the original working directory and reports `resume_mode=resumed`. Otherwise it restarts fresh (`resume_mode=fresh_runtime_context`) with a `resume_warning` explaining why (no captured id, backend doesn't support resume, the id has no local session file — stale/expired, or the backend's session store is not yet mappable for pre-validation).
+If the peer has a captured runtime session id (from a session binding or hook metadata) and a matching local session is found on disk, restart relaunches with the backend's native resume command in the original working directory and reports `resume_mode=resumed`. Otherwise it returns `409 resume_unavailable` with a `resume_warning` explaining why (no captured id, backend doesn't support resume, the id has no local session file — stale/expired, or the backend's session store is not yet mappable for pre-validation).
 
 The id is **pre-validated against on-disk session storage before the pane is killed**, because resume-capable backends exit non-zero on an unknown id rather than starting fresh; resuming a stale id after killing the pane would leave the peer dead. Per-backend storage that Repowire validates against:
 
@@ -127,11 +127,26 @@ The id is **pre-validated against on-disk session storage before the pane is kil
 | antigravity | `agy --conversation <id>` | `~/.gemini/antigravity-cli` (last_conversations + `<id>.pb`; validates the last conversation per cwd) |
 | pi | `pi --session <id>` | `~/.pi/pi-acp/session-map.json` (cwd + sessionFile) |
 
-This same resume-safety check is shared by restart, durable/recurring jobs, and session control, so a stale id never resumes anywhere — it falls back to fresh. Resume does not persist the originally selected spawn profile. For peers Repowire cannot prove it spawned (no pane ownership), restart still refuses to kill the pane but returns the exact `resume_command` in the 409 detail so you can relaunch with context manually.
+This same resume-safety check is shared by restart, durable/recurring jobs, and session control, so a stale id never resumes anywhere. Resume does not persist the originally selected spawn profile.
+
+When a live pane must be stopped, destructive proof is required. Repowire-spawned panes use durable spawn ownership. Manually-created panes are killable only when live pane hook metadata contains the target `peer_id`; cwd/path match alone is not enough because multiple peers commonly share one repository. If the peer is offline and no live pane exists, restart skips the kill and spawns the validated resume command.
 
 `peer doctor` is the operator-facing counterpart to automatic lazy repair. It runs lazy repair first, re-resolves the peer, then reports registry identity, inbound reachability (WebSocket connection, tmux pane existence, pane hook metadata, agent pid liveness), pending ask state, and any detected contradictions. Contradiction codes: `ONLINE_BUT_NO_WS`, `PANE_MISSING`, `AGENT_PID_DEAD`, `HOOK_PEERID_MISMATCH`, `WS_PANE_MISMATCH` (warning), `STALE_PENDING_ASK` (warning). Local-only probes (tmux, hook metadata, pid) degrade to `unavailable` for peers on a different machine than the daemon. The command exits non-zero when any error-severity contradiction is present, so it is usable as a health gate. `--json` emits the raw report. `--fix` attempts a non-destructive `peer rehook --apply` when an inbound-down contradiction (`ONLINE_BUT_NO_WS` / `PANE_MISSING`) is found.
 
 `peer rehook` re-establishes a peer's inbound ws-hook **without killing the pane or the agent** — the non-destructive recovery for the "registered/online but inbound delivery is dead" case. It is same-host only (the daemon cannot spawn a ws-hook into a foreign pane) and gated by spawn-ownership proof or live tmux pane evidence. It pings an existing connection first and never disconnects a ping-healthy peer (reports `already_healthy`). It defaults to a dry-run report; pass `--apply` to act. When the prior ws-hook process is still alive by pid even though its WebSocket is dead, the underlying respawn is a no-op and the response reports `respawn_skipped_pid_alive_or_contested`. For a destructive restart use `peer restart`.
+
+## `repowire session`
+
+```bash
+repowire session resume REPOWIRE_SESSION_ID [--dry-run] [--profile PROFILE] [-m MESSAGE] [--json]
+```
+
+`session resume` starts a detached durable Repowire session using the backend's
+native resume command. By default it acts; pass `--dry-run` to only validate
+that the captured runtime session id is safe to resume. It uses the same
+resume-safety check as `peer restart` and jobs, so active sessions, missing
+runtime ids, unsupported backends, and stale ids whose local session file is
+gone fail loudly with a non-zero exit instead of starting fresh.
 
 ## `repowire trace`
 

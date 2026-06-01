@@ -7,8 +7,6 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from repowire.agent_backends import AgentResumePlan, resume_capability_for_registration
-from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.peer_delivery import peer_delivery_from_state
@@ -16,6 +14,11 @@ from repowire.daemon.session_controls import (
     SessionBindingStoreUnavailableError,
     resolve_session_binding,
     resume_capability_for,
+)
+from repowire.daemon.session_resume import (
+    ResumeUnavailableError,
+    resume_target,
+    target_from_resolution,
 )
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.messages import AttachmentRef
@@ -174,89 +177,55 @@ async def resume_session(
     """Inspect or execute backend-native resume for a session binding."""
     state = get_app_state()
     resolution = await _resolve_or_http(state, repowire_session_id)
-    resume_status, capability, message = resume_capability_for(resolution)
-    binding = resolution.binding
-    executor = resolution.executor if resolution.has_active_executor else None
-    response_resume_capability = dict(binding.resume_capability)
-    action: Literal["inspect", "spawned"] = "inspect"
-    spawned_display_name: str | None = None
-    tmux_session: str | None = None
-    pane_id: str | None = None
-
-    if not request.dry_run and capability == "supported":
-        try:
-            backend = AgentType(binding.backend)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail={
-                    "error": "unknown_backend",
-                    "backend": binding.backend,
-                },
-            ) from exc
-        spawn_service = getattr(state, "spawn_service", None)
-        if spawn_service is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "error": "spawn_service_unavailable",
-                    "message": "Backend resume requires the daemon spawn service.",
-                },
-            )
-        assert binding.runtime_session_id is not None
-        if not response_resume_capability:
-            response_resume_capability = resume_capability_for_registration(
-                backend,
-                binding.runtime_session_id,
-            )
-        spawn_result = spawn_service.spawn(
-            path=binding.project_path,
-            backend=backend,
+    try:
+        target = target_from_resolution(resolution)
+        result = resume_target(
+            target=target,
+            spawn_service=getattr(state, "spawn_service", None) if not request.dry_run else None,
+            dry_run=request.dry_run,
             profile=request.profile,
-            circle=resolution.executor.circle if resolution.executor else "default",
             message=request.message,
-            resume_plan=AgentResumePlan(
-                backend=backend,
-                runtime_session_id=binding.runtime_session_id,
-                repowire_session_id=binding.repowire_session_id,
-                capability=response_resume_capability,
-            ),
+            circle="default",
         )
-        action = "spawned"
-        spawned_display_name = spawn_result.display_name
-        tmux_session = spawn_result.tmux_session
-        pane_id = spawn_result.pane_id
-        message = "Backend resume spawned for this runtime session."
-
-    elif (
-        capability == "supported"
-        and binding.runtime_session_id
-        and not response_resume_capability
-    ):
-        try:
-            response_resume_capability = resume_capability_for_registration(
-                AgentType(binding.backend),
-                binding.runtime_session_id,
-            )
-        except ValueError:
-            response_resume_capability = dict(binding.resume_capability)
+    except ResumeUnavailableError as exc:
+        binding = resolution.binding
+        http_status = (
+            status.HTTP_503_SERVICE_UNAVAILABLE
+            if exc.error == "spawn_service_unavailable"
+            else
+            status.HTTP_409_CONFLICT
+            if exc.error in {"active_executor", "resume_unavailable"}
+            else status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+        raise HTTPException(
+            status_code=http_status,
+            detail={
+                "error": exc.error,
+                "repowire_session_id": repowire_session_id,
+                "session_status": binding.status,
+                "status": exc.status,
+                "capability": exc.capability,
+                "message": exc.message,
+                "resume_warning": exc.warning,
+            },
+        ) from exc
 
     return SessionResumeResponse(
         repowire_session_id=repowire_session_id,
-        session_status=binding.status,
-        status=resume_status,
-        capability=capability,
-        message=message,
-        backend=binding.backend,
-        runtime_session_id=binding.runtime_session_id,
-        runtime_source_uri=binding.runtime_source_uri,
-        executor_peer_id=executor.peer_id if executor else resolution.executor_peer_id,
-        executor_peer_name=executor.display_name if executor else None,
-        resume_capability=response_resume_capability,
-        action=action,
-        spawned_display_name=spawned_display_name,
-        tmux_session=tmux_session,
-        pane_id=pane_id,
+        session_status=result.target.status,
+        status=result.status,
+        capability=result.capability,
+        message=result.message,
+        backend=result.target.backend.value,
+        runtime_session_id=result.target.runtime_session_id,
+        runtime_source_uri=result.target.runtime_source_uri,
+        executor_peer_id=result.target.executor_peer_id,
+        executor_peer_name=result.target.executor_peer_name,
+        resume_capability=result.resume_capability,
+        action=result.action,
+        spawned_display_name=result.spawned_display_name,
+        tmux_session=result.tmux_session,
+        pane_id=result.pane_id,
     )
 
 

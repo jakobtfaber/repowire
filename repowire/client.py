@@ -180,9 +180,30 @@ class RestartPeerResult(BaseModel):
     path: str
     circle: str
     tmux_session: str | None = None
-    resume_mode: str = "fresh_runtime_context"
+    resume_mode: str = "resumed"
     unsupported_reason: str | None = None
     command: str | None = None
+
+
+class SessionResumeResult(BaseModel):
+    """Result of inspecting or spawning backend-native session resume."""
+
+    ok: bool = True
+    repowire_session_id: str
+    session_status: str
+    status: str
+    capability: str
+    message: str
+    backend: str
+    runtime_session_id: str | None = None
+    runtime_source_uri: str | None = None
+    executor_peer_id: str | None = None
+    executor_peer_name: str | None = None
+    resume_capability: dict[str, Any] = Field(default_factory=dict)
+    action: str = "inspect"
+    spawned_display_name: str | None = None
+    tmux_session: str | None = None
+    pane_id: str | None = None
 
 
 class AttachmentInfo(BaseModel):
@@ -623,6 +644,31 @@ class AsyncRepowireClient:
             )
         )
 
+    async def resume_session(
+        self,
+        repowire_session_id: str,
+        *,
+        dry_run: bool = True,
+        profile: str | None = None,
+        message: str | None = None,
+        from_peer: str | None = None,
+    ) -> SessionResumeResult:
+        """Inspect or spawn backend-native resume for a durable Repowire session."""
+        payload: dict[str, Any] = {"dry_run": dry_run}
+        if profile is not None:
+            payload["profile"] = profile
+        if message is not None:
+            payload["message"] = message
+        if from_peer is not None:
+            payload["from_peer"] = from_peer
+        return SessionResumeResult.model_validate(
+            await self._request(
+                "POST",
+                f"/sessions/{quote(repowire_session_id, safe='')}/controls/resume",
+                json=payload,
+            )
+        )
+
     async def upload_attachment(
         self,
         file: bytes | str | Path,
@@ -670,6 +716,7 @@ __all__ = [
     "QueryResult",
     "RegisterPeerResult",
     "RestartPeerResult",
+    "SessionResumeResult",
     "SpawnConfigInfo",
     "SpawnResult",
     "ToolCall",

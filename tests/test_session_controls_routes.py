@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from repowire.agent_backends import AgentResumePlan
 from repowire.config.models import Config
 from repowire.daemon import app as app_mod
 from repowire.daemon.peer_delivery import NotifyDeliveryResult
@@ -62,6 +63,39 @@ class _FakeSpawnService:
             message=None,
         )
 
+    def resolve_command(self, backend, profile=None):
+        return backend.value
+
+    def resume_command(self, command, *, backend, resume_plan):
+        return f"{command} --resume {resume_plan.runtime_session_id}"
+
+
+def _allow_valid_resume(monkeypatch) -> None:
+    def fake_resolve_resume_safety(
+        *,
+        backend,
+        path,
+        runtime_session_id,
+        repowire_session_id,
+        capability=None,
+    ):
+        assert runtime_session_id is not None
+        return SimpleNamespace(
+            resumable=True,
+            warning=None,
+            plan=AgentResumePlan(
+                backend=backend,
+                runtime_session_id=runtime_session_id,
+                repowire_session_id=repowire_session_id,
+                capability=capability or {},
+            ),
+        )
+
+    monkeypatch.setattr(
+        "repowire.daemon.session_resume.resolve_resume_safety",
+        fake_resolve_resume_safety,
+    )
+
 
 async def test_session_resume_returns_active_executor(tmp_path):
     cfg = Config(experiments={"sqlite_state": True})
@@ -83,15 +117,16 @@ async def test_session_resume_returns_active_executor(tmp_path):
                 json={},
             )
 
-    assert response.status_code == 200, response.text
-    body = response.json()
+    assert response.status_code == 409, response.text
+    body = response.json()["detail"]
     assert body["status"] == "active_executor"
     assert body["capability"] == "active_executor"
-    assert body["executor_peer_id"] == peer_id
-    assert body["runtime_session_id"] == "runtime-active-1"
+    assert body["error"] == "active_executor"
+    assert peer_id
 
 
-async def test_session_resume_reports_supported_backend_capability(tmp_path):
+async def test_session_resume_reports_supported_backend_capability(tmp_path, monkeypatch):
+    _allow_valid_resume(monkeypatch)
     cfg = Config(experiments={"sqlite_state": True})
     app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
 
@@ -137,9 +172,11 @@ async def test_session_resume_reports_supported_backend_capability(tmp_path):
 )
 async def test_local_agent_sessions_with_runtime_ids_are_resumable(
     tmp_path,
+    monkeypatch,
     backend: str,
     strategy: str,
 ) -> None:
+    _allow_valid_resume(monkeypatch)
     cfg = Config(experiments={"sqlite_state": True})
     app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
 
@@ -168,7 +205,8 @@ async def test_local_agent_sessions_with_runtime_ids_are_resumable(
     assert body["resume_capability"]["strategy"] == strategy
 
 
-async def test_session_resume_executes_backend_resume_when_requested(tmp_path):
+async def test_session_resume_executes_backend_resume_when_requested(tmp_path, monkeypatch):
+    _allow_valid_resume(monkeypatch)
     cfg = Config(experiments={"sqlite_state": True})
     app = app_mod.create_test_app(config=cfg, persistence_path=tmp_path / "sessions.json")
 
@@ -233,11 +271,11 @@ async def test_session_resume_reports_unsupported_fallback(tmp_path):
                 json={},
             )
 
-    assert response.status_code == 200, response.text
-    body = response.json()
+    assert response.status_code == 409, response.text
+    body = response.json()["detail"]
     assert body["status"] == "unsupported"
     assert body["capability"] == "unsupported"
-    assert "service identity" in body["message"]
+    assert "does not support resume" in body["message"]
 
 
 async def test_session_resume_reports_legacy_binding_without_runtime_id(tmp_path):
@@ -259,11 +297,11 @@ async def test_session_resume_reports_legacy_binding_without_runtime_id(tmp_path
                 json={},
             )
 
-    assert response.status_code == 200, response.text
-    body = response.json()
+    assert response.status_code == 409, response.text
+    body = response.json()["detail"]
     assert body["status"] == "unsupported"
     assert body["capability"] == "unavailable"
-    assert "without a runtime session id" in body["message"]
+    assert "no captured backend session id" in body["message"]
 
 
 async def test_session_notify_targets_active_executor(tmp_path):

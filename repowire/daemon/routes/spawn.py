@@ -11,18 +11,21 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
-from repowire.agent_backends import build_resume_command
 from repowire.config.models import AgentType, SpawnProfile, apply_spawn_profile
 from repowire.daemon.ask_tracker import QuiesceFailedError
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_config, get_peer_registry
 from repowire.daemon.peer_registry import PeerRegistry
-from repowire.daemon.resume_safety import resolve_resume_safety
+from repowire.daemon.session_resume import (
+    ResumeTarget,
+    ResumeUnavailableError,
+    resume_target,
+)
 from repowire.daemon.spawn_service import SpawnService
-from repowire.hooks.utils import read_pane_runtime_metadata
+from repowire.hooks.utils import clear_pane_runtime_state, read_pane_runtime_metadata
 from repowire.hooks.ws_hook_supervisor import maybe_respawn
 from repowire.installers.post_spawn import post_spawn_warmup
-from repowire.protocol.peers import Peer, PeerRole
+from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 from repowire.spawn import SpawnConfig, SpawnResult, kill_pane, spawn_peer
 from repowire.spawn_ownership import (
     OwnershipValidation,
@@ -39,13 +42,13 @@ from repowire.spawn_ownership import (
 # tasks, so without this set a long-sleeping warmup can be GC'd mid-flight.
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
-# Pane ids of peers spawned via /spawn. Used by /kill-peer to gate tmux pane
-# kills: only panes the daemon spawned should be killed. The OpenCode plugin
-# sends tmux_session from any user-attached pane, so tmux_session alone is not
-# a daemon-spawn signal.
+# Pane ids of peers spawned via /spawn. This is one acceptable destructive
+# proof for kill/restart; manual panes need live pane metadata whose peer_id
+# matches the target. tmux_session/path alone are not destructive proof.
 #
 # Lifecycle assumptions:
-# - Lost on daemon restart → /kill-peer safe-fails to tmux_killed=None
+# - Lost on daemon restart → durable spawn ownership or pane metadata can still
+#   prove a pane; otherwise destructive controls refuse.
 # - Cleared on pane_died lifecycle event (see lifecycle_handler.handle_pane_died)
 #   to prevent stale entries from matching a reused pane id after a tmux server
 #   restart. Tmux pane ids are session-lifetime unique within a server, so this
@@ -355,14 +358,16 @@ async def spawn(
     return SpawnResponse(display_name=result.display_name, tmux_session=result.tmux_session)
 
 
-def _durable_ownership_error_detail(peer: Peer) -> dict[str, object]:
-    validation = _effective_ownership_validation(peer)
+def _pane_control_error_detail(
+    peer: Peer, proof: _DestructivePaneProof | None = None
+) -> dict[str, object]:
+    proof = proof or _destructive_pane_proof(peer)
     return {
-        "error": validation.error or "unsupported_pane_ownership",
-        "hint": validation.hint
+        "error": proof.error or "pane_unverified",
+        "hint": proof.hint
         or (
-            "Restart only supports panes Repowire can prove it spawned. "
-            "Externally attached peers are left untouched."
+            "Destructive peer controls require a Repowire spawn proof or "
+            "pane metadata whose peer_id matches the target peer."
         ),
         "pane_id": peer.pane_id,
     }
@@ -419,6 +424,107 @@ def _peer_with_adopted_ownership(peer: Peer) -> Peer:
     )
 
 
+@dataclass(frozen=True)
+class _DestructivePaneProof:
+    """Proof that a peer's pane may be killed by a destructive control."""
+
+    ok: bool
+    pane_id: str | None = None
+    tmux_session: str | None = None
+    mode: str | None = None
+    error: str | None = None
+    hint: str = ""
+
+
+def _destructive_pane_proof(peer: Peer) -> _DestructivePaneProof:
+    """Return kill authorization for a peer's local tmux pane.
+
+    Repowire-spawned panes use the durable spawn proof path. Manually-created
+    panes are accepted only when pane metadata names this exact peer_id; cwd is
+    deliberately not enough because multiple peers often share one repo path.
+    """
+
+    if peer.pane_id and peer.pane_id in _SPAWNED_PANE_IDS:
+        return _DestructivePaneProof(
+            ok=True,
+            pane_id=peer.pane_id,
+            tmux_session=peer.tmux_session,
+            mode="repowire_spawned_pane",
+        )
+
+    ownership = _effective_ownership_validation(peer)
+    if ownership.ok and ownership.record is not None:
+        return _DestructivePaneProof(
+            ok=True,
+            pane_id=ownership.record.pane_id,
+            tmux_session=ownership.record.tmux_session,
+            mode="durable_spawn_ownership",
+        )
+    if ownership.error and ownership.error != "missing_ownership":
+        return _DestructivePaneProof(
+            ok=False,
+            pane_id=ownership.record.pane_id if ownership.record is not None else peer.pane_id,
+            tmux_session=(
+                ownership.evidence.tmux_session
+                if ownership.evidence is not None
+                else (
+                    ownership.record.tmux_session
+                    if ownership.record is not None
+                    else peer.tmux_session
+                )
+            ),
+            error=ownership.error,
+            hint=ownership.hint,
+        )
+
+    if not peer.pane_id:
+        return _DestructivePaneProof(
+            ok=False,
+            error="missing_pane",
+            hint="Peer has no pane id, so Repowire has no pane to kill.",
+        )
+
+    evidence = probe_tmux_pane(peer.pane_id)
+    if evidence is None:
+        return _DestructivePaneProof(
+            ok=False,
+            pane_id=peer.pane_id,
+            error="pane_not_live",
+            hint="The peer's recorded pane is not visible in tmux.",
+        )
+
+    metadata = read_pane_runtime_metadata(peer.pane_id)
+    metadata_peer_id = metadata.get("peer_id")
+    if metadata_peer_id == peer.peer_id:
+        return _DestructivePaneProof(
+            ok=True,
+            pane_id=peer.pane_id,
+            tmux_session=evidence.tmux_session,
+            mode="verified_pane_metadata",
+        )
+    if metadata_peer_id:
+        return _DestructivePaneProof(
+            ok=False,
+            pane_id=peer.pane_id,
+            tmux_session=evidence.tmux_session,
+            error="pane_metadata_mismatch",
+            hint=(
+                "Live pane metadata belongs to a different peer_id; refusing "
+                "to kill a possibly unrelated same-cwd peer."
+            ),
+        )
+    return _DestructivePaneProof(
+        ok=False,
+        pane_id=peer.pane_id,
+        tmux_session=evidence.tmux_session,
+        error="missing_pane_metadata",
+        hint=(
+            "Live pane has no peer_id metadata. Path match alone is not enough "
+            "for destructive controls."
+        ),
+    )
+
+
 @router.post("/kill-peer", response_model=KillResponse)
 async def kill_registered_peer(
     request: KillPeerRequest,
@@ -460,17 +566,28 @@ async def kill_registered_peer(
         )
 
     peer = _peer_with_adopted_ownership(resolved)
-    # Only kill the pane if the daemon spawned it. We track spawned pane_ids
-    # in _SPAWNED_PANE_IDS at /spawn time. tmux_session is NOT a reliable
-    # ownership signal — the OpenCode plugin sends it from any user-attached
-    # pane (installers/opencode.py:213-216), and any HTTP /peers caller could
-    # too. Pane-id-set membership is the single source of truth.
-    tmux_killed: bool | None = None
-    if _has_spawn_ownership(peer):
-        pane_id = peer.pane_id
-        assert pane_id is not None
-        tmux_killed = kill_pane(pane_id)
-        forget_spawned_pane(pane_id)
+    proof = _destructive_pane_proof(peer)
+    if not proof.ok or not proof.pane_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_pane_control_error_detail(peer, proof),
+        )
+
+    tmux_killed = kill_pane(proof.pane_id)
+    if not tmux_killed:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "kill_failed",
+                "hint": (
+                    "tmux kill-pane failed for the peer's verified pane; the "
+                    "peer remains registered so the operator can inspect it."
+                ),
+                "pane_id": proof.pane_id,
+            },
+        )
+    forget_spawned_pane(proof.pane_id)
+    clear_pane_runtime_state(proof.pane_id)
     await peer_registry.unregister_peer(peer.peer_id)
     return KillResponse(tmux_killed=tmux_killed)
 
@@ -526,7 +643,7 @@ class RestartPeerResponse(BaseModel):
     path: str
     circle: str
     tmux_session: str | None = None
-    resume_mode: str = "fresh_runtime_context"
+    resume_mode: str = "resumed"
     resume_warning: str | None = None
     unsupported_reason: str | None = None
     command: str | None = None
@@ -537,30 +654,25 @@ def _command_for_backend(new_backend: AgentType) -> str | None:
     return _runtime_commands().get(new_backend)
 
 
-@dataclass(frozen=True)
-class _RestartResume:
-    """Resolved resume decision for a restart."""
-
-    command: str          # base command, or resume command when resumable
-    mode: str             # "resumed" | "fresh_runtime_context"
-    resumable: bool       # a valid on-disk session was found and resume built
-    warning: str | None   # why context will NOT be resumed (when not resumable)
+def _runtime_session_id_from_peer(peer: Peer) -> str | None:
+    for key in ("hook_session_id", "runtime_session_id", "session_id"):
+        value = peer.metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
-def _resolve_restart_resume(
+def _restart_resume_target(
     *,
     peer: Peer,
     resolved_path: str,
-    base_command: str,
     state: object,
-) -> _RestartResume:
-    """Decide whether a restart can resume the backend's prior session.
+) -> ResumeTarget:
+    """Build the resume target for strict kill+resume restart.
 
     Reads the peer's newest matching session binding for a runtime_session_id,
-    pre-validates that the backend session file exists on disk (both Claude and
-    Codex exit hard on an unknown id -- no fresh fallback), and builds the
-    backend resume command in the SAME cwd. Falls back to a fresh respawn with
-    an explicit warning when no resumable session is available.
+    falling back to peer metadata when no binding exists. Validation happens in
+    the shared resume service before any destructive pane action.
     """
     store = getattr(state, "session_binding_store", None)
     chosen_id: str | None = None
@@ -583,20 +695,46 @@ def _resolve_restart_resume(
             chosen_id = binding.runtime_session_id
             chosen_binding = binding
             break
+    if chosen_id is None:
+        chosen_id = _runtime_session_id_from_peer(peer)
 
-    decision = resolve_resume_safety(
+    return ResumeTarget(
+        repowire_session_id=(
+            chosen_binding.repowire_session_id if chosen_binding is not None else None
+        ),
         backend=peer.backend,
-        path=resolved_path,
+        project_path=resolved_path,
         runtime_session_id=chosen_id,
-        repowire_session_id=chosen_binding.repowire_session_id if chosen_binding else None,
-        # Honor a binding that recorded resume as unsupported, same as the job
-        # and session-control pathways (codex review item 3).
-        capability=chosen_binding.resume_capability if chosen_binding else None,
+        resume_capability=(
+            dict(chosen_binding.resume_capability) if chosen_binding is not None else {}
+        ),
+        status=chosen_binding.status if chosen_binding is not None else "detached",
+        peer_id=peer.peer_id,
+        executor_peer_id=peer.peer_id,
+        executor_peer_name=peer.display_name,
+        runtime_source_uri=(
+            chosen_binding.runtime_source_uri if chosen_binding is not None else None
+        ),
     )
-    if not decision.resumable or decision.plan is None:
-        return _RestartResume(base_command, "fresh_runtime_context", False, decision.warning)
-    resume_cmd = build_resume_command(base_command, decision.plan)
-    return _RestartResume(resume_cmd, "resumed", True, None)
+
+
+def _restart_resume_unavailable_detail(
+    peer: Peer,
+    target: ResumeTarget,
+    exc: ResumeUnavailableError,
+) -> dict[str, object]:
+    return {
+        "error": "resume_unavailable",
+        "hint": (
+            "Restart is strict kill+resume: Repowire will not kill this peer "
+            "unless it can first build a validated backend-native resume command."
+        ),
+        "peer_id": peer.peer_id,
+        "display_name": peer.display_name,
+        "runtime_session_id": target.runtime_session_id,
+        "resume_mode": "resume_unavailable",
+        "resume_warning": exc.warning or exc.message,
+    }
 
 
 @router.post("/peers/{name}/restart", response_model=RestartPeerResponse)
@@ -605,15 +743,7 @@ async def restart_peer(
     request: RestartPeerRequest,
     _: str | None = Depends(require_auth),
 ) -> RestartPeerResponse:
-    """Restart a daemon-spawned peer while preserving mesh identity.
-
-    This is intentionally narrower than transcript resume. It kills a
-    daemon-owned local pane, respawns the same backend/path/circle, and passes
-    the existing peer_id through the spawn hint so the new SessionStart can
-    reconnect to the same mesh identity. Backends reload their normal runtime
-    context on startup; exact conversation resume is backend-specific and not
-    claimed here.
-    """
+    """Restart a peer by killing its verified pane, then backend-resuming it."""
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
     await _authorize_kill(peer_registry, request.from_peer)
@@ -663,48 +793,51 @@ async def restart_peer(
             },
         )
 
-    command = _command_for_backend(peer.backend)
-    if command is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "command_unavailable",
-                "hint": (
-                    f"No entry in daemon.spawn.commands maps to {peer.backend.value!r}. "
-                    f"Add daemon.spawn.commands.{peer.backend.value} to ~/.repowire/config.yaml."
-                ),
-                "backend": peer.backend.value,
-            },
-        )
-
     _validate_spawn_path(peer.path)
 
     spawn_circle = peer.circle or "default"
     resolved_path = str(Path(peer.path).expanduser().resolve())
-
-    # Resolve resume BEFORE the ownership refusal so the refusal can hand back a
-    # manual resume command (codex review A). Both Claude and Codex exit hard on
-    # an unknown session id (no fresh fallback), so we pre-validate the id is on
-    # disk before committing to a resume that would kill the pane (codex C).
-    resume_resolution = _resolve_restart_resume(
-        peer=peer, resolved_path=resolved_path, base_command=command, state=get_app_state(),
+    state = get_app_state()
+    service = getattr(state, "spawn_service", None) or SpawnService(
+        spawn=get_config().daemon.spawn,
+        spawned_pane_ids=_SPAWNED_PANE_IDS,
+        background_tasks=_BACKGROUND_TASKS,
+        spawn_impl=spawn_peer,
+        warmup_impl=post_spawn_warmup,
     )
-    resume_command = resume_resolution.command
-    resume_mode = resume_resolution.mode
-    resume_warning = resume_resolution.warning
-
-    if not _has_spawn_ownership(peer):
-        detail = _durable_ownership_error_detail(peer)
-        detail["error"] = "unsupported_pane_ownership"
-        if resume_resolution.resumable:
-            # We won't kill a pane we can't prove we own, but the peer IS
-            # resumable -- give the user the exact command to relaunch with
-            # context manually.
-            detail["resume_command"] = resume_command
-            detail["resume_mode"] = "manual_resume_available"
+    resume_target_for_peer = _restart_resume_target(
+        peer=peer,
+        resolved_path=resolved_path,
+        state=state,
+    )
+    try:
+        resume_resolution = resume_target(
+            target=resume_target_for_peer,
+            spawn_service=service,
+            dry_run=True,
+            circle=spawn_circle,
+            role=peer.role,
+            peer_id=peer.peer_id,
+        )
+    except ResumeUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=detail,
+            detail=_restart_resume_unavailable_detail(peer, resume_target_for_peer, exc),
+        ) from exc
+    resume_command = resume_resolution.command
+    assert resume_command is not None
+    resume_mode = "resumed"
+    resume_warning = None
+
+    kill_proof = _destructive_pane_proof(peer)
+    can_skip_kill = (
+        peer.status == PeerStatus.OFFLINE
+        and kill_proof.error in {"missing_pane", "pane_not_live"}
+    )
+    if not kill_proof.ok and not can_skip_kill:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_pane_control_error_detail(peer, kill_proof),
         )
 
     if request.dry_run:
@@ -716,13 +849,12 @@ async def restart_peer(
             backend=peer.backend,
             path=resolved_path,
             circle=spawn_circle,
-            tmux_session=peer.tmux_session,
+            tmux_session=kill_proof.tmux_session or peer.tmux_session,
             command=resume_command,
             resume_mode=resume_mode,
             resume_warning=resume_warning,
         )
 
-    state = get_app_state()
     ask_tracker = state.ask_tracker
     try:
         await ask_tracker.begin_quiesce(peer.peer_id)
@@ -748,69 +880,35 @@ async def restart_peer(
         ) from e
 
     try:
-        pane_id = peer.pane_id
-        if not _has_spawn_ownership(peer):
-            detail = _durable_ownership_error_detail(peer)
-            detail["error"] = "unsupported_pane_ownership"
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=detail,
-            )
-        assert pane_id is not None
-        if not kill_pane(pane_id):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "error": "kill_failed",
-                    "hint": (
-                        "tmux kill-pane failed for the peer's pane; the old runtime may "
-                        "still be alive. Aborting restart to avoid duplicate runtimes."
-                    ),
-                    "pane_id": pane_id,
-                },
-            )
-        forget_spawned_pane(pane_id)
+        if kill_proof.ok:
+            pane_id = kill_proof.pane_id
+            assert pane_id is not None
+            if not kill_pane(pane_id):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "error": "kill_failed",
+                        "hint": (
+                            "tmux kill-pane failed for the peer's verified pane; the old "
+                            "runtime may still be alive. Aborting restart to avoid duplicates."
+                        ),
+                        "pane_id": pane_id,
+                    },
+                )
+            forget_spawned_pane(pane_id)
+            clear_pane_runtime_state(pane_id)
         await peer_registry.mark_offline(peer.peer_id)
 
-        try:
-            result: SpawnResult = spawn_peer(
-                SpawnConfig(
-                    path=resolved_path,
-                    circle=spawn_circle,
-                    backend=peer.backend,
-                    command=resume_command,
-                    message=request.message,
-                    role=peer.role.value,
-                    peer_id=peer.peer_id,
-                )
-            )
-        except (ValueError, RuntimeError) as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e),
-            ) from e
-
-        if result.pane_id:
-            _SPAWNED_PANE_IDS.add(result.pane_id)
-            _record_daemon_spawn_ownership(
-                result,
-                path=resolved_path,
-                backend=peer.backend,
-                circle=spawn_circle,
-                role=peer.role,
-                peer_id=peer.peer_id,
-            )
-            task = asyncio.create_task(
-                post_spawn_warmup(
-                    peer.backend,
-                    result.pane_id,
-                    path=resolved_path,
-                    circle=spawn_circle,
-                    message=result.message,
-                )
-            )
-            _BACKGROUND_TASKS.add(task)
-            task.add_done_callback(_BACKGROUND_TASKS.discard)
+        result = resume_target(
+            target=resume_target_for_peer,
+            spawn_service=service,
+            dry_run=False,
+            message=request.message,
+            circle=spawn_circle,
+            role=peer.role,
+            peer_id=peer.peer_id,
+        )
+        assert result.command is not None
 
         return RestartPeerResponse(
             status="restarted",
@@ -821,7 +919,7 @@ async def restart_peer(
             path=resolved_path,
             circle=spawn_circle,
             tmux_session=result.tmux_session,
-            command=resume_command,
+            command=result.command,
             resume_mode=resume_mode,
             resume_warning=resume_warning,
         )
