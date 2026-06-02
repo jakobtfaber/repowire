@@ -1337,9 +1337,9 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         daemon.spawn.profiles args for that backend. `command` is retained as a
         one-release compatibility alias for older callers.
 
-        The spawned agent self-registers into the mesh via its SessionStart hook
-        within a few seconds. Use list_peers() to confirm registration and get
-        the peer_id.
+        Hook-backed runtimes self-register into the mesh via SessionStart within
+        a few seconds. Antigravity is pre-registered as a CLI-polling fallback
+        peer because `agy` plugin hook firing is still pending upstream.
 
         The circle maps to the tmux session name and cannot be reassigned after
         spawn. If omitted, Repowire uses the caller's current circle.
@@ -1349,10 +1349,10 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         register with the mesh promptly; treated as a friendly opening prompt
         by other backends. If omitted, codex gets a short default warmup.
 
-        After spawn, address the peer by the returned display name or by the
-        peer_id from list_peers. Use ask() for tracked work that requires ack,
-        or notify_peer() for fire-and-forget prompts. Do not use SendMessage;
-        it is a Claude Code harness tool for same-session teammates only.
+        After spawn, address the peer by the returned display name or peer_id.
+        Use ask() for tracked work that requires ack, or notify_peer() for
+        fire-and-forget prompts. Do not use SendMessage; it is a Claude Code
+        harness tool for same-session teammates only.
 
         Args:
             path: Absolute path to the project directory
@@ -1390,11 +1390,18 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         result = await daemon_request("POST", "/spawn", body)
         name = result["display_name"]
         tmux = result["tmux_session"]
-        return (
-            f"Spawned {name} (tmux: {tmux}). "
-            f"Peer will self-register shortly. Use list_peers() to confirm "
-            f"and get peer_id. Address it as '{name}' via ask/notify_peer."
+        peer_id = result.get("peer_id")
+        registration_state = result.get("registration_state") or "pending_hook"
+        warnings = result.get("warnings") or []
+        identity = f" peer_id={peer_id}." if peer_id else "."
+        message = (
+            f"Spawned {name} (tmux: {tmux}){identity} "
+            f"registration_state={registration_state}. "
+            f"Address it as '{name}' via ask/notify_peer."
         )
+        if warnings:
+            message += " Warning: " + " ".join(str(w) for w in warnings)
+        return message
 
     @mcp.tool()
     async def orchestrator_status(circle: str | None = None) -> str:

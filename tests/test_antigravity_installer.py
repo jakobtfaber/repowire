@@ -15,6 +15,9 @@ documented yet.
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
+
+from click.testing import CliRunner
 
 from repowire.installers import antigravity as agy_mod
 
@@ -219,6 +222,51 @@ def test_peer_new_cli_exposes_profile_option():
     from repowire.cli import peer_new
 
     assert any(p.name == "profile" for p in peer_new.params)
+
+
+def test_peer_new_antigravity_uses_daemon_spawn(tmp_path, monkeypatch):
+    """Configured CLI spawn should share the daemon pre-registration path."""
+    from repowire.cli import main
+
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.post.return_value = MagicMock(
+        status_code=200,
+        json=lambda: {
+            "display_name": "agy-demo",
+            "tmux_session": "default:agy-demo",
+            "peer_id": "repow-default-agy12345",
+            "registration_state": "cli_fallback",
+            "warnings": ["antigravity plugin hooks are pending upstream"],
+        },
+        raise_for_status=lambda: None,
+    )
+    monkeypatch.setattr("httpx.Client", MagicMock(return_value=client))
+    monkeypatch.setattr("repowire.cli._get_daemon_url", lambda: "http://daemon")
+    monkeypatch.setattr("repowire.cli._auth_headers", lambda: {"Authorization": "Bearer t"})
+    monkeypatch.setattr(
+        "repowire.cli._configured_spawn_command",
+        lambda backend, profile=None: "agy --dangerously-skip-permissions",
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["peer", "new", str(tmp_path), "--backend", "antigravity"],
+    )
+
+    assert result.exit_code == 0, result.output
+    client.post.assert_called_once_with(
+        "http://daemon/spawn",
+        json={
+            "path": str(tmp_path.resolve()),
+            "backend": "antigravity",
+            "circle": "default",
+        },
+        headers={"Authorization": "Bearer t"},
+    )
+    assert "repow-default-agy12345" in result.output
+    assert "cli_fallback" in result.output
+    assert "pending upstream" in result.output
 
 
 # -- Round-trip -------------------------------------------------------------

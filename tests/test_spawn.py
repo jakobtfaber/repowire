@@ -467,6 +467,35 @@ class TestMcpSpawnPeerReturn:
         assert result != "prod:alpha-svc"
 
     @pytest.mark.asyncio
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_spawn_peer_surfaces_antigravity_cli_fallback_warning(
+        self, mock_request: AsyncMock,
+    ) -> None:
+        mock_request.return_value = {
+            "ok": True,
+            "display_name": "agy-demo",
+            "tmux_session": "default:agy-demo",
+            "peer_id": "repow-default-agy12345",
+            "registration_state": "cli_fallback",
+            "warnings": ["antigravity plugin hooks are pending upstream"],
+        }
+
+        from repowire.mcp.server import create_mcp_server
+
+        mcp = create_mcp_server()
+        spawn_tool = mcp._tool_manager._tools["spawn_peer"]
+        result = await spawn_tool.fn(
+            path="/tmp/agy-demo",
+            backend="antigravity",
+            circle="default",
+        )
+
+        assert "agy-demo" in result
+        assert "repow-default-agy12345" in result
+        assert "registration_state=cli_fallback" in result
+        assert "pending upstream" in result
+
+    @pytest.mark.asyncio
     @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
     @patch("repowire.mcp.server._get_my_identity", new_callable=AsyncMock)
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)

@@ -3114,6 +3114,8 @@ def peer_new(
 
         repowire peer new ~/git/api --backend=opencode --circle=backend
     """
+    import httpx
+
     from repowire.config.models import AgentType
     from repowire.spawn import SpawnConfig, spawn_peer
 
@@ -3134,6 +3136,54 @@ def peer_new(
         return
     backend_type = AgentType(backend)
 
+    if cmd is None:
+        daemon_url = _get_daemon_url()
+        body: dict[str, object] = {
+            "path": actual_path,
+            "backend": backend,
+            "circle": actual_circle,
+        }
+        if profile:
+            body["profile"] = profile
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(
+                    f"{daemon_url}/spawn",
+                    json=body,
+                    headers=_auth_headers(),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.ConnectError:
+            console.print(
+                f"[red]Cannot connect to daemon at {daemon_url}.[/] "
+                "Run 'repowire serve' first, or pass --command for legacy direct tmux spawn.",
+            )
+            return
+        except httpx.HTTPStatusError as e:
+            console.print(f"[red]Failed to spawn: {_http_error_detail(e)}[/]")
+            return
+        except Exception as e:
+            err_msg = str(e) if str(e) else type(e).__name__
+            console.print(f"[red]Failed to spawn: {err_msg}[/]")
+            return
+
+        console.print(
+            f"[green]✓[/] Spawned [cyan]{data['display_name']}[/] "
+            f"in circle [magenta]{actual_circle}[/]"
+        )
+        console.print(f"  tmux: {data['tmux_session']}")
+        console.print(f"  command: {actual_cmd}")
+        if data.get("peer_id"):
+            console.print(f"  peer_id: {data['peer_id']}")
+        if profile:
+            console.print(f"  profile: {profile}")
+        registration_state = data.get("registration_state") or "pending_hook"
+        console.print(f"  registration: {registration_state}")
+        for warning in data.get("warnings") or []:
+            console.print(f"[yellow]![/] {warning}")
+        return
+
     config = SpawnConfig(
         path=actual_path,
         circle=actual_circle,
@@ -3151,7 +3201,7 @@ def peer_new(
         console.print(f"  command: {actual_cmd}")
         if profile and not cmd:
             console.print(f"  profile: {profile}")
-        console.print("[dim]  (will auto-register via WebSocket)[/]")
+        console.print("[dim]  (legacy direct spawn; registration depends on runtime hooks)[/]")
 
     except ValueError as e:
         console.print(f"[red]Error: {e}[/]")

@@ -50,6 +50,10 @@ All three resolve identity in this order: explicit `--peer-id` / `--pane-id`, `$
 
 ## Spawn
 
+Daemon/MCP spawn pre-registers Antigravity peers as CLI-fallback peers because the `SessionStart` hook is not reliable yet. `spawn_peer(..., backend="antigravity")` returns the `peer_id`, `registration_state=cli_fallback`, and a warning. The peer appears in `list_peers` immediately, and `ask` / `notify_peer` delivery queues for `repowire peer asks` / `repowire peer deliveries` until upstream hook firing is verified.
+
+`repowire peer new --backend antigravity` uses the same daemon spawn path. The deprecated `peer new --command ...` escape hatch launches tmux directly and does not pre-register; run `repowire peer whoami --register --backend antigravity` inside that pane if you use the direct command override.
+
 Default spawn command: `agy --dangerously-skip-permissions`.
 
 ```yaml

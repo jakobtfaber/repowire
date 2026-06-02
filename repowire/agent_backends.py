@@ -79,6 +79,7 @@ class AgentBackend(ABC):
     resume_subcommand: ClassVar[str | None] = None
     mcp_config_scope: ClassVar[McpConfigScope | None] = None
     post_spawn_strategy: ClassVar[str] = "seed_message"
+    self_registers_on_spawn: ClassVar[bool] = True
 
     @classmethod
     def mcp_runtime_matches(cls, env: Mapping[str, str]) -> bool:
@@ -396,6 +397,7 @@ class AntigravityBackend(AgentBackend):
     supports_resume = True
     resume_strategy = "antigravity_conversation"
     resume_flag = "--conversation"
+    self_registers_on_spawn = False
 
     def install(self, options: BackendInstallOptions | None = None) -> list[BackendInstallMessage]:
         from repowire.installers.antigravity import install_hooks

@@ -159,6 +159,9 @@ class SpawnResult(BaseModel):
     ok: bool = True
     display_name: str
     tmux_session: str
+    peer_id: str | None = None
+    registration_state: str = "pending_hook"
+    warnings: list[str] = Field(default_factory=list)
 
 
 class KillPeerResult(BaseModel):

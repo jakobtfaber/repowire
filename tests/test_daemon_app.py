@@ -130,6 +130,7 @@ class TestSpawnConfig:
                 display_name=tmp_path.name,
                 tmux_session=f"default:{tmp_path.name}",
                 pane_id="%42",
+                message="start",
             ),
         ) as mock_spawn, patch.object(
             spawn_routes, "post_spawn_warmup", new_callable=AsyncMock,
@@ -145,6 +146,58 @@ class TestSpawnConfig:
         assert spawn_cfg.command == (
             "codex --dangerously-bypass-approvals-and-sandbox --model gpt-5-mini"
         )
+        cleanup_deps()
+
+    async def test_spawn_antigravity_pre_registers_cli_fallback_peer(self, tmp_path):
+        """Antigravity hooks do not fire reliably, so daemon spawn pre-registers it."""
+        cfg = Config(daemon=DaemonConfig(
+            spawn={
+                "commands": {"antigravity": "agy --dangerously-skip-permissions"},
+                "allowed_paths": [str(tmp_path)],
+            },
+        ))
+        app = _make_app(tmp_path, config=cfg)
+        t = ASGITransport(app=app)
+        with patch.object(
+            spawn_routes,
+            "spawn_peer",
+            return_value=spawn_routes.SpawnResult(
+                display_name=tmp_path.name,
+                tmux_session=f"default:{tmp_path.name}",
+                pane_id="%42",
+                message="start",
+            ),
+        ), patch.object(
+            spawn_routes, "post_spawn_warmup", new_callable=AsyncMock,
+        ), patch(
+            "repowire.daemon.spawn_service.record_spawn_ownership",
+        ), patch.object(
+            spawn_routes, "record_spawn_ownership",
+        ) as mock_route_ownership:
+            async with AsyncClient(transport=t, base_url="http://test") as c:
+                r = await c.post(
+                    "/spawn",
+                    json={
+                        "path": str(tmp_path),
+                        "backend": "antigravity",
+                        "message": "start",
+                    },
+                )
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["peer_id"]
+        assert body["registration_state"] == "cli_fallback"
+        assert "pre-registered" in body["warnings"][0]
+        peer = await spawn_routes.get_peer_registry().get_peer(body["peer_id"])
+        assert peer is not None
+        assert peer.backend.value == "antigravity"
+        assert peer.pane_id == "%42"
+        assert peer.turn_state == "pending_first_turn"
+        assert peer.metadata["repowire_cli_fallback"] is True
+        assert peer.metadata["spawn_registration"] == "daemon_pre_registered"
+        mock_route_ownership.assert_called_once()
+        assert mock_route_ownership.call_args.kwargs["peer_id"] == body["peer_id"]
         cleanup_deps()
 
     async def test_spawn_rejects_unknown_profile(self, tmp_path):

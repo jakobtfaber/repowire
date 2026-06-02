@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
+from repowire.agent_backends import agent_backend_for
 from repowire.config.models import AgentType, SpawnProfile, apply_spawn_profile
 from repowire.daemon.ask_tracker import QuiesceFailedError
 from repowire.daemon.auth import require_auth
@@ -228,6 +229,9 @@ class SpawnResponse(BaseModel):
     ok: bool = True
     display_name: str
     tmux_session: str
+    peer_id: str | None = None
+    registration_state: str = "pending_hook"
+    warnings: list[str] = Field(default_factory=list)
 
 
 class KillResponse(BaseModel):
@@ -330,7 +334,8 @@ async def spawn(
 
     The backend command and path must be configured in daemon.spawn.commands /
     allowed_paths in ~/.repowire/config.yaml.
-    The spawned agent self-registers via its SessionStart hook once it starts.
+    Hook-backed agents self-register via SessionStart. Backends whose hooks are
+    not verified are daemon-registered into their configured fallback path.
     """
     if request.backend is None:
         backend, _command = _resolve_spawn_command(
@@ -347,6 +352,7 @@ async def spawn(
         spawn_impl=spawn_peer,
         warmup_impl=post_spawn_warmup,
     )
+    resolved_path = str(Path(request.path).expanduser().resolve())
     result = service.spawn(
         path=request.path,
         backend=backend,
@@ -355,7 +361,53 @@ async def spawn(
         message=request.message,
         role=request.role,
     )
-    return SpawnResponse(display_name=result.display_name, tmux_session=result.tmux_session)
+    backend_profile = agent_backend_for(backend)
+    peer_id: str | None = None
+    display_name = result.display_name
+    registration_state = "pending_hook"
+    warnings: list[str] = []
+    if result.pane_id and not backend_profile.self_registers_on_spawn:
+        peer_id, display_name = await get_peer_registry().allocate_and_register(
+            circle=request.circle,
+            backend=backend,
+            path=resolved_path,
+            pane_id=result.pane_id,
+            tmux_session=result.tmux_session,
+            metadata={
+                "repowire_cli_fallback": True,
+                "spawn_registration": "daemon_pre_registered",
+                "spawn_warning": (
+                    f"{backend.value} hooks do not currently fire reliably; "
+                    "Repowire pre-registered this peer for CLI polling."
+                ),
+            },
+            role=request.role,
+            turn_state="pending_first_turn" if result.message else None,
+        )
+        record_spawn_ownership(
+            pane_id=result.pane_id,
+            path=resolved_path,
+            backend=backend,
+            circle=request.circle,
+            role=request.role,
+            display_name=display_name,
+            tmux_session=result.tmux_session,
+            peer_id=peer_id,
+        )
+        registration_state = "cli_fallback"
+        warnings.append(
+            f"{backend.value} plugin hooks are pending upstream; peer was "
+            "pre-registered for CLI polling, so ask/notify delivery queues "
+            "until the peer drains it with `repowire peer asks` / "
+            "`repowire peer deliveries`."
+        )
+    return SpawnResponse(
+        display_name=display_name,
+        tmux_session=result.tmux_session,
+        peer_id=peer_id,
+        registration_state=registration_state,
+        warnings=warnings,
+    )
 
 
 def _pane_control_error_detail(
