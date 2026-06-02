@@ -715,13 +715,16 @@ describe("PeerView session controls", () => {
       const url = String(input);
       if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
       if (url.includes("/transcript")) {
-        return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
+        return new Response(
+          JSON.stringify({ turns: [], next_before: null, repowire_session_id: "rw-session-a" }),
+          { status: 200 },
+        );
       }
       if (url.includes("/controls/resume")) {
         return new Response(
           JSON.stringify({
             ok: true,
-            repowire_session_id: "session-a",
+            repowire_session_id: "rw-session-a",
             session_status: "active",
             status: "active_executor",
             capability: "active_executor",
@@ -755,13 +758,16 @@ describe("PeerView session controls", () => {
     );
 
     expect(await screen.findByText("running agent")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/sessions/rw-session-a/controls/resume"))).toBe(true);
+    });
     expect(screen.getByText("This captured session has a running agent attached, so nudges can be sent now.")).toBeInTheDocument();
     const input = screen.getByPlaceholderText("nudge alice's running agent...");
     fireEvent.change(input, { target: { value: "status please" } });
     fireEvent.click(screen.getByLabelText("Send session nudge"));
 
     await waitFor(() => {
-      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/sessions/session-a/controls/notify"))).toBe(true);
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/sessions/rw-session-a/controls/notify"))).toBe(true);
     });
     const notifyCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/controls/notify"));
     expect(notifyCall?.[1]).toMatchObject({ method: "POST" });
@@ -778,13 +784,16 @@ describe("PeerView session controls", () => {
       const url = String(input);
       if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
       if (url.includes("/transcript")) {
-        return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
+        return new Response(
+          JSON.stringify({ turns: [], next_before: null, repowire_session_id: "rw-session-a" }),
+          { status: 200 },
+        );
       }
       if (url.includes("/controls/resume")) {
         return new Response(
           JSON.stringify({
             ok: true,
-            repowire_session_id: "session-a",
+            repowire_session_id: "rw-session-a",
             session_status: "active",
             status: "active_executor",
             capability: "active_executor",
@@ -827,18 +836,21 @@ describe("PeerView session controls", () => {
     });
   });
 
-  it("shows legacy and no-session controls as disabled states", async () => {
+  it("shows legacy controls as disabled and hides no-session controls", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
       if (url.includes("/transcript")) {
-        return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
+        return new Response(
+          JSON.stringify({ turns: [], next_before: null, repowire_session_id: "rw-session-a" }),
+          { status: 200 },
+        );
       }
       if (url.includes("/controls/resume")) {
         return new Response(
           JSON.stringify({
             ok: true,
-            repowire_session_id: "session-a",
+            repowire_session_id: "rw-session-a",
             session_status: "detached",
             status: "unsupported",
             capability: "unavailable",
@@ -884,12 +896,11 @@ describe("PeerView session controls", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByText("no selected session")).toBeInTheDocument();
-    expect(screen.getByText("Select a captured session to inspect controls.")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("nudges need a running agent")).toBeDisabled();
+    expect(screen.queryByText("session actions")).not.toBeInTheDocument();
+    expect(screen.queryByText("no selected session")).not.toBeInTheDocument();
   });
 
-  it("resumes captured sessions without a running agent", async () => {
+  it("hides session controls when a runtime session has no durable binding", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
@@ -897,10 +908,46 @@ describe("PeerView session controls", () => {
         return new Response(JSON.stringify({ turns: [], next_before: null }), { status: 200 });
       }
       if (url.includes("/controls/resume")) {
+        return new Response(JSON.stringify({ detail: { error: "session_not_found" } }), { status: 404 });
+      }
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <PeerView
+        peer={{ ...PEER, backend: "codex", metadata: { hook_session_id: "session-a" } }}
+        events={[]}
+        apiBase=""
+        onClose={() => {}}
+        onSent={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("session_id=session-a"))).toBe(true);
+    });
+    expect(screen.queryByText("session actions")).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some((call) => String(call[0]).includes("/sessions/session-a/controls/resume")),
+    ).toBe(false);
+  });
+
+  it("resumes captured sessions without a running agent", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/spawn/config")) return new Promise<Response>(() => {});
+      if (url.includes("/transcript")) {
+        return new Response(
+          JSON.stringify({ turns: [], next_before: null, repowire_session_id: "rw-session-a" }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/controls/resume")) {
         return new Response(
           JSON.stringify({
             ok: true,
-            repowire_session_id: "session-a",
+            repowire_session_id: "rw-session-a",
             session_status: "resumable",
             status: "resume_available",
             capability: "supported",
@@ -926,7 +973,7 @@ describe("PeerView session controls", () => {
     );
 
     await waitFor(() => {
-      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/sessions/session-a/controls/resume"))).toBe(true);
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/sessions/rw-session-a/controls/resume"))).toBe(true);
     });
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /resume session/i })).toBeEnabled();
@@ -937,7 +984,7 @@ describe("PeerView session controls", () => {
     fireEvent.click(screen.getByText("Resume session"));
 
     await waitFor(() => {
-      const resumeCalls = fetchMock.mock.calls.filter((call) => String(call[0]).includes("/sessions/session-a/controls/resume"));
+      const resumeCalls = fetchMock.mock.calls.filter((call) => String(call[0]).includes("/sessions/rw-session-a/controls/resume"));
       expect(resumeCalls.length).toBeGreaterThanOrEqual(2);
     });
     const spawnCall = fetchMock.mock.calls.find((call) => {

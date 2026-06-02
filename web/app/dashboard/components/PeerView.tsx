@@ -85,7 +85,14 @@ interface TimelineSearchResult {
 interface TimelineSearchResponse {
   degraded: boolean;
   degradation_message: string;
+  repowire_session_id?: string | null;
   results: TimelineSearchResult[];
+}
+
+interface TranscriptResponse {
+  turns: TranscriptTurn[];
+  next_before: string | null;
+  repowire_session_id?: string | null;
 }
 
 const ACK_FRAME_RE = /^\[ack #([^\]\s]+) from @([^\]\s]+)\]\s?([\s\S]*)$/;
@@ -138,6 +145,7 @@ export function PeerView({
     peerId: peer.peer_id,
     sessionId: metadataSession,
   });
+  const [activeRepowireSessionId, setActiveRepowireSessionId] = useState<string | null>(null);
   const activeSessionId = activeSessionState.peerId === peer.peer_id
     ? activeSessionState.sessionId
     : metadataSession;
@@ -213,6 +221,7 @@ export function PeerView({
       const data = (await res.json()) as TimelineSearchResponse;
       setSearchResults(data.results);
       setSearchDegradation(data.degraded ? data.degradation_message : null);
+      setActiveRepowireSessionId(data.repowire_session_id || null);
     } catch (e) {
       setSearchError(e instanceof Error ? e.message : "Request failed");
     } finally {
@@ -257,7 +266,7 @@ export function PeerView({
           setTimelineError(`Error ${res.status}`);
           return;
         }
-        const data = (await res.json()) as { turns: TranscriptTurn[]; next_before: string | null };
+        const data = (await res.json()) as TranscriptResponse;
         if (!sessionId) {
           const currentSelection = activeSessionRef.current;
           if (
@@ -267,8 +276,13 @@ export function PeerView({
             !lastMetadataSessionRef.current
           ) {
             setActiveSessionState({ peerId: peer.peer_id, sessionId: data.turns[0].session_id });
+            setActiveRepowireSessionId(data.repowire_session_id || null);
           }
           return;
+        }
+        const currentSelection = activeSessionRef.current;
+        if (currentSelection.peerId === peer.peer_id && currentSelection.sessionId === sessionId) {
+          setActiveRepowireSessionId(data.repowire_session_id || null);
         }
         setTimelineTurns((prev) => {
           const seen = new Set(prev.map((turn) => `${turn.session_id}:${turn.turn_id}`));
@@ -301,6 +315,7 @@ export function PeerView({
     setTimelineNextBefore(null);
     setTimelineError(null);
     setTimelineInitialized(false);
+    setActiveRepowireSessionId(null);
     setSearchQuery("");
     setSearchResults([]);
     setSearchError(null);
@@ -319,6 +334,7 @@ export function PeerView({
     setTimelineNextBefore(null);
     setTimelineError(null);
     setTimelineInitialized(false);
+    setActiveRepowireSessionId(null);
   }, [metadataSession, peer.peer_id]);
 
   useEffect(() => {
@@ -334,6 +350,7 @@ export function PeerView({
     setTimelineNextBefore(null);
     setTimelineError(null);
     setTimelineInitialized(false);
+    setActiveRepowireSessionId(null);
     void fetchTimelinePage(null, activeSessionId);
   }, [activeSessionId, fetchTimelinePage]);
 
@@ -516,7 +533,7 @@ export function PeerView({
           <SessionCommandPanel
             peer={peer}
             apiBase={apiBase}
-            activeSessionId={activeSessionId}
+            repowireSessionId={activeRepowireSessionId}
             onSent={onSent}
           />
           <ComposeBar peer={peer} apiBase={apiBase} events={events} onSent={onSent} />
@@ -837,12 +854,12 @@ function HistoryTurn({ turn, peer }: { turn: TranscriptTurn; peer: Peer }) {
 function SessionCommandPanel({
   peer,
   apiBase,
-  activeSessionId,
+  repowireSessionId,
   onSent,
 }: {
   peer: Peer;
   apiBase: string;
-  activeSessionId: string | null;
+  repowireSessionId: string | null;
   onSent?: () => void;
 }) {
   const [resumeState, setResumeState] = useState<SessionResumeControlResponse | null>(null);
@@ -857,7 +874,7 @@ function SessionCommandPanel({
   const [resumeError, setResumeError] = useState<string | null>(null);
 
   const loadCapability = useCallback(async () => {
-    if (!activeSessionId) {
+    if (!repowireSessionId) {
       setResumeState(null);
       setCapabilityError(null);
       setLoadingCapability(false);
@@ -867,7 +884,7 @@ function SessionCommandPanel({
     setCapabilityError(null);
     try {
       const res = await fetch(
-        `${apiBase}/sessions/${encodeURIComponent(activeSessionId)}/controls/resume`,
+        `${apiBase}/sessions/${encodeURIComponent(repowireSessionId)}/controls/resume`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -893,7 +910,7 @@ function SessionCommandPanel({
     } finally {
       setLoadingCapability(false);
     }
-  }, [activeSessionId, apiBase]);
+  }, [repowireSessionId, apiBase]);
 
   useEffect(() => {
     setNotifyText("");
@@ -904,12 +921,12 @@ function SessionCommandPanel({
     void loadCapability();
   }, [loadCapability]);
 
-  const controlSessionId = activeSessionId || resumeState?.repowire_session_id || null;
+  if (!repowireSessionId) return null;
+
+  const controlSessionId = resumeState?.repowire_session_id || repowireSessionId;
   const canNotifySession = Boolean(controlSessionId && resumeState?.capability === "active_executor");
   const canResumeSession = Boolean(controlSessionId && resumeState?.capability === "supported");
-  const resumeLabel = !activeSessionId
-    ? "no selected session"
-    : loadingCapability
+  const resumeLabel = loadingCapability
     ? "checking session..."
     : resumeState?.capability === "active_executor"
     ? "running agent"
@@ -920,9 +937,7 @@ function SessionCommandPanel({
     : resumeState
     ? "not resumable"
     : "session unavailable";
-  const controlMessage = !activeSessionId
-    ? "Select a captured session to inspect controls."
-    : resumeState?.capability === "active_executor"
+  const controlMessage = resumeState?.capability === "active_executor"
     ? "This captured session has a running agent attached, so nudges can be sent now."
     : resumeState?.capability === "supported"
     ? "This captured session has resume metadata and can start a new backend-native resume."
@@ -1037,7 +1052,7 @@ function SessionCommandPanel({
           <button
             type="button"
             onClick={loadCapability}
-            disabled={!activeSessionId || loadingCapability}
+            disabled={loadingCapability}
             title="Refresh session capability"
             aria-label="Refresh session capability"
             className="ml-auto flex h-7 w-7 items-center justify-center rounded text-outline hover:bg-surface-container-high hover:text-on-surface disabled:opacity-40"
