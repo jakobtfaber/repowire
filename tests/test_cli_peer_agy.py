@@ -438,3 +438,4 @@ def test_ack_410_already_closed(monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert "already closed" in result.output
+    assert "Send a new notify/ask instead" in result.output

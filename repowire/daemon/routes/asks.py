@@ -1065,7 +1065,7 @@ async def ack_ask(
             status_code=status.HTTP_410_GONE,
             detail=(
                 f"Ask {request.correlation_id} is already closed; "
-                "reply message was not delivered."
+                "reply message was not delivered. Send a new notify/ask instead."
             ),
         )
     if existing.closed:

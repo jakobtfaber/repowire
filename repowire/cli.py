@@ -3963,7 +3963,10 @@ def peer_ack(correlation_id: str, message: str | None, from_peer: str | None) ->
         console.print(f"[red]No open ask with correlation_id: {correlation_id}[/]")
         sys.exit(1)
     if resp.status_code == 410:
-        console.print(f"[red]Ask {correlation_id} is already closed; reply not delivered[/]")
+        console.print(
+            f"[red]Ask {correlation_id} is already closed; reply not delivered. "
+            "Send a new notify/ask instead.[/]"
+        )
         sys.exit(1)
     if resp.status_code == 503:
         console.print("[red]Reply delivery failed (asker has no live transport); ask still open[/]")
