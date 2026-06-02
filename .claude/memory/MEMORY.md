@@ -8,3 +8,5 @@
 - [Lifecycle hooks architecture](project_lifecycle_hooks.md) — provider-agnostic /hooks/lifecycle/* endpoints, tmux hooks via set-hook -g
 - [Pane takeover semantics](project_pane_takeover.md) — same-pane restarts are fresh takeovers; clear pane state and dedupe Codex tmux registration
 - [Telegram brevity](feedback_telegram_brevity.md) — notify_peer messages to the human must be short/phone-readable; lead with the point, detail goes in PR/vault/beads
+- [Docs IA plan](project_docs_ia_plan.md) — docs/ re-arrange: 6 grouped lanes (Use/Operate/Support), guides+capabilities→Features, patterns→Workflows; shipped in #348
+- [Check branch before commit](feedback_check_branch_before_commit.md) — when a peer owns a shared branch, verify `git branch --show-current` before committing local edits
