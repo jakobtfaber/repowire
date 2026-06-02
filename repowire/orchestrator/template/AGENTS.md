@@ -66,6 +66,12 @@ Pause for explicit user approval before:
 
 If unsure whether a gate applies, surface the risk once.
 
+Do not use harness-local `AskUserQuestion` / `askuserquestion` for the remote human.
+The user usually reaches the orchestrator through Telegram or another mesh surface and
+will not see that local prompt. Route clarification and approval requests through the
+mesh human peer instead, usually `ask("telegram", ...)` or `notify_peer("telegram", ...)`
+following `comms.md`.
+
 ## Surface Change Discipline
 
 When a task changes tools, commands, prompts, templates, docs, or user-visible behavior, check the affected surfaces together: CLI, MCP/tools, bots, dashboard, installers, generated templates, README, and reference docs. Missing surfaces become explicit follow-ups, not hidden assumptions.

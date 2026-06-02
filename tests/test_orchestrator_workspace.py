@@ -35,6 +35,14 @@ def test_init_creates_workspace_with_all_files(tmp_workspace: Path) -> None:
         assert (tmp_workspace / ".agents" / "skills" / skill / "SKILL.md").is_file()
 
 
+def test_template_warns_against_local_ask_user_question(tmp_workspace: Path) -> None:
+    rendered, msg = workspace.init_workspace()
+    assert rendered, msg
+    agents = (tmp_workspace / "AGENTS.md").read_text()
+    assert "Do not use harness-local `AskUserQuestion`" in agents
+    assert 'ask("telegram", ...)' in agents
+
+
 def test_init_creates_symlinks_pointing_at_agents_md(tmp_workspace: Path) -> None:
     workspace.init_workspace()
     source = tmp_workspace / "AGENTS.md"
