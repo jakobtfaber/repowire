@@ -970,7 +970,12 @@ async def mark_peer_offline(
     Called by SessionEnd hook when a Claude session closes.
     """
     peer_registry = get_peer_registry()
-    cancelled = await peer_registry.mark_offline(name)
+    cancelled = await peer_registry.mark_offline(
+        name,
+        reason="offline_route",
+        source="peers_route",
+        detail="Peer was explicitly marked offline through the HTTP route.",
+    )
     return OfflineResponse(cancelled_queries=cancelled)
 
 

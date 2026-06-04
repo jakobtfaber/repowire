@@ -164,6 +164,17 @@ class TestLazyRepairDebounce:
         assert result.status == PeerStatus.OFFLINE
         transport.ping.assert_awaited_once_with(peer.peer_id, timeout=1.0)
         transport.disconnect.assert_awaited_once_with(peer.peer_id)
+        events = manager.get_events()
+        assert [event["type"] for event in events] == [
+            "peer_contradiction",
+            "peer_offline",
+        ]
+        offline = events[1]
+        assert offline["peer_id"] == peer.peer_id
+        assert offline["old_status"] == "online"
+        assert offline["new_status"] == "offline"
+        assert offline["reason"] == "pane_missing"
+        assert offline["source"] == "lazy_repair"
 
     async def test_connected_peer_ping_timeout_is_not_demoted(self):
         transport = MagicMock(spec=WebSocketTransport)
@@ -241,6 +252,17 @@ class TestLazyRepairDebounce:
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.OFFLINE
         qt.cancel_queries_to_peer.assert_awaited_once_with(peer.peer_id)
+        events = manager.get_events()
+        assert [event["type"] for event in events] == [
+            "peer_contradiction",
+            "peer_contradiction",
+            "peer_offline",
+        ]
+        offline = events[2]
+        assert offline["peer_id"] == peer.peer_id
+        assert offline["reason"] == "no_websocket_no_runtime_evidence"
+        assert offline["source"] == "lazy_repair"
+        assert offline["context"]["contradiction"] == "ONLINE_BUT_NO_WS"
 
     async def test_disconnected_pane_peer_with_stale_pid_and_live_pane_stays_live(
         self, monkeypatch,
@@ -428,6 +450,12 @@ class TestActiveRepairLiveness:
 
         result = await manager.get_peer(peer.peer_id)
         assert result.status == PeerStatus.OFFLINE
+        events = manager.get_events()
+        assert len(events) == 1
+        assert events[0]["type"] == "peer_offline"
+        assert events[0]["peer_id"] == peer.peer_id
+        assert events[0]["reason"] == "active_repair_no_pong"
+        assert events[0]["source"] == "active_repair"
 
     async def test_no_ws_with_live_pane_runtime_stays_online(self):
         """Active repair separates inbound transport loss from runtime liveness."""

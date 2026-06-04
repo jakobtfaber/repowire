@@ -53,7 +53,13 @@ class LifecycleHandler:
             clear_pane_runtime_state(pane_id)
             return 0
 
-        cancelled = await self._registry.mark_offline(peer.peer_id)
+        cancelled = await self._registry.mark_offline(
+            peer.peer_id,
+            reason="pane_died",
+            source="tmux_lifecycle",
+            detail="tmux reported that the pane died.",
+            context={"pane_id": pane_id},
+        )
         await self._transport.disconnect(peer.peer_id)
         clear_pane_runtime_state(pane_id)
         logger.info("pane_died: %s (%s) marked offline", peer.display_name, pane_id)
@@ -71,7 +77,13 @@ class LifecycleHandler:
 
         async def _offline(peer_id: str) -> int:
             peer = await self._registry.get_peer(peer_id)
-            cancelled = await self._registry.mark_offline(peer_id)
+            cancelled = await self._registry.mark_offline(
+                peer_id,
+                reason="session_closed",
+                source="tmux_lifecycle",
+                detail="tmux reported that the session closed.",
+                context={"tmux_session": session_name},
+            )
             await self._transport.disconnect(peer_id)
             if peer and peer.pane_id:
                 clear_pane_runtime_state(peer.pane_id)

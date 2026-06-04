@@ -531,6 +531,39 @@ class PeerRegistry:
             )
         )
 
+    def _emit_peer_offline_event(
+        self,
+        peer: Peer,
+        old_status: PeerStatus,
+        *,
+        reason: str,
+        source: str,
+        detail: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist why a peer became OFFLINE before reap can erase it."""
+        if old_status == PeerStatus.OFFLINE:
+            return
+        data: dict[str, Any] = {
+            "peer_id": peer.peer_id,
+            "display_name": peer.display_name,
+            "backend": peer.backend.value,
+            "path": peer.path,
+            "pane_id": peer.pane_id,
+            "old_status": old_status.value,
+            "new_status": PeerStatus.OFFLINE.value,
+            "reason": reason,
+            "source": source,
+        }
+        if detail:
+            data["detail"] = detail
+        if context:
+            data["context"] = context
+        try:
+            self.add_event("peer_offline", data)
+        except Exception:  # noqa: BLE001 - liveness repair must keep going
+            logger.warning("Failed to emit peer_offline for %s", peer.peer_id, exc_info=True)
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -847,6 +880,17 @@ class PeerRegistry:
             peer.pane_id = None
             peer.status = PeerStatus.OFFLINE
             self._emit_status_change(peer, old_status, PeerStatus.OFFLINE)
+            self._emit_peer_offline_event(
+                peer,
+                old_status,
+                reason="pane_displaced",
+                source="allocate_and_register",
+                detail=(
+                    "A new ws-hook claimed this pane; the previous peer lost "
+                    "pane ownership."
+                ),
+                context={"pane_id": pane_id, "new_peer_id": new_peer_id},
+            )
 
     # ------------------------------------------------------------------
     # Allocate + register (atomic, the preferred public API)
@@ -1630,6 +1674,14 @@ class PeerRegistry:
             peer.status = status
             peer.last_seen = datetime.now(timezone.utc)
             self._emit_status_change(peer, old_status, status)
+            if status == PeerStatus.OFFLINE:
+                self._emit_peer_offline_event(
+                    peer,
+                    old_status,
+                    reason="status_update_offline",
+                    source="update_peer_status",
+                    detail="Peer status was explicitly updated to offline.",
+                )
             became_live = (
                 old_status == PeerStatus.OFFLINE
                 and status in (PeerStatus.ONLINE, PeerStatus.BUSY)
@@ -2045,7 +2097,15 @@ class PeerRegistry:
                 self._mappings_dirty = True
             return True
 
-    async def mark_offline(self, identifier: str) -> int:
+    async def mark_offline(
+        self,
+        identifier: str,
+        *,
+        reason: str = "mark_offline",
+        source: str = "peer_registry",
+        detail: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> int:
         """Mark peer offline and cancel pending queries.
 
         Returns:
@@ -2059,13 +2119,27 @@ class PeerRegistry:
             peer.status = PeerStatus.OFFLINE
             peer.last_seen = datetime.now(timezone.utc)
             self._emit_status_change(peer, old_status, PeerStatus.OFFLINE)
+            self._emit_peer_offline_event(
+                peer,
+                old_status,
+                reason=reason,
+                source=source,
+                detail=detail,
+                context=context,
+            )
             session_id = peer.peer_id
 
         cancelled = 0
         if self._query_tracker:
             cancelled = await self._query_tracker.cancel_queries_to_peer(session_id)
 
-        logger.info(f"Marked {identifier} offline, cancelled {cancelled} queries")
+        logger.info(
+            "Marked %s offline (reason=%s source=%s), cancelled %d queries",
+            identifier,
+            reason,
+            source,
+            cancelled,
+        )
         return cancelled
 
     # ------------------------------------------------------------------
@@ -2292,7 +2366,25 @@ class PeerRegistry:
                     diag.SEVERITY_ERROR,
                     f"agent pid {peer.agent_pid} has no runtime evidence",
                 )
-            await self.mark_offline(peer.peer_id)
+            reason = (
+                "no_websocket_no_runtime_evidence"
+                if peer.peer_id in pane_dead
+                else "no_websocket_no_pane"
+            )
+            await self.mark_offline(
+                peer.peer_id,
+                reason=reason,
+                source="lazy_repair",
+                detail=(
+                    "Peer was ONLINE/BUSY without a live WebSocket and no "
+                    "acceptable runtime evidence remained."
+                ),
+                context={
+                    "pane_id": peer.pane_id,
+                    "agent_pid": peer.agent_pid,
+                    "contradiction": diag.ONLINE_BUT_NO_WS,
+                },
+            )
             count += 1
         if count:
             logger.info("demoted %d ghost peers (no WebSocket/runtime evidence)", count)
@@ -2369,7 +2461,13 @@ class PeerRegistry:
                     diag.SEVERITY_ERROR,
                     f"connected pane {peer.pane_id} is no longer alive",
                 )
-            await self.mark_offline(peer_id)
+            await self.mark_offline(
+                peer_id,
+                reason="pane_missing",
+                source="lazy_repair",
+                detail="Connected ws-hook reported that its tmux pane is no longer alive.",
+                context={"contradiction": diag.PANE_MISSING},
+            )
             await transport.disconnect(peer_id)
             count += 1
 
@@ -2617,8 +2715,11 @@ class PeerRegistry:
 
         for peer_id in dead_peer_ids:
             logger.info("active_repair: marking %s OFFLINE (no pong)", peer_id)
-            await self.update_peer_status(peer_id, PeerStatus.OFFLINE)
-            if self._query_tracker:
-                await self._query_tracker.cancel_queries_to_peer(peer_id)
+            await self.mark_offline(
+                peer_id,
+                reason="active_repair_no_pong",
+                source="active_repair",
+                detail="Active repair could not prove the peer was alive.",
+            )
 
         await self._evict_stale_peers()

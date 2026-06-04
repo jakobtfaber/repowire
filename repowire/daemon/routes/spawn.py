@@ -947,7 +947,13 @@ async def restart_peer(
                 )
             forget_spawned_pane(pane_id)
             clear_pane_runtime_state(pane_id)
-        await peer_registry.mark_offline(peer.peer_id)
+            await peer_registry.mark_offline(
+                peer.peer_id,
+                reason="restart_handoff",
+                source="spawn_route",
+                detail="Peer was marked offline after its pane was killed for restart.",
+                context={"pane_id": kill_proof.pane_id},
+            )
 
         result = resume_target(
             target=resume_target_for_peer,

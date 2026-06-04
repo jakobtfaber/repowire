@@ -124,7 +124,13 @@ class PeerDeliveryService:
         peer_id = getattr(target, "peer_id", None)
         if not peer_id:
             return
-        await self._registry.mark_offline(peer_id)
+        await self._registry.mark_offline(
+            peer_id,
+            reason="transport_failure",
+            source="peer_delivery",
+            detail=f"{operation} delivery failed: {error}",
+            context={"operation": operation},
+        )
         logger.info(
             "Marked peer %s offline after %s transport failure: %s",
             peer_id,
