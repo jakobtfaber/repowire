@@ -145,6 +145,7 @@ class SessionUpdateRequest(BaseModel):
             "pending_first_turn). Orthogonal to status."
         ),
     )
+    model: str | None = Field(None, description="Observed runtime model, if known")
     metadata: dict | None = Field(None, description="Optional metadata")
 
 
@@ -385,10 +386,10 @@ async def update_session(
     """Update session status and/or turn_state for a peer."""
     peer_registry = get_peer_registry()
 
-    if request.status is None and request.turn_state is None:
+    if request.status is None and request.turn_state is None and request.model is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one of status or turn_state is required",
+            detail="At least one of status, turn_state, or model is required",
         )
 
     peer_status: PeerStatus | None = None
@@ -422,6 +423,10 @@ async def update_session(
         await peer_registry.update_peer_status(identifier, peer_status)
     if request.turn_state is not None:
         await peer_registry.update_peer_turn_state(identifier, request.turn_state)
+    if request.model is not None:
+        await peer_registry.update_peer_model(identifier, request.model)
+    if request.metadata:
+        await peer_registry.update_peer_metadata(identifier, request.metadata)
     return OkResponse()
 
 

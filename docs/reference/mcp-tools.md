@@ -178,9 +178,12 @@ ask_many_result(parent)  # shows who replied, who's still pending
 list_peers(show_offline: bool = False, include_self: bool = False) -> str
 ```
 
-Returns a TSV with columns: `peer_id`, `name`, `project`, `circle`, `role`, `status`, `path`, `machine`, `description`, `backend`, `last_seen`, `turn_state`.
+Returns a TSV with columns: `peer_id`, `name`, `project`, `circle`, `role`, `status`, `path`, `machine`, `description`, `backend`, `last_seen`, `turn_state`, `model`.
 
 `turn_state` is empty when unknown; otherwise `idle`, `working`, `awaiting_input` (peer is mid-turn waiting on user input), or `pending_first_turn` (spawn-seeded peer whose first prompt never landed — re-send via `notify_peer`).
+
+`model` is the last observed runtime model when the backend reports one. It is
+empty when unknown; Repowire does not infer it from spawn command strings.
 
 By default returns online + busy peers in the **caller's circle** and hides the caller. Peers whose role bypasses circles (`orchestrator`, `service`, and human surfaces like `telegram` / `dashboard` / `slack`) are always visible regardless of the filter. Callers with `role=orchestrator` default to mesh-wide (`circle="*"`).
 

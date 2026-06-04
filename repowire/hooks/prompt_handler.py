@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
@@ -89,7 +90,20 @@ def main(backend: str = "claude-code") -> int:
 
     pane_id = get_pane_id()
     if pane_id:
-        if not update_status(pane_id, "busy", use_pane_id=True, turn_state="working"):
+        if not update_status(
+            pane_id,
+            "busy",
+            use_pane_id=True,
+            turn_state="working",
+            model=payload.model,
+            metadata=(
+                {
+                    "model_source": "hook_user_prompt",
+                    "model_observed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if payload.model else None
+            ),
+        ):
             print(
                 f"repowire prompt: failed to update status for pane {pane_id}",
                 file=sys.stderr,

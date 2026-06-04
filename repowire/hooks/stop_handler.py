@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
@@ -192,13 +193,38 @@ def main(backend: str = "claude-code") -> int:
 
     # Mark peer online and turn_state=idle (turn finished cleanly).
     if pane_id:
-        if not update_status(pane_id, "online", use_pane_id=True, turn_state="idle"):
+        if not update_status(
+            pane_id,
+            "online",
+            use_pane_id=True,
+            turn_state="idle",
+            model=payload.model,
+            metadata=(
+                {
+                    "model_source": "hook_stop",
+                    "model_observed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if payload.model else None
+            ),
+        ):
             print(
                 f"repowire stop: failed to update status for pane {pane_id}",
                 file=sys.stderr,
             )
     else:
-        if not update_status(peer_display, "online", turn_state="idle"):
+        if not update_status(
+            peer_display,
+            "online",
+            turn_state="idle",
+            model=payload.model,
+            metadata=(
+                {
+                    "model_source": "hook_stop",
+                    "model_observed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if payload.model else None
+            ),
+        ):
             print(
                 f"repowire stop: failed to update status for {peer_display}",
                 file=sys.stderr,

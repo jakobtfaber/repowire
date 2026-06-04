@@ -183,6 +183,31 @@ async function daemon(p: string, body?: object) {
   return res.json()
 }
 
+function activeModelMetadata(): Record<string, unknown> | null {
+  if (!activeModel) return null
+  return {
+    model_source: "opencode_message_event",
+    model_observed_at: new Date().toISOString(),
+    model_details: {
+      providerID: activeModel.providerID,
+      modelID: activeModel.modelID,
+    },
+  }
+}
+
+async function updatePeerModel(conn: PeerConn) {
+  if (!activeModel) return
+  try {
+    await daemon("/session/update", {
+      peer_name: conn.peerId || conn.peerName,
+      model: activeModel.modelID,
+      metadata: activeModelMetadata(),
+    })
+  } catch (e) {
+    console.warn("[repowire] Failed to update model for " + conn.peerName + ":", e)
+  }
+}
+
 function sanitizePeerName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown"
 }
@@ -213,6 +238,10 @@ function connectPeerWebSocket(conn: PeerConn) {
     if (cachedPeerId) connectMsg.peer_id = cachedPeerId
     if (tmuxSession) connectMsg.tmux_session = tmuxSession
     if (tmuxPane) connectMsg.pane_id = tmuxPane
+    if (activeModel) {
+      connectMsg.model = activeModel.modelID
+      connectMsg.model_details = activeModelMetadata()?.model_details
+    }
     if (AUTH_TOKEN) connectMsg.auth_token = AUTH_TOKEN
     ws.send(JSON.stringify(connectMsg))
   }
@@ -931,6 +960,7 @@ export const RepowirePlugin: Plugin = async ({ client, directory, ...rest }) => 
 
         if (info.role === "user" && info.model) {
           activeModel = { providerID: info.model.providerID, modelID: info.model.modelID }
+          void updatePeerModel(conn)
         }
 
         // Discover assistant messages (also captures error payload).

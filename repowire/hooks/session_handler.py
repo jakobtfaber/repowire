@@ -10,11 +10,13 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
 from repowire.config.models import AgentType
 from repowire.hooks._tmux import get_tmux_info
+from repowire.hooks.adapters import normalize
 from repowire.hooks.handoff import load_handoff_context, write_handoff_summary
 from repowire.hooks.utils import (
     clear_pane_runtime_state,
@@ -69,6 +71,7 @@ def _register_peer_http(
     circle_source: str | None = None,
     pane_id: str | None = None,
     metadata: dict | None = None,
+    model: str | None = None,
     role: str | None = None,
     turn_state: str | None = None,
     agent_pid: int | None = None,
@@ -105,6 +108,8 @@ def _register_peer_http(
         payload["pane_id"] = pane_id
     if metadata:
         payload["metadata"] = metadata
+    if model:
+        payload["model"] = model
     if role:
         payload["role"] = role
     if turn_state:
@@ -239,6 +244,7 @@ def format_self_context(
     eff_peer_id = peer_id
     eff_circle = circle
     eff_backend = backend
+    eff_model: str | None = None
     eff_role = role
     eff_path = cwd
     eff_branch = branch
@@ -250,6 +256,9 @@ def format_self_context(
         eff_peer_id = self_peer.get("peer_id") or eff_peer_id
         eff_circle = self_peer.get("circle") or eff_circle
         eff_backend = self_peer.get("backend") or eff_backend
+        model_value = self_peer.get("model")
+        if isinstance(model_value, str) and model_value:
+            eff_model = model_value
         # role is an enum on the daemon side; serialized as a string. Empty
         # / missing => keep request fallback.
         peer_role = self_peer.get("role")
@@ -273,6 +282,8 @@ def format_self_context(
         lines.append(f"  - display_name: {eff_display_name}")
     lines.append(f"  - circle: {circle_str}")
     lines.append(f"  - backend: {eff_backend}")
+    if eff_model:
+        lines.append(f"  - model: {eff_model}")
     if eff_role:
         lines.append(f"  - role: {eff_role}")
     lines.append(f"  - project: {project}  (path: {eff_path})")
@@ -352,6 +363,7 @@ def main(backend: str = "claude-code") -> int:
         return 0
 
     event = input_data.get("hook_event_name")
+    payload = normalize(input_data, backend)
     cwd = input_data.get("cwd", os.getcwd())
     hook_session_id = input_data.get("session_id", "")
 
@@ -424,6 +436,9 @@ def main(backend: str = "claude-code") -> int:
         metadata: dict = {"project": folder_name, **current_capabilities_metadata()}
         if hook_session_id:
             metadata["hook_session_id"] = hook_session_id
+        if payload.model:
+            metadata["model_source"] = "hook_session_start"
+            metadata["model_observed_at"] = datetime.now(timezone.utc).isoformat()
         branch = get_git_branch(cwd)
         if branch:
             metadata["branch"] = branch
@@ -449,6 +464,7 @@ def main(backend: str = "claude-code") -> int:
             circle_source=circle_source,
             pane_id=pane_id,
             metadata=metadata,
+            model=payload.model,
             role=hint_role,
             turn_state=initial_turn_state,
             agent_pid=agent_pid_val,

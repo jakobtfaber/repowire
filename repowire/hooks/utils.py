@@ -276,8 +276,10 @@ def update_status(
     *,
     use_pane_id: bool = False,
     turn_state: str | None = None,
+    model: str | None = None,
+    metadata: dict | None = None,
 ) -> bool:
-    """Update peer status (and optionally turn_state) via daemon HTTP API."""
+    """Update peer status, turn_state, and/or model via daemon HTTP API."""
     payload: dict = {"status": status_value}
     if use_pane_id:
         payload["pane_id"] = peer_identifier
@@ -285,6 +287,10 @@ def update_status(
         payload["peer_name"] = peer_identifier
     if turn_state is not None:
         payload["turn_state"] = turn_state
+    if model is not None:
+        payload["model"] = model
+    if metadata:
+        payload["metadata"] = metadata
     result = daemon_post("/session/update", payload)
     return result is not None
 

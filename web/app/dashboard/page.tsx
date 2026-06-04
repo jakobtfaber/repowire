@@ -185,6 +185,7 @@ function DashboardInner() {
         peer.display_name,
         peer.circle,
         peer.backend,
+        peer.model ?? "",
         peer.path,
         peer.description,
         String(peer.metadata?.branch ?? ""),

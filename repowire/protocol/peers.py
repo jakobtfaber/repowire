@@ -68,6 +68,10 @@ class Peer(BaseModel):
         default=AgentType.CLAUDE_CODE,
         description="Agent type: claude-code, opencode, codex, gemini, antigravity, or pi"
     )
+    model: str | None = Field(
+        None,
+        description="Observed runtime model slug/name, when the backend exposes it",
+    )
 
     # circle (logical subnet)
     circle: str = Field(default="global", description="Circle (logical subnet)")
@@ -160,6 +164,7 @@ class Peer(BaseModel):
             "machine": self.machine,
             "tmux_session": self.tmux_session,
             "backend": self.backend,
+            "model": self.model,
             "circle": self.circle,
             "role": self.role.value,
             "status": self.status.value,

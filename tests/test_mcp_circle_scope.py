@@ -103,6 +103,39 @@ class TestListPeersCircleScope:
         assert captured["params"]["status"] == "online"
 
     @pytest.mark.asyncio
+    async def test_list_peers_includes_model_column(self):
+        _seed_identity("me", "team-a", "agent")
+        list_peers = _get_list_peers_tool()
+
+        async def fake_request(method, path, body=None, params=None):
+            return {
+                "peers": [
+                    {
+                        "peer_id": "repow-team-a-worker",
+                        "display_name": "worker",
+                        "circle": "team-a",
+                        "role": "agent",
+                        "status": "online",
+                        "path": "/repo",
+                        "machine": "host",
+                        "description": "testing",
+                        "backend": "codex",
+                        "last_seen": "2026-06-04T00:00:00Z",
+                        "turn_state": "idle",
+                        "model": "gpt-5-mini",
+                        "metadata": {"project": "repo"},
+                    }
+                ]
+            }
+
+        with patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=fake_request)):
+            result = await list_peers()
+
+        lines = result.splitlines()
+        assert lines[0].endswith("\tturn_state\tmodel")
+        assert lines[1].endswith("\tidle\tgpt-5-mini")
+
+    @pytest.mark.asyncio
     async def test_star_widens_to_mesh(self):
         _seed_identity("me", "team-a", "agent")
         list_peers = _get_list_peers_tool()

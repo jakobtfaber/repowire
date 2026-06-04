@@ -36,7 +36,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
         tables = {
             row[0]
             for row in db.conn.execute(
@@ -46,6 +46,11 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
         assert "session_bindings" in tables
         assert "events" in tables
         assert "peer_session_mappings" in tables
+        mapping_columns = {
+            row["name"]
+            for row in db.conn.execute("PRAGMA table_info(peer_session_mappings)")
+        }
+        assert "model" in mapping_columns
         assert "runtime_identity_certificates" in tables
         assert "queued_deliveries" in tables
         assert "tracked_work" in tables
@@ -64,7 +69,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
     finally:
         db2.close()
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 class StateDatabase:
@@ -171,10 +171,17 @@ class StateDatabase:
                     role TEXT NOT NULL,
                     updated_at TEXT,
                     description TEXT NOT NULL DEFAULT '',
+                    model TEXT,
                     agent_pid INTEGER
                 )
                 """,
             )
+            columns = {
+                row["name"]
+                for row in self.conn.execute("PRAGMA table_info(peer_session_mappings)")
+            }
+            if "model" not in columns:
+                self.conn.execute("ALTER TABLE peer_session_mappings ADD COLUMN model TEXT")
             self.conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_peer_session_mappings_identity
@@ -482,6 +489,13 @@ class StateDatabase:
                 VALUES (?, ?)
                 """,
                 (10, "delivery trace ledger"),
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (11, "observed peer runtime model"),
             )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

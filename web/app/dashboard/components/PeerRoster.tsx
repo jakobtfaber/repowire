@@ -93,7 +93,7 @@ function PeerRow({ peer, active, onClick }: { peer: Peer; active: boolean; onCli
         <StatusLabel status={peer.status} />
       </div>
       <div className="ml-[18px] truncate font-mono text-[11px] leading-5 text-outline">
-        {peer.backend || "agent"} · {peer.metadata?.branch ? String(peer.metadata.branch) : peer.circle}
+        {[peer.backend || "agent", peer.model, peer.metadata?.branch ? String(peer.metadata.branch) : peer.circle].filter(Boolean).join(" · ")}
       </div>
       {peer.path && (
         <div className="ml-[18px] truncate font-mono text-[11px] leading-5 text-outline">

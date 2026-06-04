@@ -106,6 +106,7 @@ class PeerInfo(BaseModel):
     machine: str | None = None
     tmux_session: str | None = None
     backend: str = "claude-code"
+    model: str | None = None
     circle: str = "global"
     role: PeerRole = PeerRole.AGENT
     status: str
@@ -135,6 +136,7 @@ def _peer_to_info(p: Peer) -> PeerInfo:
         machine=p.machine,
         tmux_session=p.tmux_session,
         backend=p.backend,
+        model=p.model,
         circle=p.circle,
         role=p.role,
         status=p.status.value,
@@ -245,6 +247,7 @@ class RegisterPeerRequest(BaseModel):
     tmux_session: str | None = Field(None, description="Tmux session:window")
     pane_id: str | None = Field(None, description="Tmux pane ID")
     backend: AgentType = Field(default=AgentType.CLAUDE_CODE, description="Agent type")
+    model: str | None = Field(None, description="Observed runtime model, if known")
     circle: str | None = Field(None, description="Circle (logical subnet)")
     circle_source: CircleSource | None = Field(
         None,
@@ -770,6 +773,7 @@ async def _register_peer_impl(
         peer_id, display_name = await peer_registry.allocate_and_register(
             circle=circle,
             backend=request.backend,
+            model=request.model,
             path=request.path or "",
             pane_id=request.pane_id,
             tmux_session=request.tmux_session,

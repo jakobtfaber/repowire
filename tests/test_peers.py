@@ -78,7 +78,7 @@ class TestPeerRole:
 
 class TestToDict:
     def test_includes_all_fields(self):
-        peer = _make_peer(description="doing stuff")
+        peer = _make_peer(description="doing stuff", model="gpt-5-mini")
         d = peer.to_dict()
         assert d["peer_id"] == "repow-dev-a1b2c3d4"
         assert d["display_name"] == "dev"
@@ -87,6 +87,7 @@ class TestToDict:
         assert d["machine"] == "laptop"
         assert d["tmux_session"] is None
         assert d["backend"] == AgentType.CLAUDE_CODE
+        assert d["model"] == "gpt-5-mini"
         assert d["description"] == "doing stuff"
         assert d["circle"] == "global"
         assert d["status"] == "offline"

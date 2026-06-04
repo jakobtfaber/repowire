@@ -423,7 +423,7 @@ export function PeerView({
           <h1 className="truncate font-headline text-lg font-semibold text-on-surface">{peerLabel(peer)}</h1>
           <div className="mt-1 flex items-center gap-1.5 truncate font-mono text-[11px] text-outline">
             <span className="truncate">
-              {peer.backend || "agent"} · {peer.metadata?.branch ? String(peer.metadata.branch) : peer.circle}
+              {[peer.backend || "agent", peer.model, peer.metadata?.branch ? String(peer.metadata.branch) : peer.circle].filter(Boolean).join(" · ")}
               {peer.path ? (
                 <>
                   {" · "}

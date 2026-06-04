@@ -121,6 +121,7 @@ class SessionMapping:
     role: PeerRole = PeerRole.AGENT
     updated_at: str | None = None
     description: str = ""
+    model: str | None = None
     # Pid of the agent process that last owned this peer. Persisted so the
     # pane-hijack guard (issue #190) survives daemon restart: when the
     # original peer rehydrates via its ws-hook, we restore this value into
@@ -289,6 +290,7 @@ class PeerRegistry:
             role,
             mapping.updated_at,
             mapping.description,
+            mapping.model,
             mapping.agent_pid,
         )
 
@@ -303,6 +305,7 @@ class PeerRegistry:
             role=PeerRole(row["role"]),
             updated_at=row["updated_at"],
             description=row["description"] or "",
+            model=row["model"] if "model" in row.keys() else None,
             agent_pid=row["agent_pid"],
         )
 
@@ -339,8 +342,8 @@ class PeerRegistry:
                     """
                     INSERT INTO peer_session_mappings(
                         session_id, display_name, circle, backend, path, role,
-                        updated_at, description, agent_pid
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        updated_at, description, model, agent_pid
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [self._mapping_to_sql_params(mapping) for mapping in self._mappings.values()],
                 )
@@ -381,8 +384,8 @@ class PeerRegistry:
                     """
                     INSERT OR IGNORE INTO peer_session_mappings(
                         session_id, display_name, circle, backend, path, role,
-                        updated_at, description, agent_pid
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        updated_at, description, model, agent_pid
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [self._mapping_to_sql_params(mapping) for mapping in mappings],
                 )
@@ -732,6 +735,8 @@ class PeerRegistry:
         circle: str,
         backend: AgentType,
         path: str | None = None,
+        *,
+        model: str | None = None,
         role: PeerRole = PeerRole.AGENT,
         agent_pid: int | None = None,
         circle_source: CircleSource | None = None,
@@ -751,6 +756,8 @@ class PeerRegistry:
             ):
                 mapping.path = path
                 mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                if model is not None:
+                    mapping.model = model
                 if agent_pid is not None:
                     mapping.agent_pid = agent_pid
                 self._mappings_dirty = True
@@ -793,6 +800,8 @@ class PeerRegistry:
                     and mapping.path == path
                 ):
                     mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                    if model is not None:
+                        mapping.model = model
                     if agent_pid is not None:
                         mapping.agent_pid = agent_pid
                     self._mappings_dirty = True
@@ -810,6 +819,7 @@ class PeerRegistry:
             backend=backend,
             path=path,
             role=role,
+            model=model,
             agent_pid=agent_pid,
         )
         logger.info(f"Created session {session_id} for {display_name}@{circle}")
@@ -901,6 +911,7 @@ class PeerRegistry:
         *,
         circle: str,
         backend: AgentType,
+        model: str | None = None,
         path: str | None = None,
         pane_id: str | None = None,
         tmux_session: str | None = None,
@@ -975,6 +986,13 @@ class PeerRegistry:
                     existing.last_seen = datetime.now(timezone.utc)
                     if turn_state is not None:
                         existing.turn_state = turn_state
+                    if model is not None:
+                        existing.model = model
+                        mapping = self._mappings.get(peer_id)
+                        if mapping is not None and mapping.model != model:
+                            mapping.model = model
+                            mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                            self._mappings_dirty = True
                     self._emit_status_change(existing, old_status, initial_status)
                     if pane_id:
                         self._release_pane(pane_id, peer_id)
@@ -1066,6 +1084,13 @@ class PeerRegistry:
                             sticky_holder.last_seen = datetime.now(timezone.utc)
                             if turn_state is not None:
                                 sticky_holder.turn_state = turn_state
+                            if model is not None:
+                                sticky_holder.model = model
+                                mapping = self._mappings.get(sticky_holder.peer_id)
+                                if mapping is not None and mapping.model != model:
+                                    mapping.model = model
+                                    mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                                    self._mappings_dirty = True
                             self._emit_status_change(
                                 sticky_holder, old_status, initial_status
                             )
@@ -1175,7 +1200,7 @@ class PeerRegistry:
                                 peer_id,
                             )
                 allocated_id = self._find_or_allocate_mapping(
-                    assigned_name, mapping_circle, backend, path, role=role,
+                    assigned_name, mapping_circle, backend, path, model=model, role=role,
                     agent_pid=agent_pid, circle_source=circle_source,
                     preferred_session_id=peer_id,
                 )
@@ -1191,6 +1216,7 @@ class PeerRegistry:
                 effective_circle = restored.circle if restored else circle
                 effective_role = restored.role if restored else role
                 restored_description = restored.description if restored else ""
+                restored_model = restored.model if restored else None
                 # Caller-supplied agent_pid wins (it's the live process); fall
                 # back to whatever the mapping persisted across daemon restart.
                 effective_agent_pid = (
@@ -1215,6 +1241,7 @@ class PeerRegistry:
                     backend=backend,
                     role=effective_role,
                     status=initial_status,
+                    model=model or restored_model,
                     last_seen=datetime.now(timezone.utc),
                     pane_id=effective_pane_id,
                     tmux_session=tmux_session,
@@ -1869,7 +1896,51 @@ class PeerRegistry:
             peer.last_seen = datetime.now(timezone.utc)
             if old_status != peer.status:
                 self._emit_status_change(peer, old_status, peer.status)
-            return True
+        return True
+
+    async def update_peer_model(
+        self,
+        identifier: str,
+        model: str,
+        circle: str | None = None,
+    ) -> None:
+        """Update peer's observed runtime model in live and durable state."""
+        async with self._lock:
+            peer = self._lookup_peer_unlocked(identifier, circle=circle)
+            if not peer:
+                logger.warning(
+                    "update_peer_model: peer not found: %s (model=%s not applied)",
+                    identifier,
+                    model,
+                )
+                return
+            if peer.model == model:
+                return
+            peer.model = model
+            peer.last_seen = datetime.now(timezone.utc)
+            mapping = self._mappings.get(peer.peer_id)
+            if mapping and mapping.model != model:
+                mapping.model = model
+                mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                self._mappings_dirty = True
+
+    async def update_peer_metadata(
+        self,
+        identifier: str,
+        metadata: dict[str, Any],
+        circle: str | None = None,
+    ) -> None:
+        """Merge peer metadata into live state."""
+        async with self._lock:
+            peer = self._lookup_peer_unlocked(identifier, circle=circle)
+            if not peer:
+                logger.warning(
+                    "update_peer_metadata: peer not found: %s (metadata not applied)",
+                    identifier,
+                )
+                return
+            peer.metadata = {**peer.metadata, **metadata}
+            peer.last_seen = datetime.now(timezone.utc)
 
     async def claim_special_role(
         self,

@@ -76,6 +76,7 @@ class ClientPeer(BaseModel):
     machine: str | None = None
     tmux_session: str | None = None
     backend: str = "claude-code"
+    model: str | None = None
     circle: str = "default"
     role: PeerRole = PeerRole.AGENT
     status: str

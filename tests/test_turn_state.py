@@ -187,6 +187,26 @@ async def test_session_update_requires_status_or_turn_state(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_update_accepts_model_alone(client) -> None:
+    resp = await client.post("/peers", json={
+        "name": "modelled", "path": "/pm", "circle": "c", "backend": "codex",
+    })
+    assert resp.status_code == 200
+    peer_id = resp.json()["peer_id"]
+
+    resp = await client.post("/session/update", json={
+        "peer_name": peer_id,
+        "model": "gpt-5-mini",
+        "metadata": {"model_source": "hook_user_prompt"},
+    })
+    assert resp.status_code == 200
+
+    body = (await client.get(f"/peers/{peer_id}")).json()
+    assert body["model"] == "gpt-5-mini"
+    assert body["metadata"]["model_source"] == "hook_user_prompt"
+
+
+@pytest.mark.asyncio
 async def test_session_update_status_and_turn_state_together(client) -> None:
     resp = await client.post("/peers", json={
         "name": "gamma", "path": "/p3", "circle": "c", "backend": "claude-code",
@@ -211,3 +231,14 @@ async def test_register_peer_accepts_initial_turn_state(client) -> None:
     assert resp.status_code == 200
     peer_id = resp.json()["peer_id"]
     assert (await client.get(f"/peers/{peer_id}")).json()["turn_state"] == "pending_first_turn"
+
+
+@pytest.mark.asyncio
+async def test_register_peer_accepts_initial_model(client) -> None:
+    resp = await client.post("/peers", json={
+        "name": "spawned", "path": "/sp", "circle": "c", "backend": "claude-code",
+        "model": "claude-sonnet-4-5",
+    })
+    assert resp.status_code == 200
+    peer_id = resp.json()["peer_id"]
+    assert (await client.get(f"/peers/{peer_id}")).json()["model"] == "claude-sonnet-4-5"

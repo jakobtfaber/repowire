@@ -165,9 +165,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         capabilities = data.get("capabilities")
         if isinstance(capabilities, list):
             connect_metadata["capabilities"] = [c for c in capabilities if isinstance(c, str)]
+        model = data.get("model") if isinstance(data.get("model"), str) else None
+        model_details = data.get("model_details")
+        if isinstance(model_details, dict):
+            connect_metadata["model_details"] = model_details
         peer_id, assigned_name = await peer_registry.allocate_and_register(
             circle=circle,
             backend=backend,
+            model=model,
             path=path,
             pane_id=pane_id,
             tmux_session=tmux_session,

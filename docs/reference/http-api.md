@@ -5,7 +5,7 @@ The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and client
 ## Primary route groups
 
 - `/health` and status routes for daemon checks.
-- `/peers` for peer registration, listing, lookup, and lifecycle operations. Includes `GET /peers/{id}/doctor` (read-only diagnostic report with contradiction detection) and `POST /peers/{id}/rehook` (non-destructive inbound ws-hook recovery, same-host, dry-run by default).
+- `/peers` for peer registration, listing, lookup, and lifecycle operations. Peer records include optional `model`, the last observed runtime model reported by the backend. Includes `GET /peers/{id}/doctor` (read-only diagnostic report with contradiction detection) and `POST /peers/{id}/rehook` (non-destructive inbound ws-hook recovery, same-host, dry-run by default).
 - `GET /panes/orphans` lists local tmux panes not bound to any registered peer (with a display-only backend hint); `POST /panes/{pane_id}/link` adopts one — registers the peer AND establishes its inbound ws-hook, rolling the registration back if no live transport connects (fail-closed against ghosts). Driven by `repowire link`.
 - `/ask`, `/ack`, and `/asks/pending` for ask lifecycle.
 - `/answer` records a typed answer to a structured question; `POST /questions/ask-blocking` registers a blocking structured question (tool permission) and holds the connection open until it is answered or the daemon's wait cap elapses, then returns the typed answer (fail-closed: a tool-permission question denies on timeout). Used by blocking transports such as the ACP broker and the Claude Code `PreToolUse` approval hook.

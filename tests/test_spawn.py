@@ -1019,14 +1019,17 @@ class TestMcpListPeersLastSeen:
         result = await list_tool.fn()
         lines = result.splitlines()
         header = lines[0].split("\t")
-        # turn_state appended after last_seen to keep positional TSV consumers
-        # of the pre-#139 layout stable (same rule that put last_seen last in #138).
-        assert header[-2] == "last_seen"
-        assert header[-1] == "turn_state"
+        # turn_state followed last_seen for the pre-model layout; observed model
+        # is appended so older fields keep their positions.
+        assert header[-3] == "last_seen"
+        assert header[-2] == "turn_state"
+        assert header[-1] == "model"
         alpha_row = next(line for line in lines[1:] if "alpha" in line).split("\t")
         beta_row = next(line for line in lines[1:] if "beta" in line).split("\t")
-        assert alpha_row[-2] == "2026-05-14T12:00:00+00:00"
-        assert alpha_row[-1] == "awaiting_input"
+        assert alpha_row[-3] == "2026-05-14T12:00:00+00:00"
+        assert alpha_row[-2] == "awaiting_input"
+        assert alpha_row[-1] == ""
+        assert beta_row[-3] == ""
         assert beta_row[-2] == ""
         assert beta_row[-1] == ""
 

@@ -214,6 +214,7 @@ class TestStopHandler:
         # Should update status
         mock_status.assert_called_once_with(
             "%42", "online", use_pane_id=True, turn_state="idle",
+            model=None, metadata=None,
         )
 
         # Should post assistant turn for dashboard
@@ -243,6 +244,7 @@ class TestStopHandler:
 
         mock_status.assert_called_once_with(
             "%42", "online", use_pane_id=True, turn_state="idle",
+            model=None, metadata=None,
         )
 
 

@@ -32,7 +32,7 @@ class TestPromptHandler:
         result = _run_with_input(prompt_main, {"hook_event_name": "UserPromptSubmit"})
         assert result == 0
         mock_status.assert_called_once_with(
-            "%42", "busy", use_pane_id=True, turn_state="working",
+            "%42", "busy", use_pane_id=True, turn_state="working", model=None, metadata=None,
         )
 
     @patch("repowire.hooks.prompt_handler.update_status", return_value=True)
@@ -41,8 +41,23 @@ class TestPromptHandler:
         result = _run_with_input(prompt_main, {"hook_event_name": "BeforeAgent"})
         assert result == 0
         mock_status.assert_called_once_with(
-            "%42", "busy", use_pane_id=True, turn_state="working",
+            "%42", "busy", use_pane_id=True, turn_state="working", model=None, metadata=None,
         )
+
+    @patch("repowire.hooks.prompt_handler.update_status", return_value=True)
+    @patch("repowire.hooks.prompt_handler.get_pane_id", return_value="%42")
+    def test_codex_model_updates_peer(self, mock_pane, mock_status):
+        result = _run_with_input(
+            prompt_main,
+            {"hook_event_name": "UserPromptSubmit", "model": "gpt-5-mini"},
+        )
+        assert result == 0
+        args, kwargs = mock_status.call_args
+        assert args == ("%42", "busy")
+        assert kwargs["use_pane_id"] is True
+        assert kwargs["turn_state"] == "working"
+        assert kwargs["model"] == "gpt-5-mini"
+        assert kwargs["metadata"]["model_source"] == "hook_user_prompt"
 
     def test_stop_failure_not_handled_by_prompt(self):
         result = _run_with_input(prompt_main, {"hook_event_name": "StopFailure"})

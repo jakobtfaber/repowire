@@ -8,6 +8,7 @@ export interface Peer {
   path: string;
   tmux_session?: string;
   backend?: string;
+  model?: string | null;
   circle: string;
   role?: "agent" | "service" | "orchestrator" | "human";
   last_seen?: string;

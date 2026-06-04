@@ -27,8 +27,28 @@ class HookPayload:
     cwd: str
     transcript_path: str | None
     response_text: str | None  # Agent's response (Stop hooks only)
+    model: str | None  # Observed runtime model, when the backend hook exposes it
     backend: str
     raw: dict  # Original payload for any agent-specific needs
+
+
+def extract_model(input_data: dict) -> str | None:
+    """Extract an explicit runtime model from a hook payload.
+
+    Backend gotchas:
+    - Claude Code currently exposes model on SessionStart.
+    - Codex exposes model as a hook input field more broadly.
+    - Gemini/Antigravity are best-effort only; do not parse command strings.
+    """
+    value = input_data.get("model")
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, dict):
+        for key in ("modelID", "model_id", "id", "name"):
+            nested = value.get(key)
+            if isinstance(nested, str) and nested:
+                return nested
+    return None
 
 
 def normalize(input_data: dict, backend: str) -> HookPayload:
@@ -49,6 +69,7 @@ def normalize(input_data: dict, backend: str) -> HookPayload:
         cwd=input_data.get("cwd", ""),
         transcript_path=input_data.get("transcript_path"),
         response_text=response_text,
+        model=extract_model(input_data),
         backend=backend,
         raw=input_data,
     )

@@ -309,6 +309,7 @@ async def test_circle_and_description_persist_across_restart(tmp_path):
 
     peer_id, name = await registry.allocate_and_register(
         circle="5", backend=AgentType.CLAUDE_CODE, path=str(orch_dir),
+        model="claude-sonnet-4-5",
     )
     await registry.update_description(peer_id, "watching the mesh")
     await registry.mark_offline(peer_id)
@@ -332,6 +333,7 @@ async def test_circle_and_description_persist_across_restart(tmp_path):
     assert peer is not None
     assert peer.circle == "5"
     assert peer.description == "watching the mesh"
+    assert peer.model == "claude-sonnet-4-5"
 
 
 @pytest.mark.asyncio
