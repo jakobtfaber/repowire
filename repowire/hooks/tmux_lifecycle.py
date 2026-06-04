@@ -40,7 +40,7 @@ _HOOKS: list[tuple[str, str, str]] = [
         "-gw",
         "curl -sf -o /dev/null -X POST http://{host}:{port}/hooks/lifecycle/pane-died"
         ' -H "Content-Type: application/json"'
-        ' -d "{\\"pane_id\\":\\"#{pane_id}\\"}"',
+        ' -d "{\\"pane_id\\":\\"#{hook_pane}\\"}"',
     ),
     # -- session close --
     (

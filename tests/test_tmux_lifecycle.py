@@ -106,7 +106,8 @@ class TestInstallHooks:
 
         assert tmux_commands["pane-exited"].startswith("run-shell -b -- '")
         assert '"Content-Type: application/json"' in tmux_commands["pane-exited"]
-        assert '\\"#{pane_id}\\"' in tmux_commands["pane-exited"]
+        assert '\\"#{hook_pane}\\"' in tmux_commands["pane-exited"]
+        assert "#{pane_id}" not in tmux_commands["pane-exited"]
 
 
 class TestUninstallHooks:
