@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import libtmux
 from libtmux.exc import LibTmuxException, ObjectDoesNotExist
@@ -63,14 +64,28 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
     server = libtmux.Server()
     display_name = config.display_name
 
-    # Get or create session (circle = tmux session name)
-    session = _get_or_create_session(server, config.circle)
+    # Get or create session (circle = tmux session name). When the session is
+    # new, create its first window as the target project window; otherwise tmux
+    # creates an extra default window using the daemon's cwd.
+    session, created_session = _get_or_create_session(
+        server,
+        config.circle,
+        start_directory=config.path,
+        window_name=display_name,
+    )
 
-    # Find unique window name (append suffix if needed)
-    window_name = _unique_window_name(session, display_name)
+    if created_session:
+        window_name = display_name
+        window = _find_window(session, window_name)
+    else:
+        # Find unique window name (append suffix if needed)
+        window_name = _unique_window_name(session, display_name)
+        # Create window with working directory
+        window = session.new_window(window_name=window_name, start_directory=config.path)
 
-    # Create window with working directory
-    window = session.new_window(window_name=window_name, start_directory=config.path)
+    if window is None:
+        raise RuntimeError("Failed to get tmux window")
+    window = cast(Any, window)
     pane = window.active_pane
 
     if pane is None:
@@ -108,16 +123,42 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
     )
 
 
-def _get_or_create_session(server: libtmux.Server, session_name: str) -> libtmux.Session:
+def _get_or_create_session(
+    server: libtmux.Server,
+    session_name: str,
+    *,
+    start_directory: str | None = None,
+    window_name: str | None = None,
+) -> tuple[libtmux.Session, bool]:
     """Get existing session or create new one."""
     try:
         session = server.sessions.get(session_name=session_name)
         if session:
-            return session
+            return session, False
     except (LibTmuxException, ObjectDoesNotExist):
         pass
 
-    return server.new_session(session_name=session_name)
+    return (
+        server.new_session(
+            session_name=session_name,
+            start_directory=start_directory,
+            window_name=window_name,
+        ),
+        True,
+    )
+
+
+def _find_window(session: libtmux.Session, window_name: str) -> Any | None:
+    """Find a session window by name, falling back to the active/first window."""
+    for window in session.windows:
+        if getattr(window, "name", None) == window_name:
+            return window
+
+    active_window = getattr(session, "active_window", None)
+    if active_window is not None:
+        return active_window
+
+    return next(iter(session.windows), None)
 
 
 def _unique_window_name(session: libtmux.Session, base_name: str) -> str:

@@ -136,9 +136,10 @@ class TestGetOrCreateSession:
         mock_session = MagicMock()
         mock_server.sessions.get.return_value = mock_session
 
-        result = _get_or_create_session(mock_server, "dev")
+        result, created = _get_or_create_session(mock_server, "dev")
 
         assert result == mock_session
+        assert created is False
         mock_server.sessions.get.assert_called_once_with(session_name="dev")
         mock_server.new_session.assert_not_called()
 
@@ -150,10 +151,20 @@ class TestGetOrCreateSession:
         mock_new_session = MagicMock()
         mock_server.new_session.return_value = mock_new_session
 
-        result = _get_or_create_session(mock_server, "dev")
+        result, created = _get_or_create_session(
+            mock_server,
+            "dev",
+            start_directory="/tmp/project",
+            window_name="project",
+        )
 
         assert result == mock_new_session
-        mock_server.new_session.assert_called_once_with(session_name="dev")
+        assert created is True
+        mock_server.new_session.assert_called_once_with(
+            session_name="dev",
+            start_directory="/tmp/project",
+            window_name="project",
+        )
 
     @patch("repowire.spawn.libtmux.Server")
     def test_create_new_session_on_exception(self, mock_server_class: MagicMock) -> None:
@@ -165,10 +176,15 @@ class TestGetOrCreateSession:
         mock_new_session = MagicMock()
         mock_server.new_session.return_value = mock_new_session
 
-        result = _get_or_create_session(mock_server, "dev")
+        result, created = _get_or_create_session(mock_server, "dev")
 
         assert result == mock_new_session
-        mock_server.new_session.assert_called_once_with(session_name="dev")
+        assert created is True
+        mock_server.new_session.assert_called_once_with(
+            session_name="dev",
+            start_directory=None,
+            window_name=None,
+        )
 
 
 class TestSpawnPeer:
@@ -187,7 +203,7 @@ class TestSpawnPeer:
         mock_pane.id = "%42"
         mock_window.active_pane = mock_pane if pane else None
         mock_session.new_window.return_value = mock_window
-        mock_get_session.return_value = mock_session
+        mock_get_session.return_value = (mock_session, False)
         return mock_session, mock_window, mock_pane
 
     @patch("repowire.spawn._get_or_create_session")
@@ -205,8 +221,40 @@ class TestSpawnPeer:
 
         assert result.display_name == "test"
         assert result.tmux_session == "dev:test"
+        _mock_session.new_window.assert_called_once_with(
+            window_name="test",
+            start_directory="/tmp/test",
+        )
         mock_pane.send_keys.assert_called_once_with(
             "claude --dangerously-skip-permissions", enter=True,
+        )
+
+    @patch("repowire.spawn._get_or_create_session")
+    @patch("repowire.spawn.libtmux.Server")
+    def test_spawn_peer_uses_first_window_for_new_session(
+        self,
+        mock_server_class: MagicMock,
+        mock_get_session: MagicMock,
+    ) -> None:
+        """A brand-new tmux session must not leave a root-cwd default window."""
+        mock_session = MagicMock()
+        mock_pane = MagicMock()
+        mock_pane.id = "%42"
+        mock_window = MagicMock()
+        mock_window.name = "test"
+        mock_window.active_pane = mock_pane
+        mock_session.windows = [mock_window]
+        mock_get_session.return_value = (mock_session, True)
+
+        config = SpawnConfig(path="/tmp/test", circle="dev", backend=AgentType.CLAUDE_CODE)
+        result = spawn_peer(config)
+
+        assert result.display_name == "test"
+        assert result.tmux_session == "dev:test"
+        mock_session.new_window.assert_not_called()
+        mock_pane.send_keys.assert_called_once_with(
+            "claude --dangerously-skip-permissions",
+            enter=True,
         )
 
     @pytest.mark.parametrize(
@@ -290,7 +338,7 @@ class TestSpawnPeer:
         mock_pane.id = "%42"
         mock_window.active_pane = mock_pane
         mock_session.new_window.return_value = mock_window
-        mock_get_session.return_value = mock_session
+        mock_get_session.return_value = (mock_session, False)
 
         config = SpawnConfig(path="/tmp/test", circle="dev", backend=AgentType.CLAUDE_CODE)
         result = spawn_peer(config)
