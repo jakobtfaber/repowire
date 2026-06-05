@@ -78,6 +78,39 @@ def check_tmux() -> CheckResult:
     return CheckResult("tmux available", Status.OK, version)
 
 
+def check_tmux_lifecycle_hooks() -> CheckResult:
+    """Verify Repowire's tmux lifecycle hook slots have usable commands."""
+    if not shutil.which("tmux"):
+        return CheckResult("Tmux lifecycle hooks", Status.SKIP, "tmux not found on PATH")
+
+    from repowire.hooks.tmux_lifecycle import inspect_lifecycle_hooks
+
+    inspections = inspect_lifecycle_hooks()
+    children = [
+        CheckResult(
+            inspection.hook_name,
+            Status.OK if inspection.status == "ok" else Status.WARN,
+            inspection.detail or inspection.status,
+        )
+        for inspection in inspections
+    ]
+    broken = [inspection for inspection in inspections if inspection.status != "ok"]
+    if broken:
+        detail = ", ".join(f"{i.hook_name}={i.status}" for i in broken)
+        return CheckResult(
+            "Tmux lifecycle hooks",
+            Status.WARN,
+            f"needs reinstall: {detail}",
+            children=children,
+        )
+    return CheckResult(
+        "Tmux lifecycle hooks",
+        Status.OK,
+        f"{len(inspections)} hooks installed",
+        children=children,
+    )
+
+
 def check_package_manager() -> CheckResult:
     for tool in ("uv", "pipx", "pip"):
         if shutil.which(tool):
@@ -615,6 +648,7 @@ def run_all(config: Config, daemon_url: str) -> list[CheckResult]:
         check_repowire_version(),
         check_python_version(),
         check_tmux(),
+        check_tmux_lifecycle_hooks(),
         check_package_manager(),
         check_update_availability(config),
         check_daemon(daemon_url),

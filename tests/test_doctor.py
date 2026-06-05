@@ -22,10 +22,12 @@ from repowire.doctor import (
     check_spawn_allowlist,
     check_state_database,
     check_tmux,
+    check_tmux_lifecycle_hooks,
     check_update_availability,
     exit_code,
     run_all,
 )
+from repowire.hooks.tmux_lifecycle import HookInspection
 
 # ---------------------------------------------------------------------------
 # Pure check functions
@@ -56,6 +58,53 @@ class TestTmux:
             r = check_tmux()
         assert r.status is Status.OK
         assert "3.5a" in r.detail
+
+
+class TestTmuxLifecycleHooks:
+    def test_tmux_missing_skips(self):
+        with patch("repowire.doctor.shutil.which", return_value=None):
+            r = check_tmux_lifecycle_hooks()
+        assert r.status is Status.SKIP
+
+    def test_all_hooks_ok(self):
+        inspections = [
+            HookInspection("pane-exited", "ok", command="run-shell ..."),
+            HookInspection("session-closed", "ok", command="run-shell ..."),
+        ]
+        with patch("repowire.doctor.shutil.which", return_value="/usr/bin/tmux"), \
+             patch(
+                 "repowire.hooks.tmux_lifecycle.inspect_lifecycle_hooks",
+                 return_value=inspections,
+             ):
+            r = check_tmux_lifecycle_hooks()
+        assert r.status is Status.OK
+        assert "2 hooks installed" in r.detail
+
+    def test_empty_hook_warns(self):
+        inspections = [
+            HookInspection("after-rename-session", "empty", "hook slot has no command"),
+        ]
+        with patch("repowire.doctor.shutil.which", return_value="/usr/bin/tmux"), \
+             patch(
+                 "repowire.hooks.tmux_lifecycle.inspect_lifecycle_hooks",
+                 return_value=inspections,
+             ):
+            r = check_tmux_lifecycle_hooks()
+        assert r.status is Status.WARN
+        assert "after-rename-session=empty" in r.detail
+
+    def test_missing_hook_warns(self):
+        inspections = [
+            HookInspection("pane-exited", "missing", "no such hook"),
+        ]
+        with patch("repowire.doctor.shutil.which", return_value="/usr/bin/tmux"), \
+             patch(
+                 "repowire.hooks.tmux_lifecycle.inspect_lifecycle_hooks",
+                 return_value=inspections,
+             ):
+            r = check_tmux_lifecycle_hooks()
+        assert r.status is Status.WARN
+        assert "pane-exited=missing" in r.detail
 
 
 class TestPackageManager:

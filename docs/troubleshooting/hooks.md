@@ -6,9 +6,15 @@ A peer never registers, or stops appearing in `list_peers` after a session resta
 
 ```bash
 repowire status
+repowire doctor
 ```
 
 If a runtime is detected but its hooks are marked missing, run `repowire setup` again. Re-running is idempotent and will rewrite the hook entries.
+
+`repowire doctor` also checks the server-global tmux lifecycle hooks Repowire uses
+for pane exits and session/window renames. If it reports missing, empty, or
+malformed tmux lifecycle hooks, re-run `repowire setup` or restart the daemon so
+Repowire reinstalls those hook slots.
 
 ## Per-runtime diagnostics
 
