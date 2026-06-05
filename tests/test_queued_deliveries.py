@@ -185,6 +185,37 @@ async def test_notify_transport_failure_queues_and_drains(tmp_path: Path) -> Non
     state.state_db.close()
 
 
+async def test_ack_reply_transport_failure_does_not_close_when_notify_is_queued(
+    tmp_path: Path,
+) -> None:
+    app, state = _make_app(tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        alice = await _register(client, "alice")
+        bob = await _register(client, "bob")
+        ask_response = await client.post("/ask", json={
+            "from_peer": alice["display_name"],
+            "to_peer": bob["display_name"],
+            "text": "status?",
+        })
+        assert ask_response.status_code == 200, ask_response.text
+        cid = ask_response.json()["correlation_id"]
+        state.message_router.send_notification.side_effect = TransportError("No connection")
+
+        response = await client.post("/ack", json={
+            "correlation_id": cid,
+            "from_peer": bob["display_name"],
+            "message": "all good",
+        })
+
+        assert response.status_code == 503, response.text
+        ask = await state.ask_tracker.get(cid)
+        assert ask is not None
+        assert not ask.closed
+        assert state.queued_delivery_store.count_for_peer(alice["peer_id"]) == 1
+    cleanup_deps()
+    state.state_db.close()
+
+
 async def test_live_notify_delivery_is_not_queued(tmp_path: Path) -> None:
     app, state = _make_app(tmp_path)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

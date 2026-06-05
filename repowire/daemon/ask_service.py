@@ -380,7 +380,7 @@ class AskService:
                     registry=peer_registry,
                     state=state,
                 )
-                await peer_delivery.notify(
+                delivery = await peer_delivery.notify_result(
                     from_peer=existing.to_peer_id,
                     to_peer=existing.from_peer_id,
                     text=framed,
@@ -414,6 +414,15 @@ class AskService:
                     "ack reply delivery error for %s: %s", command.correlation_id, e,
                 )
                 raise AskServiceError(500, f"Reply delivery error: {e}") from e
+            if not delivery.delivered:
+                raise AskServiceError(
+                    503,
+                    (
+                        f"Reply delivery failed for {existing.from_peer_name}: "
+                        f"{delivery.reason}. Ask remains open; retry when the "
+                        "asker reconnects."
+                    ),
+                )
 
             if command.message and existing.parent_id is not None:
                 await ask_tracker.capture_child_reply(command.correlation_id, command.message)
