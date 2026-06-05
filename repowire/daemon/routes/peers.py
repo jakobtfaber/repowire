@@ -1019,10 +1019,8 @@ async def touch_peer_last_seen(
 ) -> OkResponse:
     """Refresh a peer's last_seen without changing status.
 
-    Called by MCP tool entry so outbound MCP traffic counts as a liveness
-    signal — covers the case where a peer's ws-hook has dropped but the
-    agent is still alive and acting (otherwise `is_orchestrator_present`
-    and other last_seen-keyed checks go stale).
+    Called by MCP tool entry so outbound MCP traffic refreshes activity
+    without claiming the peer has an inbound WebSocket transport.
     """
     peer_registry = get_peer_registry()
     try:

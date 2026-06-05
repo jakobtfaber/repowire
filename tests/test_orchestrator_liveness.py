@@ -251,12 +251,9 @@ class TestCircleOrchestratorRoute:
 
 
 class TestTouchLastSeen:
-    """MCP outbound traffic must keep `is_orchestrator_present` true even when
-    the peer's ws-hook is dead. The dead-ws-hook + active-MCP shape is the
-    bug the fix targets.
-    """
+    """MCP outbound traffic refreshes process activity, not inbound reachability."""
 
-    async def test_touch_resurrects_stale_orchestrator(self, tmp_path):
+    async def test_touch_refreshes_stale_orchestrator_activity(self, tmp_path):
         registry = _make_registry(tmp_path, heartbeat=30)
         # Stale heartbeat: peer is "registered offline" by the liveness clock
         # but ONLINE in status. ws-hook is also disconnected (default
@@ -274,14 +271,18 @@ class TestTouchLastSeen:
 
         assert await registry.is_orchestrator_present("team") is True
 
-    async def test_touch_revives_offline_peer(self, tmp_path):
+    async def test_touch_does_not_revive_offline_peer(self, tmp_path):
         registry = _make_registry(tmp_path)
+        stale = datetime.now(timezone.utc) - timedelta(seconds=90)
         await _register_orch(
-            registry, circle="team", status=PeerStatus.OFFLINE,
+            registry, circle="team", status=PeerStatus.OFFLINE, last_seen=stale,
         )
         await registry.touch_last_seen("repow-team-orch1")
         async with registry._lock:
-            assert registry._peers["repow-team-orch1"].status == PeerStatus.ONLINE
+            peer = registry._peers["repow-team-orch1"]
+            assert peer.status == PeerStatus.OFFLINE
+            assert peer.last_seen is not None
+            assert peer.last_seen > stale
 
     async def test_touch_preserves_busy_status(self, tmp_path):
         registry = _make_registry(tmp_path)
@@ -318,18 +319,23 @@ class TestTouchLastSeen:
         assert body["present"] is True
         assert body["peer_id"] == "orch-1"
 
-    async def test_touch_route_revives_offline_peer(self, app_and_registry):
+    async def test_touch_route_preserves_offline_status(self, app_and_registry):
         client, registry = app_and_registry
+        stale = datetime.now(timezone.utc) - timedelta(seconds=90)
         await _register_orch(
             registry,
             circle="team",
             name="orch",
             peer_id="orch-1",
             status=PeerStatus.OFFLINE,
+            last_seen=stale,
         )
 
         r = await client.post("/peers/orch-1/touch")
         assert r.status_code == 200
 
         async with registry._lock:
-            assert registry._peers["orch-1"].status == PeerStatus.ONLINE
+            peer = registry._peers["orch-1"]
+            assert peer.status == PeerStatus.OFFLINE
+            assert peer.last_seen is not None
+            assert peer.last_seen > stale

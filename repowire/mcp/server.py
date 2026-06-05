@@ -297,9 +297,9 @@ def _cached_identity_matches_current_process() -> bool:
     MCP server processes are long-lived. After daemon restarts, pane takeovers,
     or certificate rehydration, a process-global cached peer_id can outlive the
     pane metadata that SessionStart/ws-hook now considers authoritative. A
-    successful `/touch` is not enough proof because touch intentionally revives
-    offline peers. When current-process pane metadata exists, require the cache
-    to match it before sending any routed MCP call.
+    successful `/touch` is not identity proof. When current-process pane
+    metadata exists, require the cache to match it before sending any routed
+    MCP call.
     """
     pane_id = get_pane_id()
     if not pane_id:
@@ -445,9 +445,7 @@ async def _touch_last_seen() -> None:
     """Refresh this peer's last_seen on the daemon (best-effort).
 
     Called from `_ensure_registered` so every MCP tool entry feeds the
-    liveness clock. Closes the "ws-hook dropped but agent is alive and
-    acting via MCP" gap that would otherwise leave `is_orchestrator_present`
-    (and other last_seen-keyed checks) stale.
+    liveness clock without changing inbound transport status.
 
     On 404/409 (daemon doesn't recognise our cached peer_id — typically
     because the daemon was restarted and our cache is stale), invalidate

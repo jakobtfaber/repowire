@@ -762,8 +762,8 @@ async def test_ensure_registered_re_resolves_when_cached_peer_conflicts_with_pan
 
     This reproduces the split-pane bug where an MCP process kept sending as an
     old suffixed peer even though current pane metadata identified the live
-    unsuffixed peer. Since `/touch` revives offline peers, the cache must be
-    checked against local runtime metadata before touch.
+    unsuffixed peer. The cache must be checked against local runtime metadata
+    before touch.
     """
     mcp_server._cached_peer_id = "stale-id"
     mcp_server._cached_peer_name = "stale-name"
