@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -160,3 +161,194 @@ class TestMaybeRespawn:
         with patch.object(ws_hook_supervisor, "spawn_ws_hook") as mock_spawn:
             assert ws_hook_supervisor.maybe_respawn(PANE_ID) is False
             mock_spawn.assert_not_called()
+
+
+class TestSpawnWsHook:
+    def test_passes_agent_pid_to_child_env(self, cache_dir):
+        lock_path = ws_hook_lock_path(PANE_ID)
+        lock_fd = open(lock_path, "w")  # noqa: SIM115
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            with patch.object(
+                ws_hook_supervisor.subprocess,
+                "Popen",
+                return_value=SimpleNamespace(pid=12345),
+            ) as popen:
+                pid = ws_hook_supervisor.spawn_ws_hook(
+                    pane_id=PANE_ID,
+                    peer_id="repow-default-deadbeef",
+                    display_name="lifetime-test",
+                    backend="claude-code",
+                    cwd=str(cache_dir),
+                    lock_fd=lock_fd,
+                    agent_pid=67890,
+                )
+
+            assert pid == 12345
+            env = popen.call_args.kwargs["env"]
+            assert env["REPOWIRE_AGENT_PID"] == "67890"
+            assert env["REPOWIRE_PEER_ID"] == "repow-default-deadbeef"
+            assert env["TMUX_PANE"] == PANE_ID
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
+
+class TestSweepOrphanWsHooks:
+    """Startup sweep: kill ws-hooks whose agent is conclusively gone."""
+
+    def _arm(self, monkeypatch, *, procs, panes, owned_pids=None):
+        """Wire the sweep's probes: live processes, live panes, pid files."""
+        monkeypatch.setattr(
+            ws_hook_supervisor, "_list_ws_hook_pids", lambda: procs
+        )
+        monkeypatch.setattr(
+            ws_hook_supervisor, "_live_tmux_panes", lambda: panes
+        )
+        for pid, pane_id in (owned_pids or {}).items():
+            ws_hook_pid_path(pane_id).write_text(str(pid))
+
+    def test_unowned_hook_is_swept(self, cache_dir, monkeypatch):
+        self._arm(monkeypatch, procs={4242: "python websocket_hook.py"}, panes={})
+        killed: list[int] = []
+        monkeypatch.setattr(
+            ws_hook_supervisor, "_terminate", lambda pid: killed.append(pid) or True
+        )
+        reports = ws_hook_supervisor.sweep_orphan_ws_hooks()
+        assert killed == [4242]
+        assert reports[0].reason.startswith("no pid file")
+        assert reports[0].killed is True
+
+    def test_dead_pane_hook_is_swept_with_peer_id(self, cache_dir, monkeypatch):
+        _write_meta("%7", cwd="/tmp/x")
+        self._arm(
+            monkeypatch,
+            procs={4242: "python websocket_hook.py"},
+            panes={},  # tmux answered: no panes exist
+            owned_pids={4242: "%7"},
+        )
+        monkeypatch.setattr(ws_hook_supervisor, "_terminate", lambda pid: True)
+        reports = ws_hook_supervisor.sweep_orphan_ws_hooks()
+        assert len(reports) == 1
+        assert reports[0].pane_id == "%7"
+        assert reports[0].peer_id == "repow-default-deadbeef"
+        assert "no longer exists" in reports[0].reason
+        # Stale pid file cleaned up.
+        assert not ws_hook_pid_path("%7").exists()
+
+    def test_dead_agent_pid_is_swept(self, cache_dir, monkeypatch):
+        write_pane_runtime_metadata(
+            "%7",
+            {"peer_id": "repow-default-deadbeef", "agent_pid": 999_999_999},
+        )
+        self._arm(
+            monkeypatch,
+            procs={4242: "python websocket_hook.py"},
+            panes={"%7": 200},
+            owned_pids={4242: "%7"},
+        )
+        monkeypatch.setattr(ws_hook_supervisor, "_terminate", lambda pid: True)
+        reports = ws_hook_supervisor.sweep_orphan_ws_hooks()
+        assert len(reports) == 1
+        assert "agent pid 999999999 is dead" in reports[0].reason
+
+    def test_shell_only_subtree_is_swept(self, cache_dir, monkeypatch):
+        """The classic orphan: pane and shell alive, agent quit."""
+        write_pane_runtime_metadata(
+            "%7",
+            {"peer_id": "repow-default-deadbeef", "agent_pid": os.getpid()},
+        )
+        self._arm(
+            monkeypatch,
+            procs={4242: "python websocket_hook.py"},
+            panes={"%7": 200},
+            owned_pids={4242: "%7"},
+        )
+        monkeypatch.setattr(
+            "repowire.hooks.websocket_hook._build_ps_child_map",
+            lambda: ({200: []}, {200: "zsh"}),
+        )
+        monkeypatch.setattr(ws_hook_supervisor, "_terminate", lambda pid: True)
+        reports = ws_hook_supervisor.sweep_orphan_ws_hooks()
+        assert len(reports) == 1
+        assert "only shells" in reports[0].reason
+
+    def test_hook_serving_live_agent_is_untouched(self, cache_dir, monkeypatch):
+        write_pane_runtime_metadata(
+            "%7",
+            {"peer_id": "repow-default-deadbeef", "agent_pid": os.getpid()},
+        )
+        self._arm(
+            monkeypatch,
+            procs={4242: "python websocket_hook.py"},
+            panes={"%7": 200},
+            owned_pids={4242: "%7"},
+        )
+        monkeypatch.setattr(
+            "repowire.hooks.websocket_hook._build_ps_child_map",
+            lambda: ({200: [300]}, {200: "zsh", 300: "claude"}),
+        )
+        killed: list[int] = []
+        monkeypatch.setattr(
+            ws_hook_supervisor, "_terminate", lambda pid: killed.append(pid) or True
+        )
+        assert ws_hook_supervisor.sweep_orphan_ws_hooks() == []
+        assert killed == []
+
+    def test_inconclusive_tmux_listing_never_kills(self, cache_dir, monkeypatch):
+        _write_meta("%7", cwd="/tmp/x")
+        self._arm(
+            monkeypatch,
+            procs={4242: "python websocket_hook.py"},
+            panes=None,  # tmux listing failed: unknowable
+            owned_pids={4242: "%7"},
+        )
+        killed: list[int] = []
+        monkeypatch.setattr(
+            ws_hook_supervisor, "_terminate", lambda pid: killed.append(pid) or True
+        )
+        assert ws_hook_supervisor.sweep_orphan_ws_hooks() == []
+        assert killed == []
+
+    def test_dry_run_reports_without_killing(self, cache_dir, monkeypatch):
+        self._arm(monkeypatch, procs={4242: "python websocket_hook.py"}, panes={})
+        killed: list[int] = []
+        monkeypatch.setattr(
+            ws_hook_supervisor, "_terminate", lambda pid: killed.append(pid) or True
+        )
+        reports = ws_hook_supervisor.sweep_orphan_ws_hooks(dry_run=True)
+        assert len(reports) == 1
+        assert reports[0].killed is False
+        assert killed == []
+
+
+class TestSweepProbes:
+    def test_tmux_missing_from_path_is_inconclusive(self, monkeypatch):
+        """tmux absent from the daemon's PATH (launchd env) must not read as
+        "no panes exist" — that would mass-kill live hooks."""
+        def fake_run(*_a, **_k):
+            raise FileNotFoundError("tmux")
+
+        monkeypatch.setattr(ws_hook_supervisor.subprocess, "run", fake_run)
+        assert ws_hook_supervisor._live_tmux_panes() is None
+
+    def test_no_server_is_conclusively_empty(self, monkeypatch):
+        def fake_run(*_a, **_k):
+            return SimpleNamespace(returncode=1, stdout="", stderr="no server running on /tmp/x")
+
+        monkeypatch.setattr(ws_hook_supervisor.subprocess, "run", fake_run)
+        assert ws_hook_supervisor._live_tmux_panes() == {}
+
+    def test_terminate_refuses_reused_pid(self, monkeypatch):
+        """If the pid no longer belongs to a ws-hook (pid reuse inside the
+        sweep window), _terminate must not signal it."""
+        def fake_run(*_a, **_k):
+            return SimpleNamespace(returncode=0, stdout="/usr/bin/some-other-process\n", stderr="")
+
+        monkeypatch.setattr(ws_hook_supervisor.subprocess, "run", fake_run)
+        killed: list[int] = []
+        monkeypatch.setattr(
+            ws_hook_supervisor.os, "kill", lambda pid, sig: killed.append(pid)
+        )
+        assert ws_hook_supervisor._terminate(4242) is False
+        assert killed == []

@@ -7,6 +7,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from repowire.hooks.handoff import write_handoff_summary
 from repowire.hooks.session_handler import (
     _find_self_peer,
@@ -232,17 +234,123 @@ class TestFormatPeersContext:
 
 
 class TestSessionMain:
+    @pytest.fixture(autouse=True)
+    def _hermetic_agent_pid_probe(self, monkeypatch):
+        """The shell-parent probe shells out to ps/tmux; keep it inert so tests
+        that mock subprocess.Popen globally stay hermetic. Tests covering the
+        fallback override with @patch."""
+        from repowire.hooks import session_handler as sh
+
+        monkeypatch.setattr(sh, "pid_comm_is_shell", lambda _pid: False)
     def test_invalid_json(self):
         with patch("sys.stdin") as mock_stdin:
             mock_stdin.read.return_value = "not json"
             assert main() == 0
 
-    def test_session_end_is_noop(self):
+    @patch("repowire.hooks.session_handler.write_handoff_summary")
+    @patch("repowire.hooks.session_handler.daemon_post", return_value={})
+    @patch(
+        "repowire.hooks.session_handler.read_pane_runtime_metadata",
+        return_value={"peer_id": "repow-default-dead1234"},
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={"pane_id": "%1", "session_name": "default", "window_name": "t"},
+    )
+    def test_session_end_deregisters_terminally(
+        self, mock_tmux, mock_meta, mock_post, mock_handoff,
+    ):
+        result = _run_with_input({
+            "hook_event_name": "SessionEnd",
+            "cwd": "/tmp/test",
+            "reason": "prompt_input_exit",
+        })
+        assert result == 0
+        mock_handoff.assert_called_once()
+        mock_post.assert_called_once()
+        path, payload = mock_post.call_args.args
+        assert path == "/peers/repow-default-dead1234/offline"
+        assert payload["reason"] == "session_end"
+        assert payload["source"] == "session_end_hook"
+        assert payload["terminal"] is True
+        assert "prompt_input_exit" in payload["detail"]
+
+    @patch("repowire.hooks.session_handler.write_handoff_summary")
+    @patch("repowire.hooks.session_handler.daemon_post", return_value={})
+    @patch(
+        "repowire.hooks.session_handler.read_pane_runtime_metadata",
+        return_value={"peer_id": "repow-default-dead1234"},
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={"pane_id": "%1", "session_name": "default", "window_name": "t"},
+    )
+    def test_session_end_clear_skips_deregistration(
+        self, mock_tmux, mock_meta, mock_post, mock_handoff,
+    ):
+        """/clear ends the session but a SessionStart(source=clear) rebinds the
+        pane ~200ms later — deregistering would race it."""
+        result = _run_with_input({
+            "hook_event_name": "SessionEnd",
+            "cwd": "/tmp/test",
+            "reason": "clear",
+        })
+        assert result == 0
+        mock_handoff.assert_called_once()
+        mock_post.assert_not_called()
+
+    @patch("repowire.hooks.session_handler.write_handoff_summary")
+    @patch("repowire.hooks.session_handler.daemon_post", return_value={})
+    @patch(
+        "repowire.hooks.session_handler._get_peer_id_for_pane",
+        return_value="repow-default-bypane99",
+    )
+    @patch(
+        "repowire.hooks.session_handler.read_pane_runtime_metadata",
+        return_value={},
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={"pane_id": "%1", "session_name": "default", "window_name": "t"},
+    )
+    def test_session_end_without_reason_falls_back_to_by_pane_lookup(
+        self, mock_tmux, mock_meta, mock_lookup, mock_post, mock_handoff,
+    ):
+        """Backends that omit `reason` (codex) still deregister; peer_id comes
+        from the daemon's by-pane lookup when local meta is missing."""
         result = _run_with_input({
             "hook_event_name": "SessionEnd",
             "cwd": "/tmp/test",
         })
         assert result == 0
+        path, payload = mock_post.call_args.args
+        assert path == "/peers/repow-default-bypane99/offline"
+        assert "unknown" in payload["detail"]
+
+    @patch("repowire.hooks.session_handler.write_handoff_summary")
+    @patch("repowire.hooks.session_handler.daemon_post", return_value={})
+    @patch(
+        "repowire.hooks.session_handler._get_peer_id_for_pane",
+        return_value=None,
+    )
+    @patch(
+        "repowire.hooks.session_handler.read_pane_runtime_metadata",
+        return_value={},
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={"pane_id": "%1", "session_name": "default", "window_name": "t"},
+    )
+    def test_session_end_without_peer_id_is_noop(
+        self, mock_tmux, mock_meta, mock_lookup, mock_post, mock_handoff,
+    ):
+        result = _run_with_input({
+            "hook_event_name": "SessionEnd",
+            "cwd": "/tmp/test",
+            "reason": "prompt_input_exit",
+        })
+        assert result == 0
+        mock_post.assert_not_called()
 
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
@@ -275,6 +383,39 @@ class TestSessionMain:
             # First positional arg is now path (cwd), not display_name
             assert call_args[0][0] == str(tmp_path)
             assert call_args.kwargs["circle_source"] == "tmux"
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=("repow-default-abc12345", "test-claude-code", False, True),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
+            "session_name": "default",
+            "window_name": "test",
+        },
+    )
+    @patch("repowire.hooks.session_handler.pid_comm_is_shell", return_value=True)
+    @patch("repowire.hooks.session_handler.find_pane_agent_pid", return_value=43210)
+    @patch("repowire.hooks.session_handler.subprocess.Popen")
+    @patch("repowire.hooks.session_handler.compute_git_status", return_value=None)
+    @patch("repowire.hooks.session_handler.get_git_branch", return_value=None)
+    def test_session_start_shell_parent_falls_back_to_pane_agent_pid(
+        self, mock_branch, mock_status, mock_popen, mock_find, mock_isshell,
+        mock_tmux, mock_register, mock_fetch, tmp_path,
+    ):
+        """Codex spawns hooks from the pane shell: getppid() is zsh, so the
+        recorded agent_pid must come from the pane subtree instead."""
+        with patch("repowire.config.models.CACHE_DIR", tmp_path):
+            result = _run_with_input({
+                "hook_event_name": "SessionStart",
+                "cwd": str(tmp_path),
+                "session_id": "abc12345-codex",
+            })
+            assert result == 0
+            assert mock_register.call_args.kwargs["agent_pid"] == 43210
 
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(

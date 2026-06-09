@@ -17,8 +17,11 @@ from __future__ import annotations
 import fcntl
 import logging
 import os
+import signal
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from repowire.hooks.utils import (
@@ -27,6 +30,7 @@ from repowire.hooks.utils import (
     read_pane_runtime_metadata,
     write_pane_runtime_metadata,
     ws_hook_lock_path,
+    ws_hook_meta_path,
     ws_hook_pid_path,
 )
 
@@ -85,6 +89,7 @@ def link_spawn_ws_hook(
                 backend=backend,
                 cwd=cwd,
                 lock_fd=lock_fd,
+                agent_pid=None,
             )
         except Exception as e:  # noqa: BLE001 — fail closed so the route rolls back
             logger.warning("link_spawn_ws_hook: pane %s spawn failed: %s", pane_id, e)
@@ -103,6 +108,7 @@ def spawn_ws_hook(
     backend: str,
     cwd: str,
     lock_fd,
+    agent_pid: int | None = None,
 ) -> int | None:
     """Launch websocket_hook.py in the background and write its pid file.
 
@@ -124,6 +130,8 @@ def spawn_ws_hook(
         env["REPOWIRE_DISPLAY_NAME"] = display_name
         if peer_id:
             env["REPOWIRE_PEER_ID"] = peer_id
+        if agent_pid is not None and agent_pid > 0:
+            env["REPOWIRE_AGENT_PID"] = str(agent_pid)
         env["REPOWIRE_BACKEND"] = backend
         # ws-hook reads TMUX_PANE for its pane id. Stop hook respawn runs in
         # a different subprocess context than SessionStart, so set explicitly.
@@ -207,6 +215,13 @@ def maybe_respawn(
             display_name = metadata.get("display_name")
             metadata_backend = metadata.get("backend") or "claude-code"
             peer_id = metadata.get("peer_id")
+            metadata_agent_pid = metadata.get("agent_pid")
+            if isinstance(metadata_agent_pid, int):
+                agent_pid = metadata_agent_pid
+            elif isinstance(metadata_agent_pid, str) and metadata_agent_pid.isdigit():
+                agent_pid = int(metadata_agent_pid)
+            else:
+                agent_pid = None
             if not metadata_cwd or not display_name:
                 # Without these we can't recreate the prior connect state.
                 # Drop the stale pid file so a future SessionStart isn't
@@ -246,6 +261,7 @@ def maybe_respawn(
                 backend=metadata_backend,
                 cwd=metadata_cwd,
                 lock_fd=lock_fd,
+                agent_pid=agent_pid,
             )
             return new_pid is not None
         finally:
@@ -255,3 +271,185 @@ def maybe_respawn(
     except Exception as e:
         print(f"repowire: ws-hook respawn failed: {e}", file=sys.stderr)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Orphan sweep
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OrphanReport:
+    """One ws-hook process the sweep judged orphaned (or would, on dry_run)."""
+
+    pid: int
+    pane_id: str | None
+    peer_id: str | None
+    reason: str
+    killed: bool
+
+
+def _list_ws_hook_pids() -> dict[int, str] | None:
+    """Live websocket_hook processes as {pid: command}; None if ps failed."""
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    procs: dict[int, str] = {}
+    for line in result.stdout.splitlines():
+        pid_str, _, command = line.strip().partition(" ")
+        if pid_str.isdigit() and "websocket_hook.py" in command:
+            procs[int(pid_str)] = command
+    return procs
+
+
+def _live_tmux_panes() -> dict[str, int] | None:
+    """Conclusive {pane_id: pane_pid} for all live panes.
+
+    Returns {} only when the tmux server itself answered "no panes exist",
+    and None when the listing was inconclusive — callers must not treat None
+    as "every pane is dead".
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        # tmux missing from *this* process's PATH (e.g. a launchd service
+        # environment) says nothing about the user's tmux server — treating
+        # it as "no panes" would mass-kill live hooks.
+        return None
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return {} if "no server" in result.stderr.lower() else None
+    panes: dict[str, int] = {}
+    for line in result.stdout.splitlines():
+        pane_id, _, pid_str = line.strip().partition("\t")
+        if pane_id and pid_str.isdigit():
+            panes[pane_id] = int(pid_str)
+    return panes
+
+
+def _terminate(pid: int) -> bool:
+    """SIGTERM with a 2s grace period, then SIGKILL. True if the pid is gone.
+
+    Revalidates the pid still belongs to a ws-hook right before signaling, so
+    pid reuse inside the sweep window cannot kill an unrelated process.
+    """
+    try:
+        recheck = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return False
+    if recheck.returncode != 0:
+        return True  # already gone
+    if "websocket_hook.py" not in recheck.stdout:
+        return False  # pid reused by something else — do not touch it
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return True
+    for _ in range(20):
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.1)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    return not _pid_alive(pid)
+
+
+def sweep_orphan_ws_hooks(*, dry_run: bool = False) -> list[OrphanReport]:
+    """Find (and unless dry_run, kill) ws-hook processes whose agent is gone.
+
+    Conclusive evidence only — a hook is an orphan when:
+      - no pid file claims it (a newer hook took over its pane), or
+      - tmux authoritatively reports its pane gone, or
+      - its recorded agent pid is dead, or
+      - its pane's process subtree contains only shells (agent quit, shell
+        remains — the classic orphan that self-certifies pings as safe).
+    Anything inconclusive (ps/tmux unavailable) is left alone: a wrongly
+    killed hook breaks a live peer, a missed orphan dies on the next sweep.
+    """
+    from repowire.hooks.websocket_hook import (
+        _build_ps_child_map,
+        _capture_baseline_from_subtree,
+    )
+
+    procs = _list_ws_hook_pids()
+    if not procs:
+        return []
+    live_panes = _live_tmux_panes()
+
+    owned: dict[int, str] = {}
+    for pid_path in pane_logs_dir().glob("ws-hook-*.pid"):
+        token = pid_path.stem.removeprefix("ws-hook-")
+        try:
+            pid = int(pid_path.read_text().strip())
+        except (OSError, ValueError):
+            continue
+        owned[pid] = f"%{token}" if token.isdigit() else token
+
+    ps_result = _build_ps_child_map()
+
+    reports: list[OrphanReport] = []
+    for pid in sorted(procs):
+        pane_id = owned.get(pid)
+        meta = read_pane_runtime_metadata(pane_id) if pane_id else {}
+        agent_pid = meta.get("agent_pid")
+
+        reason: str | None = None
+        if pane_id is None:
+            reason = "no pid file claims this ws-hook (superseded for its pane)"
+        elif live_panes is not None and pane_id not in live_panes:
+            reason = f"pane {pane_id} no longer exists"
+        elif isinstance(agent_pid, int) and agent_pid > 0 and not _pid_alive(agent_pid):
+            reason = f"recorded agent pid {agent_pid} is dead"
+        elif (
+            live_panes is not None
+            and pane_id in live_panes
+            and ps_result is not None
+            and _capture_baseline_from_subtree(live_panes[pane_id], *ps_result) is None
+        ):
+            reason = f"pane {pane_id} subtree contains only shells"
+        if reason is None:
+            continue
+
+        killed = False
+        if not dry_run:
+            killed = _terminate(pid)
+            if killed and pane_id is not None:
+                pid_path = ws_hook_pid_path(pane_id)
+                try:
+                    if pid_path.read_text().strip() == str(pid):
+                        pid_path.unlink()
+                        ws_hook_meta_path(pane_id).unlink(missing_ok=True)
+                except (OSError, ValueError):
+                    pass
+        peer_id = meta.get("peer_id")
+        reports.append(
+            OrphanReport(
+                pid=pid,
+                pane_id=pane_id,
+                peer_id=peer_id if isinstance(peer_id, str) else None,
+                reason=reason,
+                killed=killed,
+            )
+        )
+    return reports
