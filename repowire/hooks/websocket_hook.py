@@ -102,14 +102,46 @@ def _pid_exists(pid: int) -> bool:
         return False
 
 
+def _confirm_agent_gone(agent_pid: int, pane_id: str) -> int | None | bool:
+    """Corroborate a dead recorded agent pid against the pane's subtree.
+
+    Recorded agent pids can be stale (written by an older hook version, or
+    surviving a /clear that restarted the agent in place) — a dead pid alone
+    must never be treated as the agent being gone, or restarts kill hooks
+    serving live agents.
+
+    Returns the live replacement pid when the pane still holds an agent
+    (caller should adopt it), True when the pane conclusively has no agent,
+    and None when the check was inconclusive (do nothing).
+    """
+    replacement = find_pane_agent_pid(pane_id)
+    if replacement is not None and replacement != agent_pid:
+        return replacement
+    if _is_pane_safe(pane_id) is False:
+        return True
+    return None
+
+
 async def _watch_agent_lifetime(agent_pid: int, pane_id: str) -> None:
     """Exit the ws-hook when its owning agent process disappears."""
+    watched = agent_pid
     while True:
         await asyncio.sleep(_AGENT_LIFETIME_CHECK_SECONDS)
-        if not _pid_exists(agent_pid):
+        if _pid_exists(watched):
+            continue
+        verdict = _confirm_agent_gone(watched, pane_id)
+        if verdict is True:
             raise AgentExitedError(
-                f"Agent pid {agent_pid} for pane {pane_id} exited",
+                f"Agent pid {watched} for pane {pane_id} exited",
             )
+        if isinstance(verdict, int) and not isinstance(verdict, bool):
+            logger.warning(
+                "Recorded agent pid %s was stale; pane %s holds live agent %s",
+                watched,
+                pane_id,
+                verdict,
+            )
+            watched = verdict
 
 
 def _push_query_cid(pane_id: str, correlation_id: str) -> None:
@@ -732,14 +764,26 @@ async def main() -> int:
     while True:
         # The in-connection watcher only runs while connected; without this
         # check a hook whose agent died mid-reconnect would retry forever.
+        # Dead pid alone is not proof — corroborate against the pane subtree
+        # (stale recorded pids must not kill hooks at daemon restarts).
         if agent_pid is not None and not _pid_exists(agent_pid):
-            logger.info(
-                "Agent pid %s exited while disconnected; marking offline and exiting",
-                agent_pid,
-            )
-            await asyncio.to_thread(_post_agent_exited_offline)
-            clear_pane_runtime_state(pane_id)
-            return 0
+            verdict = await asyncio.to_thread(_confirm_agent_gone, agent_pid, pane_id)
+            if verdict is True:
+                logger.info(
+                    "Agent pid %s exited while disconnected; marking offline and exiting",
+                    agent_pid,
+                )
+                await asyncio.to_thread(_post_agent_exited_offline)
+                clear_pane_runtime_state(pane_id)
+                return 0
+            if isinstance(verdict, int) and not isinstance(verdict, bool):
+                logger.warning(
+                    "Recorded agent pid %s was stale; pane %s holds live agent %s",
+                    agent_pid,
+                    pane_id,
+                    verdict,
+                )
+                agent_pid = verdict
         try:
             async with websockets.connect(uri, ping_interval=None, ping_timeout=None) as websocket:
                 if consecutive_failures:

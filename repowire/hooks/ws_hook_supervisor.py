@@ -381,11 +381,12 @@ def sweep_orphan_ws_hooks(*, dry_run: bool = False) -> list[OrphanReport]:
     Conclusive evidence only — a hook is an orphan when:
       - no pid file claims it (a newer hook took over its pane), or
       - tmux authoritatively reports its pane gone, or
-      - its recorded agent pid is dead, or
       - its pane's process subtree contains only shells (agent quit, shell
         remains — the classic orphan that self-certifies pings as safe).
-    Anything inconclusive (ps/tmux unavailable) is left alone: a wrongly
-    killed hook breaks a live peer, a missed orphan dies on the next sweep.
+    Anything inconclusive (ps/tmux unavailable) is left alone, and a dead
+    recorded agent_pid is never sufficient by itself (stale pids happen): a
+    wrongly killed hook breaks a live peer, a missed orphan dies on the next
+    sweep.
     """
     from repowire.hooks.websocket_hook import (
         _build_ps_child_map,
@@ -412,15 +413,17 @@ def sweep_orphan_ws_hooks(*, dry_run: bool = False) -> list[OrphanReport]:
     for pid in sorted(procs):
         pane_id = owned.get(pid)
         meta = read_pane_runtime_metadata(pane_id) if pane_id else {}
-        agent_pid = meta.get("agent_pid")
 
+        # NOTE: a dead recorded agent_pid is deliberately NOT a kill criterion
+        # on its own — recorded pids can be stale (older hook versions wrote
+        # shell or pre-/clear pids), and acting on one killed hooks serving
+        # live agents. A genuinely dead agent leaves a shell-only subtree,
+        # which the criterion below catches conclusively.
         reason: str | None = None
         if pane_id is None:
             reason = "no pid file claims this ws-hook (superseded for its pane)"
         elif live_panes is not None and pane_id not in live_panes:
             reason = f"pane {pane_id} no longer exists"
-        elif isinstance(agent_pid, int) and agent_pid > 0 and not _pid_alive(agent_pid):
-            reason = f"recorded agent pid {agent_pid} is dead"
         elif (
             live_panes is not None
             and pane_id in live_panes

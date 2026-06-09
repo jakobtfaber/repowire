@@ -236,7 +236,10 @@ class TestSweepOrphanWsHooks:
         # Stale pid file cleaned up.
         assert not ws_hook_pid_path("%7").exists()
 
-    def test_dead_agent_pid_is_swept(self, cache_dir, monkeypatch):
+    def test_dead_recorded_agent_pid_alone_never_kills(self, cache_dir, monkeypatch):
+        """Stale recorded pids are common (older hook versions wrote shell or
+        pre-/clear pids). A dead meta agent_pid with a live agent still in the
+        pane subtree must NOT be swept — this killed live hooks at restart."""
         write_pane_runtime_metadata(
             "%7",
             {"peer_id": "repow-default-deadbeef", "agent_pid": 999_999_999},
@@ -247,10 +250,16 @@ class TestSweepOrphanWsHooks:
             panes={"%7": 200},
             owned_pids={4242: "%7"},
         )
-        monkeypatch.setattr(ws_hook_supervisor, "_terminate", lambda pid: True)
-        reports = ws_hook_supervisor.sweep_orphan_ws_hooks()
-        assert len(reports) == 1
-        assert "agent pid 999999999 is dead" in reports[0].reason
+        monkeypatch.setattr(
+            "repowire.hooks.websocket_hook._build_ps_child_map",
+            lambda: ({200: [300]}, {200: "zsh", 300: "claude"}),
+        )
+        killed: list[int] = []
+        monkeypatch.setattr(
+            ws_hook_supervisor, "_terminate", lambda pid: killed.append(pid) or True
+        )
+        assert ws_hook_supervisor.sweep_orphan_ws_hooks() == []
+        assert killed == []
 
     def test_shell_only_subtree_is_swept(self, cache_dir, monkeypatch):
         """The classic orphan: pane and shell alive, agent quit."""

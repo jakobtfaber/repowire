@@ -17,8 +17,52 @@ async def test_agent_lifetime_watchdog_exits_when_agent_pid_disappears(monkeypat
 
     monkeypatch.setattr(websocket_hook.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(websocket_hook, "_pid_exists", lambda _pid: False)
+    # Pane subtree corroborates: no replacement agent, pane conclusively unsafe.
+    monkeypatch.setattr(websocket_hook, "find_pane_agent_pid", lambda _pane: None)
+    monkeypatch.setattr(websocket_hook, "_is_pane_safe", lambda _pane: False)
 
     with pytest.raises(websocket_hook.AgentExitedError):
+        await websocket_hook._watch_agent_lifetime(12345, "%7")
+
+
+@pytest.mark.asyncio
+async def test_watchdog_adopts_live_agent_when_recorded_pid_is_stale(monkeypatch):
+    """A dead recorded pid with a live agent in the pane must not kill the
+    hook — the watcher adopts the real agent pid instead (stale-pid guard)."""
+    sleeps = {"n": 0}
+
+    async def fake_sleep(_seconds: float) -> None:
+        sleeps["n"] += 1
+        if sleeps["n"] > 3:
+            raise TimeoutError("test done")
+
+    # Recorded pid 12345 is dead; subtree holds live agent 777 (alive).
+    monkeypatch.setattr(websocket_hook.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(websocket_hook, "_pid_exists", lambda pid: pid == 777)
+    monkeypatch.setattr(websocket_hook, "find_pane_agent_pid", lambda _pane: 777)
+    monkeypatch.setattr(websocket_hook, "_is_pane_safe", lambda _pane: True)
+
+    with pytest.raises(TimeoutError):
+        # Survives multiple cycles without AgentExitedError.
+        await websocket_hook._watch_agent_lifetime(12345, "%7")
+
+
+@pytest.mark.asyncio
+async def test_watchdog_does_nothing_on_inconclusive_corroboration(monkeypatch):
+    """Dead pid + inconclusive pane check: neither exit nor adopt."""
+    sleeps = {"n": 0}
+
+    async def fake_sleep(_seconds: float) -> None:
+        sleeps["n"] += 1
+        if sleeps["n"] > 3:
+            raise TimeoutError("test done")
+
+    monkeypatch.setattr(websocket_hook.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(websocket_hook, "_pid_exists", lambda _pid: False)
+    monkeypatch.setattr(websocket_hook, "find_pane_agent_pid", lambda _pane: None)
+    monkeypatch.setattr(websocket_hook, "_is_pane_safe", lambda _pane: None)
+
+    with pytest.raises(TimeoutError):
         await websocket_hook._watch_agent_lifetime(12345, "%7")
 
 
@@ -30,6 +74,9 @@ async def test_dead_agent_pid_before_connect_posts_offline_and_exits(monkeypatch
     monkeypatch.setenv("REPOWIRE_AGENT_PID", "12345")
     monkeypatch.setenv("REPOWIRE_PEER_ID", "repow-test-deadbeef")
     monkeypatch.setattr(websocket_hook, "_pid_exists", lambda _pid: False)
+    # Pane subtree corroborates the dead pid: agent conclusively gone.
+    monkeypatch.setattr(websocket_hook, "find_pane_agent_pid", lambda _pane: None)
+    monkeypatch.setattr(websocket_hook, "_is_pane_safe", lambda _pane: False)
     # Keep startup baseline capture off the real system.
     monkeypatch.setattr(websocket_hook, "_get_pane_pid", lambda _pane: None)
     monkeypatch.setattr(websocket_hook, "_get_pane_command", lambda _pane: None)
