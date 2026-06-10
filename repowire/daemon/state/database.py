@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 class StateDatabase:
@@ -496,6 +496,21 @@ class StateDatabase:
                 VALUES (?, ?)
                 """,
                 (11, "observed peer runtime model"),
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS retired_peers (
+                    peer_id TEXT PRIMARY KEY,
+                    retired_at TEXT NOT NULL
+                )
+                """,
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (12, "retired peer identities survive daemon restarts"),
             )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

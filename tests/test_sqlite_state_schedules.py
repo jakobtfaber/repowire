@@ -36,7 +36,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
         tables = {
             row[0]
             for row in db.conn.execute(
@@ -69,7 +69,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
     finally:
         db2.close()
 

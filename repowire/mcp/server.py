@@ -12,7 +12,7 @@ from uuid import uuid4
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from repowire.agent_backends import detect_mcp_backend
+from repowire.agent_backends import detect_mcp_backend, detect_mcp_backend_confident
 from repowire.agent_types import AgentType
 from repowire.config.models import DEFAULT_DAEMON_URL
 from repowire.hooks._tmux import get_pane_id, get_tmux_info
@@ -281,8 +281,23 @@ def _peer_result_matches_current_process(peer: dict, pane_meta: dict) -> bool:
     returns the incumbent, but the temporary process must not cache that
     identity and impersonate it. Require the daemon peer_id to match validated
     local pane runtime metadata owned by the current agent process.
+
+    Backend must match too: plugin companion runtimes (e.g. the codex
+    app-server a Claude plugin runs) inherit the host session's TMUX_PANE and
+    can rewrite the pane metadata, so a by-pane lookup can cross the
+    agent/companion boundary in either direction. Guard with env-only
+    detection (the one signal a companion cannot rewrite), and only when it
+    produced a confident verdict — never on the default fallback.
     """
     if not _metadata_matches_current_process(pane_meta):
+        return False
+    host_backend = detect_mcp_backend_confident(os.environ)
+    peer_backend = peer.get("backend")
+    if (
+        host_backend is not None
+        and peer_backend
+        and str(peer_backend) != host_backend.value
+    ):
         return False
     peer_id = peer.get("peer_id")
     meta_peer_id = pane_meta.get("peer_id")
@@ -410,10 +425,20 @@ async def _get_my_peer_name() -> str:
         except Exception:
             pass
         if _metadata_matches_current_process(pane_meta):
-            name = pane_meta.get("display_name") or pane_meta.get("peer_id")
-            if name:
-                _cached_peer_name = name
-                return name
+            # Same companion guard as the by-pane path: pid-matching metadata
+            # whose backend contradicts a confident env verdict was written by
+            # a different runtime sharing this pane.
+            host_backend = detect_mcp_backend_confident(os.environ)
+            meta_backend = pane_meta.get("backend")
+            if (
+                host_backend is None
+                or not meta_backend
+                or str(meta_backend) == host_backend.value
+            ):
+                name = pane_meta.get("display_name") or pane_meta.get("peer_id")
+                if name:
+                    _cached_peer_name = name
+                    return name
     return get_display_name()
 
 

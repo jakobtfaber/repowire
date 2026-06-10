@@ -774,3 +774,30 @@ class TestRetirement:
             terminal=True,
         )
         assert "some-display-name" not in manager._retired
+
+    async def test_retirement_survives_restart_via_state_db(self, tmp_path):
+        """A daemon restart must not hand an orphan hook one free
+        re-registration: retirement is persisted and reloaded."""
+        from repowire.daemon.state.database import StateDatabase
+
+        db = StateDatabase(tmp_path / "state.db")
+        manager = _make_manager()
+        manager._state_db = db
+        await manager.mark_offline(
+            "repow-dev-zombie99", reason="agent_exited", source="ws_hook",
+            terminal=True,
+        )
+        assert "repow-dev-zombie99" in manager._retired
+
+        # Fresh registry over the same DB (simulated restart) reloads it.
+        reborn = _make_manager()
+        reborn._state_db = db
+        reborn._load_retired()
+        assert "repow-dev-zombie99" in reborn._retired
+
+        # Unretire clears it durably.
+        reborn._unretire("repow-dev-zombie99")
+        third = _make_manager()
+        third._state_db = db
+        third._load_retired()
+        assert "repow-dev-zombie99" not in third._retired

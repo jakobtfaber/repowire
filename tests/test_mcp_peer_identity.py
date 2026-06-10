@@ -107,6 +107,38 @@ async def test_resolves_via_daemon_by_pane():
 
 
 @pytest.mark.asyncio
+async def test_rejects_companion_peer_with_matching_pid_but_wrong_backend():
+    """Plugin companion runtimes (e.g. a codex app-server run by a Claude
+    plugin) inherit the host's TMUX_PANE and can rewrite pane metadata with
+    their own pid — so everything pid-matches, but the daemon peer's backend
+    contradicts what this MCP server is hosting. Adoption must be refused."""
+    companion_peer = _matching_peer({
+        "display_name": "repowire-codex",
+        "peer_id": "repow-1-companion",
+        "backend": "codex",
+    })
+    companion_meta = _matching_meta({
+        "display_name": "repowire-codex",
+        "peer_id": "repow-1-companion",
+        "backend": "codex",
+    })
+
+    with patch.object(mcp_server, "get_pane_id", return_value="%42"), \
+         patch.object(
+             mcp_server, "detect_mcp_backend_confident",
+             return_value=AgentType.CLAUDE_CODE,
+         ), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(return_value=companion_peer)), \
+         patch.object(mcp_server, "read_pane_runtime_metadata", return_value=companion_meta), \
+         patch.object(mcp_server, "get_display_name", return_value="repowire"):
+        name = await mcp_server._get_my_peer_name()
+
+    assert name != "repowire-codex"
+    assert mcp_server._cached_peer_id is None
+
+
+@pytest.mark.asyncio
 async def test_rejects_daemon_by_pane_backend_mismatch():
     """A temp same-pane process must not cache the incumbent's daemon identity."""
     incumbent = _matching_peer({

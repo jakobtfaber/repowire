@@ -585,6 +585,34 @@ def detect_mcp_backend(
 
     return AgentType.CLAUDE_CODE
 
+
+def detect_mcp_backend_confident(
+    env: Mapping[str, str] | None = None,
+) -> AgentType | None:
+    """Env-only backend detection, or None when no positive marker matched.
+
+    Unlike :func:`detect_mcp_backend` this never consults pane metadata (which
+    a same-pane companion runtime can rewrite) and never falls back to the
+    claude-code default. Use it as the identity-adoption guard: a confident
+    env verdict that contradicts a peer record means the record belongs to a
+    different runtime sharing the pane.
+    """
+    env = os.environ if env is None else env
+    explicit = _explicit_backend(env)
+    if explicit is not None:
+        return explicit
+    for backend_type in (
+        AgentType.CLAUDE_CODE,
+        AgentType.GEMINI,
+        AgentType.CODEX,
+        AgentType.OPENCODE,
+        AgentType.ANTIGRAVITY,
+        AgentType.PI,
+    ):
+        if AGENT_BACKENDS[backend_type].mcp_runtime_matches(env):
+            return backend_type
+    return None
+
 DEFAULT_SPAWN_COMMANDS: dict[AgentType, str] = {
     backend_type: backend.default_command
     for backend_type, backend in AGENT_BACKENDS.items()

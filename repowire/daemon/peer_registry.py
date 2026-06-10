@@ -162,12 +162,60 @@ class PeerRegistry:
 
         # Terminally-offlined peers: peer_id -> retired-at. A reconnect claiming
         # a retired id is rejected unless it proves a live agent_pid; a real
-        # SessionStart (which always carries one) clears the entry. In-memory
-        # only — after a daemon restart the ping backstop re-converges.
+        # SessionStart (which always carries one) clears the entry. Persisted
+        # in the state DB so a daemon restart cannot hand an orphan hook one
+        # free re-registration.
         self._retired: dict[str, datetime] = {}
+        self._load_retired()
 
         # Consecutive honest pane_alive=false pongs per connected peer.
         self._pane_unsafe_strikes: dict[str, int] = {}
+
+    def _load_retired(self) -> None:
+        if self._state_db is None:
+            return
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=self._RETIRED_TTL_SECONDS)
+        rows = self._state_db.conn.execute(
+            "SELECT peer_id, retired_at FROM retired_peers",
+        ).fetchall()
+        expired: list[str] = []
+        for row in rows:
+            try:
+                at = datetime.fromisoformat(row["retired_at"])
+            except (TypeError, ValueError):
+                expired.append(row["peer_id"])
+                continue
+            if at > cutoff:
+                self._retired[row["peer_id"]] = at
+            else:
+                expired.append(row["peer_id"])
+        if expired:
+            with self._state_db.conn:
+                self._state_db.conn.executemany(
+                    "DELETE FROM retired_peers WHERE peer_id = ?",
+                    [(peer_id,) for peer_id in expired],
+                )
+
+    def _retire(self, peer_id: str) -> None:
+        """Record a terminal retirement (in-memory + durable)."""
+        at = datetime.now(timezone.utc)
+        self._retired[peer_id] = at
+        if self._state_db is not None:
+            with self._state_db.conn:
+                self._state_db.conn.execute(
+                    "INSERT OR REPLACE INTO retired_peers(peer_id, retired_at) VALUES (?, ?)",
+                    (peer_id, at.isoformat()),
+                )
+
+    def _unretire(self, peer_id: str) -> None:
+        """Clear a retirement after a registration with live runtime proof."""
+        self._retired.pop(peer_id, None)
+        if self._state_db is not None:
+            with self._state_db.conn:
+                self._state_db.conn.execute(
+                    "DELETE FROM retired_peers WHERE peer_id = ?",
+                    (peer_id,),
+                )
 
     # ------------------------------------------------------------------
     # Mapping persistence
@@ -892,7 +940,7 @@ class PeerRegistry:
                         f"(agent_pid={agent_pid or 'absent'}); "
                         "re-register via a fresh SessionStart"
                     )
-                self._retired.pop(peer_id, None)
+                self._unretire(peer_id)
 
             if peer_id is None and path and role == PeerRole.ORCHESTRATOR:
                 folder = self._sanitize_folder_name(Path(path).name)
@@ -1214,7 +1262,7 @@ class PeerRegistry:
                     and effective_agent_pid is not None
                     and pid_alive(effective_agent_pid)
                 ):
-                    self._retired.pop(allocated_id, None)
+                    self._unretire(allocated_id)
                 logger.info(
                     "Peer registered: %s (%s, status=%s)",
                     assigned_name,
@@ -2151,7 +2199,7 @@ class PeerRegistry:
                 # must still retire it, or the orphan it came from could
                 # re-register through a persisted mapping.
                 if terminal and identifier.startswith("repow-"):
-                    self._retired[identifier] = datetime.now(timezone.utc)
+                    self._retire(identifier)
                 return 0
             old_status = peer.status
             peer.status = PeerStatus.OFFLINE
@@ -2168,7 +2216,7 @@ class PeerRegistry:
             session_id = peer.peer_id
             doomed_ws = None
             if terminal:
-                self._retired[session_id] = datetime.now(timezone.utc)
+                self._retire(session_id)
                 if self._transport:
                     doomed_ws = self._transport.current_websocket(session_id)
 
@@ -2319,9 +2367,17 @@ class PeerRegistry:
         cutoff = datetime.now(timezone.utc) - timedelta(
             seconds=self._RETIRED_TTL_SECONDS
         )
-        self._retired = {
-            peer_id: at for peer_id, at in self._retired.items() if at > cutoff
-        }
+        expired = [peer_id for peer_id, at in self._retired.items() if at <= cutoff]
+        if not expired:
+            return
+        for peer_id in expired:
+            self._retired.pop(peer_id, None)
+        if self._state_db is not None:
+            with self._state_db.conn:
+                self._state_db.conn.executemany(
+                    "DELETE FROM retired_peers WHERE peer_id = ?",
+                    [(peer_id,) for peer_id in expired],
+                )
 
     def _prune_spawn_ownership(self) -> None:
         """Drop spawn-ownership records pointing at dead tmux panes. Best-effort.

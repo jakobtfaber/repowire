@@ -156,7 +156,11 @@ def read_pane_runtime_metadata(pane_id: str | None) -> dict:
 def write_pane_runtime_metadata(pane_id: str | None, metadata: dict) -> None:
     """Persist metadata for the active logical session in a pane."""
     meta_path = ws_hook_meta_path(pane_id)
-    meta_path.write_text(json.dumps(metadata))
+    # Atomic: an interrupted plain write leaves an empty meta file, which
+    # breaks every identity check that reads it (observed in the wild).
+    tmp_path = meta_path.with_suffix(".meta.json.tmp")
+    tmp_path.write_text(json.dumps(metadata))
+    os.replace(tmp_path, meta_path)
 
     cwd = metadata.get("cwd")
     if cwd:
