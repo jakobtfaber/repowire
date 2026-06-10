@@ -169,6 +169,39 @@ def _pane_in_copy_mode(pane_id: str) -> bool:
         return False
 
 
+def _composer_still_holds(pane_id: str, text: str) -> bool:
+    """Heuristic: is the injected text still sitting unsubmitted in the
+    composer?
+
+    A submitted prompt also remains visible in the transcript, so presence of
+    the text alone proves nothing. The distinguishing feature is the
+    bottom-most composer prompt line: after a successful submit it is empty
+    (a bare prompt), while a swallowed Enter leaves our text in it. False on
+    any capture failure — callers must not retry on uncertainty.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-t", pane_id, "-p"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    prefix = text.splitlines()[0][:40].strip() if text.strip() else ""
+    if not prefix:
+        return False
+    prompt_lines = [
+        line for line in result.stdout.splitlines()
+        if line.lstrip().startswith(("❯", "›", "> "))
+    ]
+    if not prompt_lines:
+        return False
+    return prefix in prompt_lines[-1]
+
+
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
     """Send keys to a tmux pane via subprocess.
 
@@ -176,9 +209,13 @@ def _tmux_send_keys(pane_id: str, text: str) -> bool:
     1. If pane is in copy-mode, cancel out first (otherwise -l lands in the
        copy buffer and Enter triggers a selection action instead of submit)
     2. Send text in literal mode (bracketed paste)
-    3. 500ms debounce — tested, required for paste to complete
+    3. Debounce, scaled with text length — the runtime's paste heuristic must
+       settle before Enter or it swallows it as a newline
     4. Explicitly close bracketed paste mode with ESC[201~
     5. Enter — submits
+    6. Verify: if the composer still holds the text, the paste heuristic ate
+       the Enter — nudge once more (an extra Enter on an empty composer is a
+       no-op, but we only resend on positive evidence)
     """
     try:
         if _pane_in_copy_mode(pane_id):
@@ -192,7 +229,7 @@ def _tmux_send_keys(pane_id: str, text: str) -> bool:
             capture_output=True,
             check=True,
         )
-        time.sleep(0.5)
+        time.sleep(min(0.5 + len(text) / 4000.0, 1.5))
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, "-H", "1b", "5b", "32", "30", "31", "7e"],
             capture_output=True,
@@ -204,6 +241,17 @@ def _tmux_send_keys(pane_id: str, text: str) -> bool:
             capture_output=True,
             check=True,
         )
+        time.sleep(0.4)
+        if _composer_still_holds(pane_id, text):
+            logger.warning(
+                "Pane %s composer still holds injected text after Enter; nudging once",
+                pane_id,
+            )
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, "Enter"],
+                capture_output=True,
+                check=True,
+            )
         return True
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         logger.error(f"Failed to send keys to {pane_id}: {e}")

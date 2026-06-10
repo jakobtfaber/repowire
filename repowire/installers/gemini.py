@@ -14,7 +14,7 @@ GEMINI_HOME = Path.home() / ".gemini"
 SETTINGS_PATH = GEMINI_HOME / "settings.json"
 
 # Gemini hook events we install
-HOOK_EVENTS = ["SessionStart", "BeforeAgent", "AfterAgent"]
+HOOK_EVENTS = ["SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent"]
 
 
 def _load_settings() -> dict:
@@ -62,6 +62,10 @@ _REPOWIRE_HOOKS = {
     "SessionStart": _make_hook_entry(
         "repowire hook session --backend=gemini", matcher="startup",
     ),
+    # Gemini's SessionEnd carries the same reason vocabulary as Claude Code
+    # (exit/clear/logout/prompt_input_exit/other); the session handler skips
+    # `clear` and deregisters on everything else. No matcher: all reasons.
+    "SessionEnd": _make_hook_entry("repowire hook session --backend=gemini"),
     "BeforeAgent": _make_hook_entry("repowire hook prompt --backend=gemini"),
     "AfterAgent": _make_hook_entry("repowire hook stop --backend=gemini"),
 }

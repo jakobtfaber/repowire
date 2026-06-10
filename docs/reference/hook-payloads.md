@@ -31,13 +31,20 @@ not parse `--model` out of command strings or spawn profiles.
 
 `SessionEnd` fires once at a true session boundary and carries a `reason`
 (Claude Code: `prompt_input_exit` for `/exit`, `clear` for `/clear`, `logout`,
-`other`; Codex registers the same hook command without a matcher and may omit
-the field). The handler always writes the handoff summary, then — for any
+`other`). The handler always writes the handoff summary, then — for any
 reason other than `clear` — resolves the pane's peer_id and posts a terminal
 offline (`reason=session_end`), deregistering the peer immediately. `clear` is
 skipped because a `SessionStart` with `source=clear` rebinds the same pane
 milliseconds later. It does not fire on SIGKILL; the ws-hook's agent-pid
 watcher covers that case.
+
+Codex has no SessionEnd hook event (its hook set is SessionStart /
+UserPromptSubmit / Stop plus tool, compact, and subagent events), so codex
+quit deregistration rides entirely on the agent-pid watcher. Repowire
+pre-trusts its codex hook entries in `[hooks.state]` when `repowire setup`
+writes `hooks.json` — codex silently skips untrusted hooks, so without the
+pre-trust every setup run would disable the codex transport until the user
+re-trusts in the TUI.
 
 ## Default delivery path
 

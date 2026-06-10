@@ -339,14 +339,14 @@ class CodexBackend(AgentBackend):
         messages: list[BackendInstallMessage] = []
         try:
             changed = install_hooks()
-            messages.append(BackendInstallMessage("success", "Codex hooks installed"))
+            messages.append(
+                BackendInstallMessage(
+                    "success", "Codex hooks installed (pre-trusted in hooks.state)"
+                )
+            )
             if changed:
                 messages.append(
-                    BackendInstallMessage(
-                        "info",
-                        "hooks.json changed — codex will ask to re-trust "
-                        "repowire hooks on next launch",
-                    )
+                    BackendInstallMessage("info", "hooks.json updated for codex")
                 )
         except Exception as e:
             messages.append(BackendInstallMessage("error", f"Failed to install Codex hooks: {e}"))

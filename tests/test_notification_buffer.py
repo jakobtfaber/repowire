@@ -61,7 +61,9 @@ class TestNotifyDirectSend:
         assert kwargs["to_session_id"] == recipient.peer_id
         assert kwargs["to_peer_name"] == recipient.display_name
         assert kwargs["intended_recipient_name"] == recipient.display_name
-        assert result == "queued"
+        # BUSY recipients are delivered immediately — their runtime composer
+        # queues the message; the daemon reports the wire truth.
+        assert result == "sent"
 
     async def test_quick_busy_notifies_keep_frame_target_on_actual_target(
         self, registry, router,
@@ -81,7 +83,7 @@ class TestNotifyDirectSend:
         )
         await registry.update_peer_status(recipient.peer_id, PeerStatus.ONLINE)
 
-        assert (first, second) == ("queued", "queued")
+        assert (first, second) == ("sent", "sent")
         assert router.send_notification.await_count == 2
         calls = router.send_notification.await_args_list
         for call in calls:

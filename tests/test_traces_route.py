@@ -111,9 +111,10 @@ class TestAskStagesLand:
         assert "injection_failed" in stages
         assert "no_connection" not in stages
 
-    async def test_busy_notify_with_injected_records_pending_and_pane_injected(self, env):
-        # A BUSY recipient queues the paste, but if the hook acked injected the
-        # terminal outcome must still be traced (pending must not suppress it).
+    async def test_busy_notify_with_injected_records_pane_injected(self, env):
+        # A BUSY recipient is delivered immediately (its runtime composer
+        # queues the paste); the trace must record the real injection
+        # outcome, with no daemon-side "pending" stage.
         from repowire.protocol.peers import PeerStatus
 
         client, harness = env
@@ -126,7 +127,7 @@ class TestAskStagesLand:
         assert r.status_code == 200, r.text
         did = r.json()["delivery_id"]
         stages = [row.stage for row in harness.delivery_trace_store.stages_for(did)]
-        assert "pending" in stages
+        assert "pending" not in stages
         assert "pane_injected" in stages
 
     async def test_legacy_ws_notify_no_ack_records_transport_ws(self, env):

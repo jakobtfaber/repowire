@@ -50,13 +50,18 @@ class NotifyDeliveryResult:
 
     ``reason`` is honest about what was actually proven:
       * ``transport_delivered`` — written to the recipient's live WS transport.
+        A BUSY recipient still gets the message immediately; its runtime's
+        composer queues it until the turn ends (queueing is the runtime's
+        job, not the daemon's).
       * ``broker_accepted`` — an ACP notify was accepted by the broker (the
         prompt task was dispatched). It is *not* a runtime-receipt: the ACP
         reply is discarded for fire-and-forget notify, so the daemon never
         learns whether the runtime completed it. ``delivery_state`` is still
         ``delivered`` (the broker took ownership), but clients that want a real
         receipt must not read ``broker_accepted`` as one.
-      * ``recipient_busy`` / ``queued_delivery`` — held for later delivery.
+      * ``queued_delivery`` — held in the daemon's queue because the peer has
+        no live transport (polling peers / TransportError fallback).
+      * ``recipient_busy`` — legacy value, no longer produced.
     """
 
     status: Literal["sent", "queued"]

@@ -17,7 +17,7 @@ from repowire.config.models import Config, ExperimentsConfig
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.protocol.messages import AttachmentRef
-from repowire.protocol.peers import Peer, PeerStatus, TurnState
+from repowire.protocol.peers import Peer, TurnState
 from repowire.protocol.questions import Question
 
 
@@ -156,9 +156,12 @@ class WebSocketPeerTransport:
         envelope: NotifyEnvelope,
         delivery_id: str | None = None,
     ) -> NotifyTransportResult:
-        delivery_status: Literal["sent", "queued"] = (
-            "queued" if envelope.target.status == PeerStatus.BUSY else "sent"
-        )
+        # A BUSY recipient still gets the message injected right away — the
+        # runtime's own composer queues it until the turn ends. Queueing is
+        # the runtime's job; the daemon reports what actually happened on the
+        # wire. (Daemon-side queueing exists only as the TransportError
+        # fallback for peers with no live connection.)
+        delivery_status: Literal["sent", "queued"] = "sent"
         self._registry.add_event(
             "notification",
             {

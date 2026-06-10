@@ -328,9 +328,11 @@ async def notify_peer(
                 stage="resolved_peer", peer_id=delivery.to_peer_id,
                 from_peer_id=delivery.from_peer_id,
             )
-            # A BUSY recipient queues the paste; record that, but do NOT let it
-            # suppress a real hook receipt — if the hook acked, the terminal
-            # outcome must still be traced.
+            # Daemon-side queueing happens only on the no-live-transport
+            # fallback; record it, but do NOT let it suppress a real hook
+            # receipt — if the hook acked, the terminal outcome must still
+            # be traced. (BUSY recipients are delivered immediately; their
+            # runtime composer does the queueing.)
             if delivery.queued:
                 trace.record(
                     trace_id=delivery_id, delivery_id=delivery_id, kind="notify",

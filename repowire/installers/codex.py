@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -10,8 +11,20 @@ CODEX_HOME = Path.home() / ".codex"
 HOOKS_PATH = CODEX_HOME / "hooks.json"
 CONFIG_PATH = CODEX_HOME / "config.toml"
 
-HOOK_EVENTS = ["SessionStart", "SessionEnd", "Stop", "UserPromptSubmit"]
+# NOTE: codex has no SessionEnd hook event (hooks/src/events/ upstream:
+# session_start, stop, user_prompt_submit, tool/compact/subagent events).
+# Quit deregistration for codex rides on the ws-hook agent-pid watcher.
+HOOK_EVENTS = ["SessionStart", "Stop", "UserPromptSubmit"]
 _MCP_ENV_LINE = 'env = { REPOWIRE_BACKEND = "codex" }'
+
+# Codex's hook_event_key_label() values for the events we install.
+_EVENT_LABELS = {
+    "SessionStart": "session_start",
+    "Stop": "stop",
+    "UserPromptSubmit": "user_prompt_submit",
+}
+# Codex normalizes timeout_sec.unwrap_or(600) before hashing.
+_CODEX_DEFAULT_TIMEOUT = 600
 
 
 def _load_hooks() -> dict:
@@ -41,11 +54,100 @@ _REPOWIRE_HOOKS = {
     "SessionStart": _make_hook_entry(
         "repowire hook session --backend=codex", matcher="startup|resume|clear",
     ),
-    # Deterministic deregistration at quit (no matcher: every true session end).
-    "SessionEnd": _make_hook_entry("repowire hook session --backend=codex"),
     "Stop": _make_hook_entry("repowire hook stop --backend=codex"),
     "UserPromptSubmit": _make_hook_entry("repowire hook prompt --backend=codex"),
 }
+
+
+def trusted_hash_for(event: str, command: str, matcher: str | None) -> str:
+    """Reproduce codex's hook trust fingerprint for a command hook.
+
+    Codex hashes the canonical JSON (recursively sorted keys, compact
+    separators) of its NormalizedHookIdentity: the event key label plus the
+    flattened matcher group holding one normalized handler — None fields
+    omitted (TOML cannot represent them), timeout defaulted to 600. See
+    codex-rs/hooks/src/engine/discovery.rs::command_hook_hash and
+    codex-rs/config/src/fingerprint.rs::version_for_toml.
+    """
+    identity: dict = {
+        "event_name": _EVENT_LABELS[event],
+        "hooks": [
+            {
+                "async": False,
+                "command": command,
+                "timeout": _CODEX_DEFAULT_TIMEOUT,
+                "type": "command",
+            }
+        ],
+    }
+    if matcher:
+        identity["matcher"] = matcher
+    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _upsert_hook_state(content: str, key: str, trusted_hash: str) -> str:
+    """Insert or update one [hooks.state."<key>"] section in config.toml text.
+
+    String-surgical like the rest of this installer — never rewrites the
+    file wholesale, so user comments and unrelated sections survive.
+    """
+    header = f'[hooks.state."{key}"]'
+    line = f'trusted_hash = "{trusted_hash}"'
+    if header in content:
+        lines = content.splitlines()
+        out: list[str] = []
+        in_section = False
+        replaced = False
+        for ln in lines:
+            if ln.strip() == header:
+                in_section = True
+                out.append(ln)
+                continue
+            if in_section and ln.lstrip().startswith("["):
+                if not replaced:
+                    out.append(line)
+                    replaced = True
+                in_section = False
+            if in_section and ln.strip().startswith("trusted_hash"):
+                out.append(line)
+                replaced = True
+                continue
+            out.append(ln)
+        if in_section and not replaced:
+            out.append(line)
+        return "\n".join(out) + ("\n" if content.endswith("\n") else "")
+    suffix = "" if (not content or content.endswith("\n")) else "\n"
+    return f"{content}{suffix}\n{header}\n{line}\n"
+
+
+def write_trusted_hashes(data: dict) -> None:
+    """Pre-trust the repowire hook entries codex just had written.
+
+    Codex silently skips untrusted hooks (HookTrustStatus::Untrusted handlers
+    are never executed), so without this every hooks.json rewrite would
+    disable repowire's codex transport until the user re-trusts in the TUI.
+    Only repowire-owned entries are touched: the state key is positional
+    ("path:event:group:handler"), computed from where our entry actually
+    landed in the saved arrays.
+    """
+    hooks = data.get("hooks", {})
+    content = CONFIG_PATH.read_text() if CONFIG_PATH.exists() else ""
+    for event, label in _EVENT_LABELS.items():
+        entries = hooks.get(event, [])
+        for group_index, entry in enumerate(entries):
+            if not _is_repowire_hook(entry):
+                continue
+            for handler_index, handler in enumerate(entry.get("hooks", [])):
+                command = handler.get("command", "")
+                if "repowire" not in command:
+                    continue
+                key = f"{HOOKS_PATH}:{label}:{group_index}:{handler_index}"
+                content = _upsert_hook_state(
+                    content, key, trusted_hash_for(event, command, entry.get("matcher"))
+                )
+    CODEX_HOME.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(content)
 
 
 def _is_repowire_hook(entry: dict) -> bool:
@@ -60,11 +162,12 @@ def install_hooks() -> bool:
     """Install repowire hooks into ~/.codex/hooks.json.
 
     Appends to existing hook arrays rather than overwriting, preserving
-    user-defined hooks for the same events.
+    user-defined hooks for the same events. The installed entries are
+    pre-trusted in config.toml's [hooks.state] — codex silently skips
+    untrusted hooks, so a bare hooks.json rewrite would otherwise disable
+    the codex transport until the user re-trusts in the TUI.
 
-    Returns True when hooks.json content actually changed — codex pins a
-    trusted hash per hook entry, so any change makes it re-prompt for trust
-    on the next launch and callers should tell the user to expect that.
+    Returns True when hooks.json content actually changed.
     """
     before = _load_hooks()
     data = json.loads(json.dumps(before)) if before else {}
@@ -77,7 +180,18 @@ def install_hooks() -> bool:
         existing.append(entry)
         hooks[event] = existing
 
+    # Drop entries for events codex doesn't support (a prior repowire version
+    # wrote an inert SessionEnd group).
+    stale = hooks.get("SessionEnd", [])
+    if stale:
+        kept = [e for e in stale if not _is_repowire_hook(e)]
+        if kept:
+            hooks["SessionEnd"] = kept
+        else:
+            del hooks["SessionEnd"]
+
     _save_hooks(data)
+    write_trusted_hashes(data)
     return data != before
 
 

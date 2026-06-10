@@ -50,6 +50,15 @@ _HOOKS_PAYLOAD: dict[str, list[dict]] = {
             ],
         },
     ],
+    # Gemini-style SessionEnd (deregistration at quit); inert until the
+    # antigravity hooks subsystem fires, like the rest of this payload.
+    "SessionEnd": [
+        {
+            "hooks": [
+                {"type": "command", "command": "repowire hook session --backend=antigravity"},
+            ],
+        },
+    ],
     "BeforeAgent": [
         {
             "hooks": [

@@ -425,6 +425,7 @@ async function softInject(text: string): Promise<boolean> {
 
 // Per-session lifecycle.
 function ensurePeer(session: { id: string; title?: string | null }) {
+  if (shuttingDown) return
   if (peerBySession.has(session.id)) return
   const folder = path.basename(projectPath) || "unknown"
   const conn: PeerConn = {
@@ -693,7 +694,13 @@ function callerPeer(ctx: { sessionID?: string } | undefined): { peerName: string
   return { peerName: sanitizePeerName(path.basename(projectPath) || "unknown"), peerId: null }
 }
 
+// Set during shutdown so trailing session events (opencode emits
+// session.updated while tearing down) cannot re-register a phantom peer
+// after cleanup already disconnected everything.
+let shuttingDown = false
+
 function cleanup() {
+  shuttingDown = true
   for (const conn of peerBySession.values()) {
     conn.closed = true
     if (conn.reconnectTimeout) clearTimeout(conn.reconnectTimeout)

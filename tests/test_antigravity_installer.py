@@ -56,8 +56,8 @@ def test_install_hooks_writes_plugin_dir_and_manifest(tmp_path, monkeypatch):
     assert "version" in plugin
 
     hooks = _read_hooks(home)
-    assert set(hooks) == {"SessionStart", "BeforeAgent", "AfterAgent"}
-    for event in ("SessionStart", "BeforeAgent", "AfterAgent"):
+    assert set(hooks) == {"SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent"}
+    for event in ("SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent"):
         cmd = hooks[event][0]["hooks"][0]["command"]
         assert "repowire hook" in cmd
         assert "--backend=antigravity" in cmd

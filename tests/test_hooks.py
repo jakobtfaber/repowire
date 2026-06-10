@@ -385,6 +385,8 @@ class TestTmuxSendKeys:
                 CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # -l text
                 CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # -H close
                 CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # Enter
+                # capture-pane: empty composer (submitted)
+                CompletedProcess(args=[], returncode=0, stdout="\u276f \n", stderr=""),
             ]
             assert _tmux_send_keys("%5", "hello") is True
 
@@ -394,6 +396,7 @@ class TestTmuxSendKeys:
             ["tmux", "send-keys", "-t", "%5", "-l", "hello"],
             ["tmux", "send-keys", "-t", "%5", "-H", "1b", "5b", "32", "30", "31", "7e"],
             ["tmux", "send-keys", "-t", "%5", "Enter"],
+            ["tmux", "capture-pane", "-t", "%5", "-p"],
         ]
         assert ["tmux", "send-keys", "-t", "%5", "Escape"] not in calls
         assert ["tmux", "send-keys", "-t", "%5", "-X", "cancel"] not in calls
@@ -410,6 +413,8 @@ class TestTmuxSendKeys:
                 CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # -l text
                 CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # -H close
                 CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # Enter
+                # capture-pane: empty composer (submitted)
+                CompletedProcess(args=[], returncode=0, stdout="\u276f \n", stderr=""),
             ]
             assert _tmux_send_keys("%5", "hello") is True
 
@@ -420,6 +425,7 @@ class TestTmuxSendKeys:
             ["tmux", "send-keys", "-t", "%5", "-l", "hello"],
             ["tmux", "send-keys", "-t", "%5", "-H", "1b", "5b", "32", "30", "31", "7e"],
             ["tmux", "send-keys", "-t", "%5", "Enter"],
+            ["tmux", "capture-pane", "-t", "%5", "-p"],
         ]
         cancel_idx = calls.index(["tmux", "send-keys", "-t", "%5", "-X", "cancel"])
         paste_idx = calls.index(["tmux", "send-keys", "-t", "%5", "-l", "hello"])
@@ -436,11 +442,72 @@ class TestTmuxSendKeys:
                 CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
                 CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
                 CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                CompletedProcess(args=[], returncode=0, stdout="❯ \n", stderr=""),
             ]
             assert _tmux_send_keys("%5", "hello") is True
 
         calls = [call.args[0] for call in mock_run.call_args_list]
         assert ["tmux", "send-keys", "-t", "%5", "-X", "cancel"] not in calls
+
+    def test_swallowed_enter_is_resent_once(self):
+        """If the composer still holds the injected text after Enter (paste
+        heuristic swallowed it as a newline), nudge with exactly one more
+        Enter — but only on positive evidence."""
+        composer_stuck = "❯ old prompt history\n✶ thinking\n❯ hello there friend\n"
+        with (
+            patch("repowire.hooks.websocket_hook.subprocess.run") as mock_run,
+            patch("repowire.hooks.websocket_hook.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                self._mode_result(False),
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # -l text
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # -H close
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # Enter
+                CompletedProcess(args=[], returncode=0, stdout=composer_stuck, stderr=""),
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),  # retry Enter
+            ]
+            assert _tmux_send_keys("%5", "hello there friend") is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 2
+
+    def test_submitted_text_in_transcript_does_not_trigger_resend(self):
+        """A submitted prompt stays visible in the transcript; only text in
+        the bottom-most composer prompt counts as unsubmitted."""
+        submitted = "❯ hello there friend\n⏺ on it\n❯ \n"
+        with (
+            patch("repowire.hooks.websocket_hook.subprocess.run") as mock_run,
+            patch("repowire.hooks.websocket_hook.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                self._mode_result(False),
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                CompletedProcess(args=[], returncode=0, stdout=submitted, stderr=""),
+            ]
+            assert _tmux_send_keys("%5", "hello there friend") is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 1
+
+    def test_capture_failure_does_not_resend(self):
+        """No retry on uncertainty: a failed capture must not nudge."""
+        with (
+            patch("repowire.hooks.websocket_hook.subprocess.run") as mock_run,
+            patch("repowire.hooks.websocket_hook.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                self._mode_result(False),
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                CompletedProcess(args=[], returncode=1, stdout="", stderr="boom"),
+            ]
+            assert _tmux_send_keys("%5", "hello") is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 1
 
 
 class TestIsPaneSafe:

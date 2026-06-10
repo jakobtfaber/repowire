@@ -1119,7 +1119,10 @@ class TestNotify:
         event = registry.get_events()[-1]
         assert event["attachments"][0]["filename"] == "diagram.png"
 
-    async def test_notify_busy_recipient_returns_queued(self, client, monkeypatch):
+    async def test_notify_busy_recipient_is_delivered_immediately(self, client, monkeypatch):
+        """A BUSY recipient still gets the message on the wire right away —
+        its runtime's composer queues it until the turn ends. Queueing is the
+        runtime's job; the daemon must not claim it held the message."""
         from unittest.mock import AsyncMock
 
         from repowire.protocol.peers import PeerStatus
@@ -1136,9 +1139,8 @@ class TestNotify:
             path="/tmp/recipient2",
         )
         registry._peers[recipient_id].status = PeerStatus.BUSY
-        monkeypatch.setattr(
-            registry._router, "send_notification", AsyncMock(return_value=None),
-        )
+        send_mock = AsyncMock(return_value=None)
+        monkeypatch.setattr(registry._router, "send_notification", send_mock)
 
         r = await client.post("/notify", json={
             "from_peer": sender_name,
@@ -1148,15 +1150,16 @@ class TestNotify:
         assert r.status_code == 200
         body = r.json()
         assert body["ok"] is True
-        assert body["status"] == "queued"
-        assert body["delivery_state"] == "queued"
-        assert body["delivered"] is False
-        assert body["queued"] is True
-        assert body["reason"] == "recipient_busy"
+        assert body["status"] == "sent"
+        assert body["delivery_state"] == "delivered"
+        assert body["delivered"] is True
+        assert body["queued"] is False
+        assert body["reason"] == "transport_delivered"
         assert body["from_peer_id"] == _sender_id
         assert body["from_peer_name"] == sender_name
         assert body["to_peer_id"] == recipient_id
         assert body["to_peer_name"] == recipient_name
+        send_mock.assert_awaited_once()
 
     async def test_notify_no_live_transport_returns_503_shape(self, client, monkeypatch):
         from unittest.mock import AsyncMock
