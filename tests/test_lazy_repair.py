@@ -801,3 +801,43 @@ class TestRetirement:
         third._state_db = db
         third._load_retired()
         assert "repow-dev-zombie99" not in third._retired
+
+    async def test_terminal_offline_closes_the_doomed_websocket(self):
+        """Popping the transport dict alone leaves the orphan hook's TCP
+        connection open — it never reconnects, never hits the retirement
+        guard, and holds its pane flock forever. Terminal offline must
+        actually close the socket."""
+        doomed_ws = MagicMock()
+        doomed_ws.close = AsyncMock()
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.current_websocket = MagicMock(return_value=doomed_ws)
+        transport.disconnect = AsyncMock(return_value=True)
+        qt = MagicMock()
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
+        manager = _make_manager(transport=transport, query_tracker=qt)
+
+        peer = _make_peer(pane_id="%5", status=PeerStatus.ONLINE)
+        await manager.register_peer(peer)
+        await manager.mark_offline(
+            peer.peer_id, reason="agent_exited", source="ws_hook", terminal=True,
+        )
+
+        transport.disconnect.assert_awaited_once_with(peer.peer_id, doomed_ws)
+        doomed_ws.close.assert_awaited_once()
+
+    async def test_terminal_offline_skips_close_when_socket_was_replaced(self):
+        doomed_ws = MagicMock()
+        doomed_ws.close = AsyncMock()
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.current_websocket = MagicMock(return_value=doomed_ws)
+        transport.disconnect = AsyncMock(return_value=False)  # already replaced
+        qt = MagicMock()
+        qt.cancel_queries_to_peer = AsyncMock(return_value=0)
+        manager = _make_manager(transport=transport, query_tracker=qt)
+
+        peer = _make_peer(pane_id="%5", status=PeerStatus.ONLINE)
+        await manager.register_peer(peer)
+        await manager.mark_offline(
+            peer.peer_id, reason="agent_exited", source="ws_hook", terminal=True,
+        )
+        doomed_ws.close.assert_not_awaited()

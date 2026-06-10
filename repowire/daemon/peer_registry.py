@@ -2223,7 +2223,16 @@ class PeerRegistry:
         if terminal and self._transport and doomed_ws is not None:
             # Identity-checked: a legitimate reconnect that reclaimed this id
             # after we released the lock must not lose its fresh socket.
-            await self._transport.disconnect(session_id, doomed_ws)
+            removed = await self._transport.disconnect(session_id, doomed_ws)
+            if removed:
+                # Popping the registry alone leaves the TCP connection open
+                # and the hook none the wiser — close it so the hook's
+                # reconnect hits the retirement guard and exits (releasing
+                # its pane flock). Best-effort: the socket may already be gone.
+                try:
+                    await doomed_ws.close(code=4004, reason="peer retired")
+                except Exception:
+                    pass
 
         cancelled = 0
         if self._query_tracker:
