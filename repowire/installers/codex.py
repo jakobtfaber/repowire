@@ -146,7 +146,7 @@ def write_trusted_hashes(data: dict) -> None:
                 content = _upsert_hook_state(
                     content, key, trusted_hash_for(event, command, entry.get("matcher"))
                 )
-    CODEX_HOME.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(content)
 
 

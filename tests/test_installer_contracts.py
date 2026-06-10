@@ -30,6 +30,11 @@ class JsonHooksInstaller:
         home = tmp_path / self.home_dir
         monkeypatch.setattr(self.module, self.home_dir_attr, home)
         monkeypatch.setattr(self.module, self.settings_path, home / self.filename)
+        # Codex's install_hooks also writes trust-state into config.toml; an
+        # unretargeted CONFIG_PATH hits the real ~/.codex (pollutes it locally,
+        # FileNotFoundError on CI where ~/.codex doesn't exist).
+        if hasattr(self.module, "CONFIG_PATH"):
+            monkeypatch.setattr(self.module, "CONFIG_PATH", home / "config.toml")
         return home
 
     @property
