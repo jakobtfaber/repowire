@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,13 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
         "on",
     )
     install_hooks = not (no_install_hooks or env_disable)
+    # App-level loggers (repowire.*) otherwise fall through to Python's
+    # last-resort handler (WARNING+ only): registry demotions, the startup
+    # orphan sweep, and lazy-repair INFO lines never reach the service log.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     app = create_app(config=config, install_tmux_hooks=install_hooks)
     console.print(f"[cyan]Starting Repowire daemon on {host}:{port}...[/]")
     if config.relay.dashboard_url:

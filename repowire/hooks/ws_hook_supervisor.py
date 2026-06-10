@@ -146,7 +146,12 @@ def spawn_ws_hook(
             env=env,
             pass_fds=(lock_fd.fileno(),),
         )
-        ws_hook_pid_path(pane_id).write_text(str(proc.pid))
+        # Atomic write: concurrent writers (Stop-hook respawn vs SessionStart)
+        # racing plain write_text have produced interleaved garbage pids.
+        pid_path = ws_hook_pid_path(pane_id)
+        tmp_path = pid_path.with_suffix(".pid.tmp")
+        tmp_path.write_text(str(proc.pid))
+        os.replace(tmp_path, pid_path)
         return proc.pid
     finally:
         log_file.close()

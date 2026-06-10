@@ -491,16 +491,15 @@ async def link_pane(
             },
         )
 
-    # Resolve cwd from the live pane when the caller didn't supply one — the
-    # daemon owns discovery, so the CLI/dashboard copy command stays simple
-    # (just --pane + --backend). The ws-hook spawn needs a real cwd for Popen;
-    # an empty cwd would fail every adoption.
-    cwd = request.cwd
-    if not cwd:
-        cwd = next(
-            (p["cwd"] for p in await asyncio.to_thread(list_all_panes) if p["pane_id"] == pane_id),
-            None,
-        )
+    # Resolve cwd (and circle) from the live pane when the caller didn't
+    # supply them — the daemon owns discovery, so the CLI/dashboard copy
+    # command stays simple (just --pane + --backend). The ws-hook spawn needs
+    # a real cwd for Popen; an empty cwd would fail every adoption.
+    pane_info = next(
+        (p for p in await asyncio.to_thread(list_all_panes) if p["pane_id"] == pane_id),
+        None,
+    )
+    cwd = request.cwd or (pane_info["cwd"] if pane_info else None)
     if not cwd:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -509,6 +508,13 @@ async def link_pane(
                 "hint": f"No live tmux pane {pane_id} to resolve a working directory from.",
             },
         )
+    # Circle follows the pane's tmux session, same as SessionStart would —
+    # defaulting adopted peers into "global" strands them outside the circle
+    # their siblings route to.
+    circle = request.circle or (pane_info["session"] if pane_info else None)
+    circle_source: str = (
+        "tmux" if not request.circle and pane_info else "fallback"
+    )
 
     name = request.name or _link_default_name(request.backend, cwd)
     reg = RegisterPeerRequest(
@@ -517,8 +523,8 @@ async def link_pane(
         machine=socket.gethostname(),
         pane_id=pane_id,
         backend=request.backend,
-        circle=request.circle,
-        circle_source="fallback",
+        circle=circle,
+        circle_source=circle_source,
         role=PeerRole.AGENT,
     )
     # persist_binding=False: a rolled-back link must leave NO durable binding /

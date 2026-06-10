@@ -301,3 +301,48 @@ async def test_link_refuses_already_linked_pane(tmp_path):
         resp = await client.post("/panes/%9/link", json={"backend": "codex"})
     assert resp.status_code == 409
     assert resp.json()["detail"]["error"] == "already_linked"
+
+
+@pytest.mark.asyncio
+async def test_link_infers_circle_from_pane_tmux_session(tmp_path, monkeypatch):
+    """Adopted peers must join the pane's tmux-session circle, not 'global' —
+    otherwise circle boundaries strand them away from their siblings."""
+    harness = make_daemon_app(tmp_path, [peers_routes.router])
+    monkeypatch.setattr(peers_routes, "link_spawn_ws_hook", lambda *a, **k: True)
+    monkeypatch.setattr(harness.transport, "is_connected", lambda _pid: True)
+    monkeypatch.setattr(
+        peers_routes,
+        "list_all_panes",
+        lambda: [
+            PaneInfo(
+                pane_id="%60", pid=1, command="claude",
+                cwd="/tmp/proj", session="agentbox", window="1",
+            )
+        ],
+    )
+
+    async with async_client_for(harness.app) as client:
+        resp = await client.post("/panes/%2560/link", json={"backend": "claude-code"})
+    assert resp.status_code == 200, resp.text
+    peer = await harness.registry.get_peer_by_pane("%60")
+    assert peer is not None
+    assert peer.circle == "agentbox"
+
+    # Explicit circle still wins.
+    monkeypatch.setattr(
+        peers_routes,
+        "list_all_panes",
+        lambda: [
+            PaneInfo(
+                pane_id="%61", pid=2, command="claude",
+                cwd="/tmp/proj2", session="agentbox", window="1",
+            )
+        ],
+    )
+    async with async_client_for(harness.app) as client:
+        resp = await client.post(
+            "/panes/%2561/link", json={"backend": "claude-code", "circle": "custom"}
+        )
+    assert resp.status_code == 200, resp.text
+    peer = await harness.registry.get_peer_by_pane("%61")
+    assert peer.circle == "custom"
