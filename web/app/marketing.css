@@ -413,12 +413,11 @@
 }
 .rw-marketing .arch-img { display: block; width: 100%; height: auto; border-radius: var(--rds-radius); }
 
-/* =========================  CODE SHOWCASE  ========================= */
+/* =========================  SESSION REPLAY  ========================= */
+/* Two terminals joined by the wire. The transcript server-renders complete
+   (the demo can never be blank without JS); SessionReplay.tsx resets and
+   types it out once it scrolls into view. */
 .rw-marketing .showcase { max-width: var(--container-xl); margin: 0 auto; padding: 0 24px 96px; }
-.rw-marketing .showcase-grid {
-  display: grid; grid-template-columns: minmax(0, 1fr);
-  max-width: 860px; margin: 0 auto;
-}
 .rw-marketing .showcase-panel {
   background: var(--surface); border: 1px solid var(--rds-border);
   border-radius: 16px; overflow: hidden; box-shadow: var(--shadow-md);
@@ -432,34 +431,108 @@
 .rw-marketing .term-dots { display: flex; gap: 6px; }
 .rw-marketing .term-dots span { width: 11px; height: 11px; border-radius: 50%; background: rgba(255,252,244,0.16); }
 .rw-marketing .term-title { flex: 1; text-align: center; font: 400 12px var(--rds-font-mono); color: #807c74; }
-.rw-marketing .term-body {
-  margin: 0; padding: 22px 24px;
-  font-family: var(--rds-font-mono); font-size: 13px; line-height: 1.7;
-  color: #efece4; background: transparent; overflow-x: auto;
+
+.rw-marketing .replay-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1fr);
+  align-items: stretch;
+  max-width: 1160px; margin: 0 auto;
 }
-.rw-marketing .term-body div { white-space: nowrap; }
-/* Lines are visible by default; the entrance is a pure-CSS progressive
-   enhancement so the terminal can never render blank (no JS/hydration/viewport
-   dependency, unlike the prior framer-motion approach). */
-.rw-marketing .term-line {
-  animation: term-line-in 0.28s ease-out both;
+.rw-marketing .replay-term { display: flex; flex-direction: column; }
+.rw-marketing .replay-body {
+  flex: 1; display: flex; flex-direction: column;
+  padding: 18px 20px;
+  font-family: var(--rds-font-mono); font-size: 12.5px; line-height: 1.65;
+  min-height: 400px;
 }
-@keyframes term-line-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
+.rw-marketing .replay-lines { flex: 1; display: flex; flex-direction: column; gap: 7px; }
+.rw-marketing .replay-line { display: flex; gap: 8px; white-space: pre-wrap; word-break: break-word; }
+.rw-marketing .rp-glyph { flex-shrink: 0; }
+.rw-marketing .rp-text { min-width: 0; }
+.rw-marketing .rp-prompt .rp-glyph,
+.rw-marketing .rp-glyph-prompt { color: var(--cobalt-300); font-weight: 600; }
+.rw-marketing .rp-reply .rp-glyph { color: var(--cobalt-300); }
+.rw-marketing .rp-tool { margin-left: 14px; color: #a8a499; }
+.rw-marketing .rp-tool .rp-glyph { color: #6b675e; }
+.rw-marketing .rp-sent { margin-left: 14px; color: #4eb37e; }
+.rw-marketing .rp-sent .rp-glyph { color: #6b675e; }
+.rw-marketing .rp-recv {
+  padding: 6px 10px; border-radius: 8px; margin: 2px 0;
+  background: rgba(58, 109, 240, 0.10); border-left: 2px solid var(--cobalt-400);
+  color: #d9e2fb;
+}
+.rw-marketing .rp-recv-ack {
+  background: rgba(78, 179, 126, 0.10); border-left-color: #4eb37e;
+  color: #cfe9da;
+}
+.rw-marketing .rp-cursor {
+  display: inline-block; width: 7px; height: 1.05em;
+  margin-left: 2px; vertical-align: text-bottom;
+  background: var(--cobalt-300);
+  animation: rp-blink 1s steps(2, start) infinite;
+}
+@keyframes rp-blink { 50% { opacity: 0; } }
+.rw-marketing .replay-idle { color: #6b675e; font-style: italic; }
+.rw-marketing .replay-composer {
+  margin-top: 16px; display: flex; gap: 8px; align-items: baseline;
+  border: 1px solid rgba(255,252,244,0.14); border-radius: 8px;
+  padding: 8px 10px; min-height: 37px;
+}
+.rw-marketing .replay-composer-text { white-space: pre-wrap; word-break: break-word; min-width: 0; }
+.rw-marketing .replay-placeholder { color: #6b675e; }
+.rw-marketing .replay-status {
+  margin-top: 16px; padding: 9px 2px 0;
+  font-size: 11px; color: #6b675e;
+  border-top: 1px solid rgba(255,252,244,0.08);
+}
+.rw-marketing .replay-controls { display: flex; gap: 4px; }
+.rw-marketing .replay-controls button {
+  width: 24px; height: 24px; display: grid; place-items: center;
+  background: transparent; border: 0; border-radius: 6px;
+  color: #807c74; transition: color var(--t-fast), background var(--t-fast);
+}
+.rw-marketing .replay-controls button:hover { color: #efece4; background: rgba(255,252,244,0.08); }
+.rw-marketing .replay-controls-spacer { width: 52px; }
+
+.rw-marketing .replay-wire { position: relative; }
+.rw-marketing .replay-wire::before {
+  content: ""; position: absolute; left: 6px; right: 6px; top: 50%;
+  border-top: 1px dashed var(--rds-border);
+}
+.rw-marketing .replay-wire-label {
+  position: absolute; top: calc(50% + 10px); left: 50%; transform: translateX(-50%);
+  font: 500 10px var(--rds-font-mono); letter-spacing: 0.08em;
+  color: var(--fg-subtle); text-transform: uppercase;
+}
+.rw-marketing .replay-wire-dot {
+  position: absolute; top: 50%; left: 0;
+  width: 9px; height: 9px; margin-top: -4.5px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+  opacity: 0;
+}
+.rw-marketing .replay-wire-dot.go-codex { animation: rp-wire-right 0.9s ease-in-out forwards; }
+.rw-marketing .replay-wire-dot.go-claude { animation: rp-wire-left 0.9s ease-in-out forwards; }
+@keyframes rp-wire-right {
+  0% { left: 0; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; }
+  100% { left: calc(100% - 9px); opacity: 0; }
+}
+@keyframes rp-wire-left {
+  0% { left: calc(100% - 9px); opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; }
+  100% { left: 0; opacity: 0; }
+}
+@keyframes rp-wire-down {
+  0% { top: 0; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; }
+  100% { top: calc(100% - 9px); opacity: 0; }
+}
+@keyframes rp-wire-up {
+  0% { top: calc(100% - 9px); opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; }
+  100% { top: 0; opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .rw-marketing .term-line { animation: none; }
+  .rw-marketing .rp-cursor { animation: none; }
+  .rw-marketing .replay-wire-dot { animation: none !important; }
 }
-.rw-marketing .term-blank { height: 1.7em; }
-.rw-marketing .t-d { color: #807c74; }
-.rw-marketing .t-c { color: var(--cobalt-300); font-weight: 500; }
-.rw-marketing .t-m { color: #807c74; }
-.rw-marketing .t-row { color: #efece4; }
-.rw-marketing .t-stale { color: #e0b14a; }
-.rw-marketing .t-off { color: #807c74; }
-.rw-marketing .t-arg { color: var(--cobalt-200); }
-.rw-marketing .t-g { color: #4eb37e; }
 
 /* =========================  CTA BAND  ========================= */
 .rw-marketing .cta-band {
@@ -496,6 +569,17 @@
 /* =========================  RESPONSIVE  ========================= */
 @media (max-width: 980px) {
   .rw-marketing .hero { grid-template-columns: 1fr; gap: 36px; padding-top: 56px; }
+  .rw-marketing .replay-grid { grid-template-columns: 1fr; }
+  .rw-marketing .replay-wire { height: 56px; }
+  .rw-marketing .replay-wire::before {
+    left: 50%; right: auto; top: 6px; bottom: 6px;
+    border-top: 0; border-left: 1px dashed var(--rds-border);
+  }
+  .rw-marketing .replay-wire-label { top: 50%; left: calc(50% + 12px); transform: translateY(-50%); }
+  .rw-marketing .replay-wire-dot { left: 50%; margin-left: -4.5px; margin-top: 0; }
+  .rw-marketing .replay-wire-dot.go-codex { animation-name: rp-wire-down; }
+  .rw-marketing .replay-wire-dot.go-claude { animation-name: rp-wire-up; }
+  .rw-marketing .replay-body { min-height: 0; }
   .rw-marketing .mesh-demo { grid-template-columns: 1fr; }
   .rw-marketing .feature-hero { grid-template-columns: 1fr; gap: 24px; }
   .rw-marketing .feature-grid { grid-template-columns: repeat(2, 1fr); }
