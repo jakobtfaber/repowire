@@ -586,3 +586,31 @@ class TestWebSocketMessages:
                 assert body["turn_state"] == "working"
 
         cleanup_deps()
+
+
+
+class TestFlushGatesOnSeed:
+    """_flush_queued_notifies routes its wait through the shared seed gate."""
+
+    async def test_flush_awaits_seed_gate(self):
+        from unittest.mock import AsyncMock, patch
+
+        # Minimal state with all three deps present so the flush reaches the
+        # gate. The gate stub returns a settled peer with no queued rows.
+        state = SimpleNamespace(
+            queued_delivery_store=SimpleNamespace(
+                list_for_peer=lambda *a, **k: []
+            ),
+            message_router=SimpleNamespace(),
+            peer_registry=SimpleNamespace(),
+        )
+        with patch(
+            "repowire.daemon.routes.websocket.await_seed_settled",
+            new_callable=AsyncMock,
+        ) as gate:
+            gate.return_value = SimpleNamespace(turn_state="idle", display_name="p")
+            await websocket._flush_queued_notifies("a-session", state)
+        gate.assert_awaited_once()
+        assert gate.await_args.args[0] == "a-session"
+
+        cleanup_deps()
