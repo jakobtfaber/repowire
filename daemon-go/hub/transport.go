@@ -208,6 +208,32 @@ func (t *WebSocketTransport) ResolvePong(id proto.PeerID, data map[string]any) {
 	}
 }
 
+// ConnectionPaneID returns the pane_id recorded on the live connection, for
+// truthful delivery-trace logging. ("", false) when not connected (or no pane).
+// Mirrors the Python transport.get_connection_pane_id used in the delivery
+// trace log line.
+func (t *WebSocketTransport) ConnectionPaneID(id proto.PeerID) (string, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	info, ok := t.conns[id]
+	if !ok || info.PaneID == nil {
+		return "", false
+	}
+	return *info.PaneID, true
+}
+
+// ACPRoute reports whether this target should route over ACP instead of WS.
+//
+// ponytail: STUB. Always returns (nil, false) so every target falls through to
+// the WS path. Upgrade path: when the ACP broker experiment lands, replace this
+// with an AcpRouter implementation that mirrors PeerTransportRouter.acp_route
+// (maybe_decide_acp_route gated on experiments.acp_broker_client) and returns a
+// non-nil *ACPRouteDecision for brokered peers. The router/delivery/reconcile
+// code already branches on the bool, so no signature churn is needed then.
+func (t *WebSocketTransport) ACPRoute(target *proto.Peer) (*ACPRouteDecision, bool) {
+	return nil, false
+}
+
 // IsConnected reports whether the peer has a live socket. Used by the registry's
 // ghost-eviction pass.
 func (t *WebSocketTransport) IsConnected(id proto.PeerID) bool {

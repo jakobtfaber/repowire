@@ -12,13 +12,16 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/hub"
 	"github.com/repowire/repowire/daemon-go/peer"
+	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -32,6 +35,49 @@ func (realLiveness) PIDAlive(pid int) bool {
 		return false
 	}
 	return syscall.Kill(pid, 0) == nil
+}
+
+// realPaneProbe implements peer.PaneProbe: runtime evidence for an OFFLINE peer
+// is a live agent_pid OR a tmux pane that still exists. agent_pid is the strong
+// signal (syscall.Kill(pid,0)); a leftover pane must not keep a dead pid alive.
+type realPaneProbe struct{}
+
+func (realPaneProbe) HasRuntimeEvidence(p *proto.Peer) bool {
+	if p.AgentPID != nil && *p.AgentPID > 0 {
+		return syscall.Kill(*p.AgentPID, 0) == nil
+	}
+	if p.PaneID == nil || *p.PaneID == "" {
+		return false
+	}
+	// tmux display-message -p -t <pane> '#{pane_pid}' exits non-zero if the pane
+	// is gone. Best-effort: any error means "no evidence".
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", *p.PaneID, "#{pane_pid}").Output()
+	return err == nil && len(strings.TrimSpace(string(out))) > 0
+}
+
+// tmuxPaneLister implements hub.PaneLister for the session-closed evidence gate.
+// It shells out to `tmux list-panes -a` once; an empty/failed listing returns
+// nil, which the gate treats as INCONCLUSIVE (never "everything died"). Mirrors
+// repowire.hooks._tmux.list_all_panes (the gate only needs pane_id + session).
+type tmuxPaneLister struct{}
+
+func (tmuxPaneLister) ListAllPanes() []hub.PaneInfo {
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{session_name}").Output()
+	if err != nil {
+		return nil
+	}
+	var panes []hub.PaneInfo
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		panes = append(panes, hub.PaneInfo{PaneID: parts[0], Session: parts[1]})
+	}
+	return panes
 }
 
 // defaultDBPath resolves the state DB path: $REPOWIRE_STATE_DB wins, else
@@ -75,10 +121,34 @@ func main() {
 		log.Fatalf("hydrate registry: %v", err)
 	}
 
+	// Inject the lifecycle-reconciliation seams. The PaneProbe is the production
+	// ps/tmux runtime-evidence gate; the experiment flag and TTLs are spike
+	// defaults (config wiring is a later phase).
+	//
+	// ponytail: asks (AskTracker) and delivery (PeerDelivery) are nil here — the
+	// Go hub has no AskTracker yet, so the OFFLINE->live stash-redelivery pass and
+	// stash-loss emission stay dormant (nil-safe). Upgrade path: port hub's
+	// AskTracker + PeerDelivery and pass them here; the registry passes already
+	// gate on `asks != nil` with zero overhead until then.
+	reg.WithReconciliation(
+		nil, nil, realPaneProbe{},
+		peer.ExperimentsConfig{ACPBrokerClient: false},
+		30*time.Minute, // stale_busy_timeout (spike default)
+		72*time.Hour,   // prune_max_age (spike default)
+	)
+
 	// (5) NewHubWithTransport wires reg.OnOffline -> tracker.CancelQueriesToPeer
 	// internally, so a terminal/transport offline cascades query cancellation
 	// without the registry learning the tracker's shape.
 	h := hub.NewHubWithTransport(reg, transport, *authToken)
+
+	// Attach the tmux-lifecycle hook route group. The transport severs sockets;
+	// the tmux lister probes live panes for the session-closed evidence gate.
+	//
+	// ponytail: forgetSpawnedPane / clearPaneRuntimeState are nil (no-ops) — the
+	// Go daemon has not yet ported spawn-ownership tracking or the hook-side pane-
+	// runtime-state files. Inject them here when those land.
+	h.WithLifecycle(hub.NewLifecycleHandler(reg, transport, tmuxPaneLister{}, nil, nil))
 
 	// (6) Register HTTP/ws handlers.
 	mux := http.NewServeMux()

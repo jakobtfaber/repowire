@@ -23,6 +23,9 @@ type Liveness interface {
 type Transport interface {
 	IsConnected(proto.PeerID) bool
 	Close(proto.PeerID) error
+	// Ping probes a CONNECTED peer's self-report (pong.pane_alive) used by
+	// demoteUnsafeConnectedPeers. Best-effort: timeout/error is inconclusive.
+	Ping(ctx context.Context, id proto.PeerID, timeout time.Duration) (map[string]any, error)
 }
 
 // AllocateParams carries everything allocate_and_register needs. Identity-
@@ -73,6 +76,21 @@ type Registry struct {
 
 	retiredTTL time.Duration
 	reapTTL    time.Duration
+
+	// rec holds the lifecycle-reconciliation seams + state (AskTracker,
+	// PaneProbe, PeerDelivery, strike counters, contradiction dedup). Injected
+	// via WithReconciliation after construction; nil-safe — see recOrZero.
+	rec *reconcileState
+
+	// evlog is the in-memory dashboard event buffer (last 500, mirrors the
+	// Python EventLog). Lazily initialised via eventLog() behind evlogOnce; nil-
+	// safe so tests that never touch events pay nothing. The lazy-init MUST NOT
+	// take r.mu: appendEvent runs while r.mu is already held (AllocateAndRegister,
+	// MarkOffline, ...), and r.mu is a non-reentrant RWMutex — guarding the init
+	// with r.mu deadlocked. sync.Once is the right, lock-independent gate. See
+	// events.go.
+	evlog     *eventBuffer
+	evlogOnce sync.Once
 
 	// OnOffline is a hook the hub sets so a terminal/transport offline can
 	// cascade query cancellation (the hub owns the QueryTracker). The registry
@@ -291,18 +309,21 @@ func (r *Registry) MarkOffline(ctx context.Context, id proto.PeerID, terminal bo
 // moves still fail loud.
 func (r *Registry) UpdateStatus(ctx context.Context, id proto.PeerID, status proto.PeerStatus) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	ps, ok := r.peers[id]
 	if !ok {
+		r.mu.Unlock()
 		return nil
 	}
 	event, ok := statusToEvent(status)
 	if !ok {
+		r.mu.Unlock()
 		return nil
 	}
+	old := ps.state
 	next, err := Apply(ps.state, event)
 	if err != nil {
 		r.emitContradiction(ctx, id, ps.peer.DisplayName, ps.state, event)
+		r.mu.Unlock()
 		return nil
 	}
 	now := time.Now().UTC()
@@ -311,7 +332,17 @@ func (r *Registry) UpdateStatus(ctx context.Context, id proto.PeerID, status pro
 		ps.peer.Status = s
 	}
 	ps.peer.LastSeen = &now
+	r.mu.Unlock()
+
 	r.appendEvent(ctx, Event{Type: "peer_status", Timestamp: now, PeerID: id, PeerName: ps.peer.DisplayName, SessionID: id, Payload: map[string]any{"status": string(status)}})
+
+	// OFFLINE->(ONLINE|BUSY) drains any stashed replies owed to this asker. The
+	// flag-off / no-tracker path has zero overhead: no goroutine, no scan.
+	becameLive := old == StateOffline && (next == StateOnline || next == StateBusy)
+	rec := r.recOrZero()
+	if becameLive && rec.experiments.ACPBrokerClient && rec.asks != nil {
+		go r.redeliverPendingReplies(ctx, id)
+	}
 	return nil
 }
 
@@ -401,6 +432,24 @@ func (r *Registry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {
 	return ps.peer, true
 }
 
+// GetPeerByPane returns the peer occupying a tmux pane, or (nil,false). pane_id
+// is runtime addressing (a tmux %N), not routing identity — the lookup walks the
+// peers and matches on PaneID. Used by the tmux-lifecycle hooks to resolve a
+// dead/renamed pane back to its peer.
+func (r *Registry) GetPeerByPane(pane string) (*proto.Peer, bool) {
+	if pane == "" {
+		return nil, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, ps := range r.peers {
+		if ps.peer.PaneID != nil && *ps.peer.PaneID == pane {
+			return ps.peer, true
+		}
+	}
+	return nil, false
+}
+
 // GetPeersByCircle returns all peers in a circle.
 func (r *Registry) GetPeersByCircle(circle string) []*proto.Peer {
 	r.mu.RLock()
@@ -431,37 +480,106 @@ func (r *Registry) LazyRepair(ctx context.Context) {
 	}
 	r.lastRepair = time.Now()
 
+	// Pass order mirrors Python lazy_repair. The recovery sweep inside
+	// demoteDisconnected runs first (clearing connection contradictions for any
+	// peer the transport reports connected), then the demote/repair/evict passes.
 	r.demoteDisconnected(ctx)
+	r.demoteUnsafeConnectedPeers(ctx)
+	r.repairStaleBusyPeers(ctx)
 	r.reapDangling(ctx)
+	r.evictStalePeers(ctx)
+	r.emitAndEvictExpiredStashes(ctx)
 	r.persistMappings(ctx)
 	r.pruneRetired(ctx)
 }
 
-// demoteDisconnected marks Online/Busy peers OFFLINE when they have no live
-// WebSocket and no live agent process (a ghost).
+// demoteDisconnected marks Online/Busy transport-owned peers OFFLINE when they
+// have no live WebSocket. Two sub-passes mirror Python:
+//
+//   - NON-pane peers demote purely on no-WS (their inbound transport is gone).
+//   - PANE-backed peers are probed for runtime evidence (agent_pid alive OR tmux
+//     pane present); only a peer with NEITHER socket NOR evidence is a dead ghost.
+//
+// A recovery sweep runs first, clearing connection contradictions for any peer
+// the transport reports connected, so a future recurrence re-emits exactly once.
+//
+// ACP-brokered peers (metadata["acp"] != nil, flag on) and in-process @jobs
+// service peers (metadata["in_process"] != nil) are exempt from BOTH sub-passes:
+// their liveness is their subprocess / the daemon itself, not a WebSocket
+// (repowire#206).
 func (r *Registry) demoteDisconnected(ctx context.Context) {
+	if r.transport == nil {
+		return
+	}
+	rec := r.recOrZero()
+	acpFlag := rec.experiments.ACPBrokerClient
+
 	r.mu.Lock()
-	var ghosts []proto.PeerID
+	// Recovery: any peer with a live socket clears its connection contradictions.
+	for id := range r.peers {
+		if r.transport.IsConnected(id) {
+			r.clearContradiction(id, ContradictionOnlineButNoWS)
+			r.clearContradiction(id, ContradictionAgentPIDDead)
+		}
+	}
+	exempt := func(p *proto.Peer) bool {
+		if acpFlag && p.Metadata != nil && p.Metadata["acp"] != nil {
+			return true
+		}
+		return p.Metadata != nil && p.Metadata["in_process"] != nil
+	}
+	var candidates []proto.PeerID
+	var paneCandidates []*proto.Peer
 	for id, ps := range r.peers {
 		if ps.state != StateOnline && ps.state != StateBusy {
 			continue
 		}
-		if r.transport != nil && r.transport.IsConnected(id) {
+		if r.transport.IsConnected(id) {
 			continue
 		}
-		if ps.peer.AgentPID != nil && r.live.PIDAlive(*ps.peer.AgentPID) {
+		if exempt(ps.peer) {
 			continue
 		}
-		ghosts = append(ghosts, id)
+		if ps.peer.PaneID != nil && *ps.peer.PaneID != "" {
+			paneCandidates = append(paneCandidates, ps.peer)
+		} else {
+			candidates = append(candidates, id)
+		}
 	}
+	r.mu.Unlock()
+
+	// Pane-backed sub-pass: probe runtime evidence off the lock; a pane with no
+	// evidence joins the demote set.
+	evidence := r.runtimeEvidenceIDs(paneCandidates)
+	paneDead := make(map[proto.PeerID]struct{})
+	for _, p := range paneCandidates {
+		if _, ok := evidence[p.PeerID]; ok {
+			continue
+		}
+		candidates = append(candidates, p.PeerID)
+		paneDead[p.PeerID] = struct{}{}
+	}
+
 	now := time.Now().UTC()
 	type demoted struct {
-		id   proto.PeerID
-		name proto.DisplayName
+		id     proto.PeerID
+		name   proto.DisplayName
+		reason string
 	}
 	var done []demoted
-	for _, id := range ghosts {
-		ps := r.peers[id]
+	r.mu.Lock()
+	for _, id := range candidates {
+		ps, ok := r.peers[id]
+		if !ok {
+			continue
+		}
+		r.emitContradictionCode(ctx, ps.peer, ContradictionOnlineButNoWS, severityError,
+			"peer is "+string(ps.peer.Status)+" but has no live WebSocket connection")
+		_, isPaneDead := paneDead[id]
+		if isPaneDead && ps.peer.AgentPID != nil {
+			r.emitContradictionCode(ctx, ps.peer, ContradictionAgentPIDDead, severityError,
+				"agent pid has no runtime evidence")
+		}
 		next, err := Apply(ps.state, EventGhostDemote)
 		if err != nil {
 			r.emitContradictionLocked(ctx, id, ps.peer.DisplayName, ps.state, EventGhostDemote)
@@ -472,56 +590,110 @@ func (r *Registry) demoteDisconnected(ctx context.Context) {
 			ps.peer.Status = s
 		}
 		ps.peer.LastSeen = &now
-		done = append(done, demoted{id, ps.peer.DisplayName})
+		reason := "no_websocket_no_pane"
+		if isPaneDead {
+			reason = "no_websocket_no_runtime_evidence"
+		}
+		done = append(done, demoted{id, ps.peer.DisplayName, reason})
 	}
 	r.mu.Unlock()
 
 	for _, d := range done {
 		r.appendEvent(ctx, Event{Type: "peer_offline", Timestamp: now, PeerID: d.id, PeerName: d.name, SessionID: d.id,
-			Payload: map[string]any{"reason": "online_but_no_ws"}})
+			Payload: map[string]any{"reason": d.reason}})
 	}
 }
 
-// reapDangling removes Offline peers past the reap TTL with no live agent.
+// reapDangling removes Offline peers past the reap TTL, gated on runtime
+// evidence (agent_pid liveness + binding evidence via PaneProbe). A peer WITH
+// evidence is SPARED and emits offline_peer_still_has_runtime_evidence; a peer
+// WITHOUT is reaped: it drives Apply(Offline,Reap)->Retired, records the
+// retirement (so an orphan ws-hook cannot resurrect it), severs its transport,
+// and forgets its asks. Stash-loss ordering: snapshot -> emit -> forget so
+// observers see pending_reply_lost before the ask disappears.
 func (r *Registry) reapDangling(ctx context.Context) {
-	r.mu.Lock()
+	rec := r.recOrZero()
+
+	r.mu.RLock()
 	cutoff := time.Now().UTC().Add(-r.reapTTL)
-	var doomed []proto.PeerID
-	for id, ps := range r.peers {
+	var stale []*proto.Peer
+	for _, ps := range r.peers {
 		if ps.state != StateOffline {
 			continue
 		}
 		if ps.peer.LastSeen == nil || !ps.peer.LastSeen.Before(cutoff) {
 			continue
 		}
-		if ps.peer.AgentPID != nil && r.live.PIDAlive(*ps.peer.AgentPID) {
-			continue
-		}
-		doomed = append(doomed, id)
+		stale = append(stale, ps.peer)
 	}
+	r.mu.RUnlock()
+
+	evidence := r.runtimeEvidenceIDs(stale)
+
 	now := time.Now().UTC()
 	type reaped struct {
 		id   proto.PeerID
 		name proto.DisplayName
 	}
 	var done []reaped
-	for _, id := range doomed {
-		ps := r.peers[id]
-		next, err := Apply(ps.state, EventReap)
-		if err != nil {
-			r.emitContradictionLocked(ctx, id, ps.peer.DisplayName, ps.state, EventReap)
+	var spared []*proto.Peer
+
+	// Re-validate under the second lock (TOCTOU guard): a peer that flipped or
+	// got a new runtime in the probe window must survive.
+	r.mu.Lock()
+	cutoff = time.Now().UTC().Add(-r.reapTTL)
+	for _, peer := range stale {
+		ps, ok := r.peers[peer.PeerID]
+		if !ok || ps.state != StateOffline ||
+			ps.peer.LastSeen == nil || !ps.peer.LastSeen.Before(cutoff) {
 			continue
 		}
-		name := ps.peer.DisplayName
+		curPID, curPane := runtimeMarker(ps.peer)
+		oldPID, oldPane := runtimeMarker(peer)
+		if curPID != oldPID || curPane != oldPane {
+			continue
+		}
+		if _, ok := evidence[peer.PeerID]; ok {
+			spared = append(spared, ps.peer)
+			continue
+		}
+		next, err := Apply(ps.state, EventReap)
+		if err != nil {
+			r.emitContradictionLocked(ctx, peer.PeerID, ps.peer.DisplayName, ps.state, EventReap)
+			continue
+		}
 		_ = next // peer is being removed; Retired is its terminal state
-		delete(r.peers, id)
-		delete(r.mappings, id)
-		r.retired[id] = now
-		done = append(done, reaped{id, name})
+		name := ps.peer.DisplayName
+		delete(r.peers, peer.PeerID)
+		delete(r.mappings, peer.PeerID)
+		r.clearAllContradictions(peer.PeerID)
+		r.retired[peer.PeerID] = now
+		done = append(done, reaped{peer.PeerID, name})
 	}
 	r.mu.Unlock()
 
+	for _, peer := range spared {
+		r.emitOfflineStillHasEvidence(ctx, peer, "offline_ttl_with_runtime_evidence", cutoff, r.reapTTL)
+	}
+
+	// Stash-loss ordering: snapshot -> emit -> close transport -> forget.
+	if rec.asks != nil {
+		var lost []StashedAsk
+		for _, d := range done {
+			lost = append(lost, rec.asks.SnapshotPendingRepliesForPeer(d.id)...)
+		}
+		for _, ask := range lost {
+			r.emitPendingReplyLost(ctx, ask, "offline_ttl_reap")
+		}
+	}
+
 	for _, d := range done {
+		if r.transport != nil {
+			_ = r.transport.Close(d.id)
+		}
+		if rec.asks != nil {
+			rec.asks.ForgetPeer(d.id)
+		}
 		_ = r.store.DeleteMapping(ctx, d.id)
 		_ = r.store.Retire(ctx, d.id, now)
 		r.appendEvent(ctx, Event{Type: "peer_reaped", Timestamp: now, PeerID: d.id, PeerName: d.name, SessionID: d.id,
@@ -582,6 +754,11 @@ func (r *Registry) appendEvent(ctx context.Context, e Event) {
 		e.EventID = uuid.NewString()
 	}
 	_ = r.store.AppendEvent(ctx, e)
+	// Mirror the durable journal row into the in-memory dashboard window so a
+	// GET /events caller (and the SSE catch-up) sees lifecycle events alongside
+	// the route-emitted chat_turn/query/response events. The buffer is the live
+	// read surface; the store is the durable one.
+	r.eventLog().appendStructured(e)
 }
 
 // emitContradiction records a fail-loud peer_contradiction when an illegal

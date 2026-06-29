@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/repowire/repowire/daemon-go/peer"
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 // schemaVersion is reported by /health; matches the SQLite state schema version.
@@ -21,6 +22,55 @@ type Hub struct {
 	tracker   *QueryTracker
 	router    *MessageRouter
 	authToken string
+
+	// Read-path deps for the HTTP route groups. Optional and nil-safe: the
+	// peer-read handlers degrade gracefully (no inbound-health probe) when these
+	// are unset, mirroring Python's getattr(state, ..., None) pattern. Wired via
+	// WithReadDeps from main once the AskTracker / state.Store exist.
+	asks  *AskTracker
+	store *state.Store
+
+	// messaging is the optional /notify + /broadcast route group, wired via
+	// WithMessaging when the daemon has built a PeerDelivery. nil → those
+	// endpoints are not registered (the spike daemon has no PeerDelivery yet).
+	messaging *MessagingRoutes
+
+	// lifecycle is the optional tmux-lifecycle hook route group (pane/session/
+	// window/client), wired via WithLifecycle. nil → the /hooks/lifecycle/*
+	// endpoints are not registered. Built in main with the tmux PaneLister.
+	lifecycle *LifecycleHandler
+
+	// ask holds the ask-lifecycle route dependencies (AskTracker + PeerDelivery
+	// + the narrow registry seam), wired via WithAskLifecycle. The
+	// /ask·/ack·/answer·/query·/asks/* handlers 503 while unwired.
+	ask *askLifecycleDeps
+}
+
+// WithLifecycle attaches the tmux-lifecycle hook route group built over the
+// supplied handler. The handler is constructed in main (it needs the tmux
+// PaneLister, a host concern). Returns the hub for chaining; call before Routes.
+func (h *Hub) WithLifecycle(lh *LifecycleHandler) *Hub {
+	h.lifecycle = lh
+	return h
+}
+
+// WithMessaging attaches the messaging (notify/broadcast) route group built over
+// the supplied PeerDelivery and optional delivery-trace store. The registry is
+// the LazyRepair seam; auth reuses the hub's requireAuth wrapper. Returns the
+// hub for chaining; call before Routes.
+func (h *Hub) WithMessaging(delivery *PeerDelivery, traces deliveryTracer) *Hub {
+	h.messaging = NewMessagingRoutes(delivery, h.reg, traces)
+	return h
+}
+
+// WithReadDeps injects the AskTracker and state.Store the HTTP read routes use
+// to derive per-peer inbound health (pending-ask counts, last injection
+// success/failure). Returns the hub for chaining. nil-safe: handlers skip the
+// corresponding health fields when a dep is absent.
+func (h *Hub) WithReadDeps(asks *AskTracker, store *state.Store) *Hub {
+	h.asks = asks
+	h.store = store
+	return h
 }
 
 // NewHub constructs the hub over an already-built registry, minting a fresh
@@ -61,7 +111,20 @@ func (h *Hub) Router() *MessageRouter { return h.router }
 func (h *Hub) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/ws", h.HandleWS)
 	mux.HandleFunc("/health", h.health)
+	h.registerPeerReadRoutes(mux)
+	h.registerPeerLifecycleRoutes(mux)
+	h.EventRoutes(mux)
+	h.registerAskLifecycleRoutes(mux)
+	if h.messaging != nil {
+		h.messaging.Register(mux, h.requireAuth)
+	}
+	if h.lifecycle != nil {
+		h.LifecycleRoutes(mux, h.lifecycle)
+	}
 }
+
+// requireAuth, writeJSON, writeError, and writeJSONError are package-shared HTTP
+// helpers defined in routes_ask_lifecycle.go; server.go does not redeclare them.
 
 // health returns liveness plus the live peer count and schema version. Like /ws,
 // it opportunistically kicks lazy_repair in a goroutine — maintenance piggy-

@@ -88,6 +88,9 @@ type fakeTransport struct{ connected map[proto.PeerID]bool }
 
 func (t fakeTransport) IsConnected(id proto.PeerID) bool { return t.connected[id] }
 func (t fakeTransport) Close(proto.PeerID) error         { return nil }
+func (t fakeTransport) Ping(context.Context, proto.PeerID, time.Duration) (map[string]any, error) {
+	return nil, nil
+}
 
 func newRegistry(t *testing.T) (*Registry, *memStore) {
 	t.Helper()
