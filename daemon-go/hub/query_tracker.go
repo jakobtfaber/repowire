@@ -92,6 +92,39 @@ func (q *QueryTracker) ResolveQuery(corrID, text string) {
 	}
 }
 
+// ResolveOldestQuery resolves the oldest pending query routed to id with text,
+// returning whether one was found. The /response endpoint uses this when a Stop
+// hook delivers a response without a correlation_id — the daemon matches it to
+// the longest-waiting query to that peer. Mirrors QueryTracker.resolve_oldest_query.
+func (q *QueryTracker) ResolveOldestQuery(id proto.PeerID, text string) bool {
+	q.mu.Lock()
+	corrIDs := q.byPeer[id]
+	var oldest *PendingQuery
+	for corrID := range corrIDs {
+		pq, ok := q.queries[corrID]
+		if !ok {
+			continue
+		}
+		if oldest == nil || pq.CreatedAt.Before(oldest.CreatedAt) {
+			oldest = pq
+		}
+	}
+	if oldest == nil {
+		q.mu.Unlock()
+		return false
+	}
+	delete(q.queries, oldest.CorrelationID)
+	if set, ok := q.byPeer[id]; ok {
+		delete(set, oldest.CorrelationID)
+		if len(set) == 0 {
+			delete(q.byPeer, id)
+		}
+	}
+	q.mu.Unlock()
+	oldest.Future <- queryResult{Text: text}
+	return true
+}
+
 // ResolveQueryError fails a pending query with err and removes it.
 func (q *QueryTracker) ResolveQueryError(corrID string, err error) {
 	pq := q.take(corrID)

@@ -44,6 +44,54 @@ type Hub struct {
 	// + the narrow registry seam), wired via WithAskLifecycle. The
 	// /ask·/ack·/answer·/query·/asks/* handlers 503 while unwired.
 	ask *askLifecycleDeps
+
+	// schedules is the optional /schedules route group, wired via WithSchedules
+	// once the daemon has built the schedules store + scheduler. nil → those
+	// endpoints are not registered.
+	schedules *ScheduleRoutes
+
+	// session holds the session-wiring route dependencies (registry + query
+	// tracker + queued-delivery store), wired via WithSessionRoutes. The
+	// /session/update·/response·/deliveries/pending handlers 503 while unwired.
+	session *sessionDeps
+
+	// reviews is the JSON-backed review-queue store behind the /reviews routes,
+	// wired via WithReviews. nil → a default store at ~/.repowire/review_queue.json
+	// is created lazily at Routes() time so the endpoints are always available.
+	reviews *ReviewQueueStore
+
+	// relay is the optional relay config behind the /shares proxy routes, wired
+	// via WithShares. nil (or disabled) → POST/DELETE 503, GET returns []
+	// (matches Python when relay is not configured).
+	relay *RelayConfig
+
+	// work holds the tracked-work / durable-job route dependencies (work store,
+	// JobRunner, SessionControl, assigned-peer resolver), wired via WithWork /
+	// WithWorkRegistry. The /work·/jobs handlers 503 while unwired.
+	work *workRoutes
+
+	// spawn holds the spawn-kill-restart route dependencies (SpawnService + the
+	// narrow spawnRegistry seam + AskTracker quiesce barrier), wired via WithSpawn.
+	// nil → the /spawn·/kill-peer·/peers/{name}/{restart,switch-backend,rehook}
+	// handlers 503. Built in main with the real TmuxController + PaneOwnership.
+	spawn *spawnDeps
+}
+
+// WithReviews wires an explicit review-queue store onto the hub (e.g. a test
+// store under a temp dir). When unset, Routes() lazily creates the default
+// JSON-backed store. Returns the hub for chaining; call before Routes.
+func (h *Hub) WithReviews(store *ReviewQueueStore) *Hub {
+	h.reviews = store
+	return h
+}
+
+// WithSchedules attaches the /schedules route group built over the schedules
+// store and the scheduler wake. The scheduler's firing loop is started/stopped
+// by main (it owns the goroutine lifecycle); this only wires the routes.
+// Returns the hub for chaining; call before Routes.
+func (h *Hub) WithSchedules(store scheduleStore, scheduler scheduleWaker) *Hub {
+	h.schedules = NewScheduleRoutes(store, scheduler)
+	return h
 }
 
 // WithLifecycle attaches the tmux-lifecycle hook route group built over the
@@ -113,14 +161,37 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/health", h.health)
 	h.registerPeerReadRoutes(mux)
 	h.registerPeerLifecycleRoutes(mux)
+	h.registerOrchestratorRoutes(mux)
 	h.EventRoutes(mux)
+	h.EventsStreamRoutes(mux)
 	h.registerAskLifecycleRoutes(mux)
+	if h.session != nil {
+		h.registerSessionRoutes(mux)
+	}
 	if h.messaging != nil {
 		h.messaging.Register(mux, h.requireAuth)
 	}
 	if h.lifecycle != nil {
 		h.LifecycleRoutes(mux, h.lifecycle)
 	}
+	if h.schedules != nil {
+		h.schedules.Register(mux, h.requireAuth)
+	}
+	if h.work != nil {
+		h.registerWorkRoutes(mux)
+	}
+	if h.spawn != nil {
+		h.registerSpawnRoutes(mux)
+	}
+	// reviews/shares/attachments are independent leaf endpoints, always
+	// registered. Reviews lazily defaults its store; shares/attachments degrade
+	// gracefully when their (relay) dependency is unset.
+	if h.reviews == nil {
+		h.reviews = NewReviewQueueStore(DefaultReviewQueuePath())
+	}
+	h.registerReviewRoutes(mux)
+	h.registerShareRoutes(mux)
+	h.registerAttachmentRoutes(mux)
 }
 
 // requireAuth, writeJSON, writeError, and writeJSONError are package-shared HTTP

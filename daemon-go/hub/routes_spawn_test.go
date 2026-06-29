@@ -1,0 +1,310 @@
+package hub
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/repowire/repowire/daemon-go/peer"
+	"github.com/repowire/repowire/daemon-go/proto"
+)
+
+// ---------------------------------------------------------------------------
+// Fakes for the spawn route deps.
+// ---------------------------------------------------------------------------
+
+// fakeSpawnRegistry satisfies spawnRegistry + turnStateRegistry over an in-memory
+// peer slice. ResolvePeerStrict returns all display-name/peer-id matches so the
+// route can apply its 0/1/N policy.
+type fakeSpawnRegistry struct {
+	peers        []*proto.Peer
+	unregistered []string
+	allocID      proto.PeerID
+	allocName    proto.DisplayName
+	turnStates   map[proto.PeerID]proto.TurnState
+}
+
+func (r *fakeSpawnRegistry) LazyRepair(context.Context) {}
+
+func (r *fakeSpawnRegistry) ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error) {
+	var out []*proto.Peer
+	for _, p := range r.peers {
+		if string(p.PeerID) == identifier || string(p.DisplayName) == identifier {
+			if circle != nil && p.Circle != *circle {
+				continue
+			}
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeSpawnRegistry) AllocateAndRegister(_ context.Context, _ peer.AllocateParams) (proto.PeerID, proto.DisplayName, error) {
+	return r.allocID, r.allocName, nil
+}
+
+func (r *fakeSpawnRegistry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {
+	for _, p := range r.peers {
+		if p.PeerID == id {
+			return p, true
+		}
+	}
+	return nil, false
+}
+
+func (r *fakeSpawnRegistry) UnregisterPeer(_ context.Context, identifier string, _ *string) bool {
+	r.unregistered = append(r.unregistered, identifier)
+	return true
+}
+
+func (r *fakeSpawnRegistry) MarkOffline(context.Context, proto.PeerID, bool) (int, error) {
+	return 0, nil
+}
+
+func (r *fakeSpawnRegistry) UpdateTurnState(_ context.Context, id proto.PeerID, ts proto.TurnState) {
+	if r.turnStates == nil {
+		r.turnStates = map[proto.PeerID]proto.TurnState{}
+	}
+	r.turnStates[id] = ts
+}
+
+// fakeTmux records kill calls and returns a scripted Spawn result / pane evidence.
+type fakeTmux struct {
+	spawnResult SpawnResult
+	spawnErr    error
+	killed      []string
+	killOK      bool
+	evidence    map[string]*TmuxPaneEvidence
+}
+
+func (f *fakeTmux) Spawn(SpawnConfig) (SpawnResult, error) { return f.spawnResult, f.spawnErr }
+func (f *fakeTmux) KillPane(paneID string) bool {
+	f.killed = append(f.killed, paneID)
+	return f.killOK
+}
+func (f *fakeTmux) ProbePane(paneID string) *TmuxPaneEvidence { return f.evidence[paneID] }
+
+// newSpawnTestHub wires the spawn deps over fakes + an httptest server. The
+// SpawnService uses an in-memory PaneOwnership (REPOWIRE_CONFIG_DIR sandboxed to a
+// temp dir so the on-disk JSON never touches the real ~/.repowire).
+func newSpawnTestHub(t *testing.T, reg *fakeSpawnRegistry, tmux *fakeTmux) (*httptest.Server, *SpawnService) {
+	t.Helper()
+	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
+	t.Setenv("REPOWIRE_CACHE_DIR", t.TempDir())
+
+	own := NewFileOwnership("test-host", tmux.ProbePane)
+	svc := NewSpawnService(tmux, own,
+		map[proto.AgentType]string{proto.AgentClaudeCode: "claude", proto.AgentCodex: "codex"},
+		[]string{t.TempDir()}, // an allowed root; spawn-enabled
+	)
+	asks := NewAskTracker(0)
+	h := &Hub{authToken: ""}
+	h.WithSpawn(svc, reg, asks, "test-host")
+
+	mux := http.NewServeMux()
+	h.registerSpawnRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, svc
+}
+
+func postSpawnJSON(t *testing.T, srv *httptest.Server, path string, body any) *http.Response {
+	t.Helper()
+	var buf bytes.Buffer
+	_ = json.NewEncoder(&buf).Encode(body)
+	resp, err := http.Post(srv.URL+path, "application/json", &buf)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
+// strp is the shared test helper (ask_tracker_test.go).
+
+// ---------------------------------------------------------------------------
+// Primary path: POST /kill-peer destructive-proof truth table.
+// ---------------------------------------------------------------------------
+
+// TestKillPeerSpawnedPaneKillsAndUnregisters is the primary endpoint test: a peer
+// whose pane is in the in-process spawned set is destructively-provable, so
+// /kill-peer kills the pane, forgets ownership, unregisters the peer, and reports
+// tmux_killed=true.
+func TestKillPeerSpawnedPaneKillsAndUnregisters(t *testing.T) {
+	pane := "%42"
+	p := &proto.Peer{
+		PeerID:      "repow-default-aaaa",
+		DisplayName: "proj-claude-code",
+		Backend:     proto.AgentClaudeCode,
+		Circle:      "default",
+		Role:        proto.RoleAgent,
+		PaneID:      &pane,
+		TmuxSession: strp("default:proj"),
+	}
+	reg := &fakeSpawnRegistry{peers: []*proto.Peer{p}}
+	tmux := &fakeTmux{killOK: true}
+	srv, svc := newSpawnTestHub(t, reg, tmux)
+
+	// Mark the pane as daemon-spawned this life — the strongest destructive proof.
+	svc.Ownership().MarkSpawned(pane)
+
+	resp := postSpawnJSON(t, srv, "/kill-peer", KillPeerRequest{PeerIdentifier: string(p.PeerID)})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("kill-peer status = %d, want 200", resp.StatusCode)
+	}
+	var out KillResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.TmuxKilled == nil || !*out.TmuxKilled {
+		t.Fatalf("tmux_killed = %v, want true", out.TmuxKilled)
+	}
+	if len(tmux.killed) != 1 || tmux.killed[0] != pane {
+		t.Fatalf("killed panes = %v, want [%s]", tmux.killed, pane)
+	}
+	if len(reg.unregistered) != 1 {
+		t.Fatalf("unregistered = %v, want one peer", reg.unregistered)
+	}
+}
+
+// TestKillPeerNoProofUnregistersButSkipsKill enforces the fail-loud rule: a peer
+// with a pane id but NO durable proof and NOT in the spawned set (path alone is
+// never proof) is unregistered, but the pane is left untouched and tmux_killed is
+// null. The pane has no tmux evidence, so it cannot fall through to a kill.
+func TestKillPeerNoProofUnregistersButSkipsKill(t *testing.T) {
+	pane := "%99"
+	p := &proto.Peer{
+		PeerID:      "repow-default-bbbb",
+		DisplayName: "proj-claude-code",
+		Backend:     proto.AgentClaudeCode,
+		Circle:      "default",
+		Role:        proto.RoleAgent,
+		PaneID:      &pane,
+	}
+	reg := &fakeSpawnRegistry{peers: []*proto.Peer{p}}
+	tmux := &fakeTmux{killOK: true} // no evidence map → ProbePane returns nil
+	srv, _ := newSpawnTestHub(t, reg, tmux)
+
+	resp := postSpawnJSON(t, srv, "/kill-peer", KillPeerRequest{PeerIdentifier: string(p.PeerID)})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("kill-peer status = %d, want 200", resp.StatusCode)
+	}
+	var out KillResponse
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if out.TmuxKilled != nil {
+		t.Fatalf("tmux_killed = %v, want null (no proof)", *out.TmuxKilled)
+	}
+	if len(tmux.killed) != 0 {
+		t.Fatalf("killed panes = %v, want none (no proof)", tmux.killed)
+	}
+	if len(reg.unregistered) != 1 {
+		t.Fatalf("unregistered = %v, want the peer still unregistered", reg.unregistered)
+	}
+}
+
+// TestKillPeerNotFound returns 404 for an unknown identifier.
+func TestKillPeerNotFound(t *testing.T) {
+	reg := &fakeSpawnRegistry{}
+	srv, _ := newSpawnTestHub(t, reg, &fakeTmux{})
+	resp := postSpawnJSON(t, srv, "/kill-peer", KillPeerRequest{PeerIdentifier: "nope"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestKillPeerAmbiguousIs409 returns 409 with candidates when a display_name
+// resolves to more than one peer.
+func TestKillPeerAmbiguousIs409(t *testing.T) {
+	mk := func(id, circle string) *proto.Peer {
+		return &proto.Peer{PeerID: proto.PeerID(id), DisplayName: "dup-claude-code",
+			Backend: proto.AgentClaudeCode, Circle: circle, Role: proto.RoleAgent}
+	}
+	reg := &fakeSpawnRegistry{peers: []*proto.Peer{mk("repow-a-1", "alpha"), mk("repow-b-1", "beta")}}
+	srv, _ := newSpawnTestHub(t, reg, &fakeTmux{})
+	resp := postSpawnJSON(t, srv, "/kill-peer", KillPeerRequest{PeerIdentifier: "dup-claude-code"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /spawn/config + POST /spawn happy path.
+// ---------------------------------------------------------------------------
+
+// TestSpawnConfigReportsEnabled returns the configured commands and enabled=true
+// when both commands and allowed_paths are set.
+func TestSpawnConfigReportsEnabled(t *testing.T) {
+	reg := &fakeSpawnRegistry{}
+	srv, _ := newSpawnTestHub(t, reg, &fakeTmux{})
+	resp, err := http.Get(srv.URL + "/spawn/config")
+	if err != nil {
+		t.Fatalf("GET /spawn/config: %v", err)
+	}
+	defer resp.Body.Close()
+	var out SpawnConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.Enabled {
+		t.Fatalf("enabled = false, want true")
+	}
+	if out.Commands[proto.AgentClaudeCode] != "claude" {
+		t.Fatalf("commands missing claude-code: %v", out.Commands)
+	}
+}
+
+// TestSpawnClaudeCodeIsPendingHook verifies a self-registering backend (claude-code)
+// spawns and leaves registration to its SessionStart hook: registration_state is
+// pending_hook, no peer_id is pre-allocated, and the pane is recorded as
+// daemon-spawned (so a later kill is provable).
+func TestSpawnClaudeCodeIsPendingHook(t *testing.T) {
+	reg := &fakeSpawnRegistry{}
+	pane := "%7"
+	tmux := &fakeTmux{spawnResult: SpawnResult{
+		DisplayName: "proj-claude-code", TmuxSession: "default:proj", PaneID: pane,
+	}}
+	srv, svc := newSpawnTestHub(t, reg, tmux)
+
+	// path must be under the allowed root; reuse the allowed root the service was
+	// built with by spawning into it directly.
+	allowed := svc.AllowedPaths()[0]
+	bk := proto.AgentClaudeCode
+	resp := postSpawnJSON(t, srv, "/spawn", SpawnRequest{Path: allowed, Backend: &bk, Circle: "default"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("spawn status = %d, want 200", resp.StatusCode)
+	}
+	var out SpawnResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.RegistrationState != "pending_hook" {
+		t.Fatalf("registration_state = %q, want pending_hook", out.RegistrationState)
+	}
+	if out.PeerID != nil {
+		t.Fatalf("peer_id = %v, want nil (hook self-registers)", *out.PeerID)
+	}
+	if !svc.Ownership().IsSpawned(pane) {
+		t.Fatalf("pane %s not marked spawned after /spawn", pane)
+	}
+}
+
+// TestSpawnRejectsDoubleSelector 422s when both backend and command are passed.
+func TestSpawnRejectsDoubleSelector(t *testing.T) {
+	reg := &fakeSpawnRegistry{}
+	srv, _ := newSpawnTestHub(t, reg, &fakeTmux{})
+	bk := proto.AgentClaudeCode
+	resp := postSpawnJSON(t, srv, "/spawn", SpawnRequest{
+		Path: "/tmp", Backend: &bk, Command: strp("claude"),
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+}

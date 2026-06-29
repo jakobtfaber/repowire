@@ -24,9 +24,18 @@ const eventsBufferCapacity = 500
 // eventBuffer is a bounded FIFO of event maps with a coarse mutex. Reads return
 // snapshot copies of the slice (the maps themselves are not deep-copied; callers
 // treat them as read-only, exactly like the Python list(self.events)).
+//
+// subscribers is the SSE fan-out set (mirrors the Python asyncio.Event subscriber
+// set in PeerRegistry): each live /events/stream connection registers a buffered
+// signal channel here. push() does a non-blocking send to every subscriber after
+// appending, so a stream that has not yet drained does not block the writer (its
+// channel stays "raised" with a single pending token, exactly like a set
+// asyncio.Event). The set lives on the buffer (not the Registry struct) so adding
+// SSE fan-out does not edit registry.go.
 type eventBuffer struct {
-	mu     sync.Mutex
-	events []map[string]any
+	mu          sync.Mutex
+	events      []map[string]any
+	subscribers map[chan struct{}]struct{}
 }
 
 // eventLog lazily initialises and returns the registry's in-memory event window,
@@ -42,14 +51,52 @@ func (r *Registry) eventLog() *eventBuffer {
 	return r.evlog
 }
 
-// push appends a fully-formed event map, evicting the oldest beyond capacity.
+// push appends a fully-formed event map, evicting the oldest beyond capacity,
+// then wakes every live SSE subscriber with a non-blocking send.
 func (b *eventBuffer) push(ev map[string]any) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.events = append(b.events, ev)
 	if over := len(b.events) - eventsBufferCapacity; over > 0 {
 		b.events = b.events[over:]
 	}
+	// Snapshot subscriber channels under the lock; signal outside it. The send is
+	// non-blocking: a buffered (cap 1) channel that already holds a token is
+	// "already raised" and we skip — the subscriber will drain everything since
+	// its cursor in one pass, so a coalesced wake loses no events.
+	subs := make([]chan struct{}, 0, len(b.subscribers))
+	for ch := range b.subscribers {
+		subs = append(subs, ch)
+	}
+	b.mu.Unlock()
+	for _, ch := range subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// subscribe registers a buffered (cap 1) signal channel in the fan-out set and
+// returns it with an unsubscribe closure. The channel is buffered so push()
+// never blocks and an event raised between subscribe and the first drain is not
+// lost. Mirrors PeerRegistry.subscribe_events / unsubscribe_events.
+func (b *eventBuffer) subscribe() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	b.mu.Lock()
+	if b.subscribers == nil {
+		b.subscribers = make(map[chan struct{}]struct{})
+	}
+	b.subscribers[ch] = struct{}{}
+	b.mu.Unlock()
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			b.mu.Lock()
+			delete(b.subscribers, ch)
+			b.mu.Unlock()
+		})
+	}
+	return ch, unsubscribe
 }
 
 // appendStructured records a lifecycle Event (the journal shape the registry
@@ -99,6 +146,17 @@ func (r *Registry) AddEvent(eventType string, data map[string]any) string {
 	return id
 }
 
+// SubscribeEvents registers an SSE subscriber: returns a buffered wake channel
+// (signaled non-blocking on every AddEvent/appendEvent push) and an idempotent
+// unsubscribe. Mirrors PeerRegistry.subscribe_events; the hub /events/stream
+// handler does an initial flush of GetEvents(), then selects on this channel vs a
+// keepalive ticker, replaying EventsSince(lastID) on each wake. The send-to-each
+// happens in push() OUTSIDE r.mu, so AddEvent (which may run while r.mu is held)
+// never re-enters the registry lock.
+func (r *Registry) SubscribeEvents() (<-chan struct{}, func()) {
+	return r.eventLog().subscribe()
+}
+
 // GetEvents returns a snapshot of the full buffered window (last 500), oldest
 // first. Mirrors PeerRegistry.get_events.
 func (r *Registry) GetEvents() []map[string]any {
@@ -135,6 +193,9 @@ func (r *Registry) EventsSince(eventID string) []map[string]any {
 	copy(out, b.events)
 	return out
 }
+
+// SubscribeEvents is defined above (the registry-access-seams area landed an
+// identical declaration). Not redeclared here.
 
 // GetPeerByPane lives in registry.go (pre-existing). Not redeclared here.
 

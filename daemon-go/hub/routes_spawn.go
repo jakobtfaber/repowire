@@ -1,0 +1,979 @@
+package hub
+
+// routes_spawn.go owns the spawn-kill-restart HTTP route group, ported from
+// repowire/daemon/routes/spawn.py:
+//
+//	GET  /spawn/config                    spawn config for UI discovery
+//	POST /spawn                           create an agent session in tmux
+//	POST /kill-peer                       kill a registered peer by mesh identity
+//	POST /peers/{name}/restart            strict kill + backend-resume
+//	POST /peers/{name}/switch-backend     kill + respawn with a new backend
+//	POST /peers/{name}/rehook             ws-hook recovery (dry-run/report subset)
+//
+// Identity discipline: every destructive proof keys on peer_id, never
+// display_name/path. The _destructive_pane_proof truth table is ported verbatim
+// (spawned-set → durable ownership → live pane metadata peer_id match; path alone
+// is NEVER proof). Fail loud over silent degrade: no proof → unregister but
+// report tmux_killed=null; a tmux kill failure leaves the peer registered and
+// 500s so an operator can inspect a possibly-live runtime.
+
+import (
+	"context"
+	"net/http"
+	"os"
+
+	"github.com/repowire/repowire/daemon-go/peer"
+	"github.com/repowire/repowire/daemon-go/proto"
+)
+
+// spawnRegistry is the narrow registry seam the spawn routes need. It mirrors the
+// brief's authoritative interface; *peer.Registry satisfies it once
+// ResolvePeerStrict lands (it already has LazyRepair / AllocateAndRegister /
+// GetPeer / UnregisterPeer / MarkOffline). Kept narrow for the same reason as
+// askRoutesRegistry: hermetic route tests + the registry port is still in flight.
+type spawnRegistry interface {
+	LazyRepair(ctx context.Context)
+	// ResolvePeerStrict returns 0/1/N candidates: empty → 404, one → resolved,
+	// many → 409 ambiguous (the route lists candidates). NEW on *peer.Registry.
+	ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error)
+	AllocateAndRegister(ctx context.Context, p peer.AllocateParams) (proto.PeerID, proto.DisplayName, error)
+	GetPeer(id proto.PeerID) (*proto.Peer, bool)
+	UnregisterPeer(ctx context.Context, identifier string, circle *string) bool
+	MarkOffline(ctx context.Context, id proto.PeerID, terminal bool) (int, error)
+}
+
+// spawnDeps bundles the spawn route dependencies, wired onto the Hub via
+// WithSpawn. nil → the spawn endpoints are not registered.
+type spawnDeps struct {
+	svc         *SpawnService
+	reg         spawnRegistry
+	asks        *AskTracker
+	selfMachine string
+}
+
+// WithSpawn attaches the spawn-kill-restart route group. svc owns tmux + ownership;
+// reg is the resolve/allocate/unregister seam; asks supplies the quiesce barrier
+// for restart/switch; selfMachine is the daemon hostname for the same-host gate.
+// Returns the hub for chaining; call before Routes.
+func (h *Hub) WithSpawn(svc *SpawnService, reg spawnRegistry, asks *AskTracker, selfMachine string) *Hub {
+	h.spawn = &spawnDeps{svc: svc, reg: reg, asks: asks, selfMachine: selfMachine}
+	return h
+}
+
+// registerSpawnRoutes wires the spawn handlers behind the shared bearer gate.
+// Method-prefixed patterns keep these POSTs distinct from the peer read/lifecycle
+// groups on the same /peers/{name} paths.
+func (h *Hub) registerSpawnRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /spawn/config", h.requireAuth(h.handleSpawnConfig))
+	mux.HandleFunc("POST /spawn", h.requireAuth(h.handleSpawn))
+	mux.HandleFunc("POST /kill-peer", h.requireAuth(h.handleKillPeer))
+	mux.HandleFunc("POST /peers/{name}/restart", h.requireAuth(h.handleRestartPeer))
+	mux.HandleFunc("POST /peers/{name}/switch-backend", h.requireAuth(h.handleSwitchBackend))
+	mux.HandleFunc("POST /peers/{name}/rehook", h.requireAuth(h.handleRehookPeer))
+}
+
+// spawnReady reports whether the spawn deps are wired; 503 otherwise.
+func (h *Hub) spawnReady(w http.ResponseWriter) bool {
+	if h.spawn == nil || h.spawn.svc == nil || h.spawn.reg == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "spawn not configured")
+		return false
+	}
+	return true
+}
+
+// ---------------------------------------------------------------------------
+// GET /spawn/config
+// ---------------------------------------------------------------------------
+
+// SpawnConfigResponse mirrors spawn.py SpawnConfigResponse. profiles is omitted
+// from the wire shape's content (always empty) until profiles are ported.
+type SpawnConfigResponse struct {
+	Enabled         bool                       `json:"enabled"`
+	Commands        map[proto.AgentType]string `json:"commands"`
+	Profiles        map[string]any             `json:"profiles"`
+	AllowedCommands []string                   `json:"allowed_commands"`
+	AllowedPaths    []string                   `json:"allowed_paths"`
+}
+
+func (h *Hub) handleSpawnConfig(w http.ResponseWriter, r *http.Request) {
+	if !h.spawnReady(w) {
+		return
+	}
+	svc := h.spawn.svc
+	commands := svc.Commands()
+	allowed := make([]string, 0, len(commands))
+	for _, c := range commands {
+		allowed = append(allowed, c)
+	}
+	writeJSON(w, http.StatusOK, SpawnConfigResponse{
+		Enabled:         svc.Enabled(),
+		Commands:        commands,
+		Profiles:        map[string]any{},
+		AllowedCommands: allowed,
+		AllowedPaths:    svc.AllowedPaths(),
+	})
+}
+
+// ---------------------------------------------------------------------------
+// POST /spawn
+// ---------------------------------------------------------------------------
+
+// SpawnRequest mirrors spawn.py SpawnRequest. Exactly one of backend/command must
+// be set (validated below → 422). profile requires backend.
+type SpawnRequest struct {
+	Path    string           `json:"path"`
+	Backend *proto.AgentType `json:"backend"`
+	Profile *string          `json:"profile"`
+	Command *string          `json:"command"`
+	Circle  string           `json:"circle"`
+	Message *string          `json:"message"`
+	Role    proto.PeerRole   `json:"role"`
+}
+
+// SpawnResponse mirrors spawn.py SpawnResponse.
+type SpawnResponse struct {
+	OK                bool     `json:"ok"`
+	DisplayName       string   `json:"display_name"`
+	TmuxSession       string   `json:"tmux_session"`
+	PeerID            *string  `json:"peer_id"`
+	RegistrationState string   `json:"registration_state"`
+	Warnings          []string `json:"warnings"`
+}
+
+// selfRegistersOnSpawn ports the per-backend self_registers_on_spawn flag. Default
+// true (hook-backed runtimes self-register via SessionStart); only antigravity
+// overrides to false in agent_backends.py.
+func selfRegistersOnSpawn(b proto.AgentType) bool {
+	return b != proto.AgentAntigravity
+}
+
+func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
+	if !h.spawnReady(w) {
+		return
+	}
+	var req SpawnRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Circle == "" {
+		req.Circle = "default"
+	}
+	if req.Role == "" {
+		req.Role = proto.RoleAgent
+	}
+
+	// Single runtime selector (mirrors SpawnRequest._single_runtime_selector).
+	if req.Backend != nil && req.Command != nil {
+		writeJSONError(w, http.StatusUnprocessableEntity, "Pass backend or command, not both")
+		return
+	}
+	if req.Backend == nil && req.Command == nil {
+		writeJSONError(w, http.StatusUnprocessableEntity, "Pass backend or command")
+		return
+	}
+	if req.Profile != nil && *req.Profile != "" && req.Backend == nil {
+		writeJSONError(w, http.StatusUnprocessableEntity, "Pass backend with profile")
+		return
+	}
+
+	var backend proto.AgentType
+	if req.Backend != nil {
+		backend = *req.Backend
+	} else {
+		// Legacy command selector: resolve to a backend whose configured command
+		// matches. ponytail: the legacy command->backend alias path is the rare
+		// compatibility case; we match against configured commands directly.
+		resolved, ok := h.resolveLegacyCommand(*req.Command)
+		if !ok {
+			writeJSONError(w, http.StatusForbidden, map[string]any{
+				"error":   "command_unavailable",
+				"hint":    "Command/profile not configured. Use daemon.spawn.commands keyed by backend.",
+				"command": *req.Command,
+			})
+			return
+		}
+		backend = resolved
+	}
+
+	svc := h.spawn.svc
+	// Resolve command BEFORE spawn so a 422/403 surfaces without a pane.
+	if _, err := svc.ResolveCommand(backend, req.Profile); err != nil {
+		h.writeSpawnError(w, err)
+		return
+	}
+	result, err := svc.Spawn(SpawnConfig{
+		Path:    req.Path,
+		Circle:  req.Circle,
+		Backend: backend,
+		Message: req.Message,
+		Role:    req.Role,
+	})
+	if err != nil {
+		h.writeSpawnError(w, err)
+		return
+	}
+
+	resp := SpawnResponse{
+		OK:                true,
+		DisplayName:       result.DisplayName,
+		TmuxSession:       result.TmuxSession,
+		RegistrationState: "pending_hook",
+		Warnings:          []string{},
+	}
+
+	// Non-self-registering backends are daemon-pre-registered for CLI polling.
+	if result.PaneID != "" && !selfRegistersOnSpawn(backend) {
+		resolvedPath := normPath(req.Path)
+		warning := backendStr(backend) + " hooks do not currently fire reliably; Repowire pre-registered this peer for CLI polling."
+		metadata := map[string]any{
+			"repowire_cli_fallback": true,
+			"spawn_registration":    "daemon_pre_registered",
+			"spawn_warning":         warning,
+		}
+		paneID := result.PaneID
+		tmux := result.TmuxSession
+		peerID, displayName, aerr := h.spawn.reg.AllocateAndRegister(r.Context(), peer.AllocateParams{
+			Circle:      req.Circle,
+			Backend:     backend,
+			Path:        &resolvedPath,
+			PaneID:      &paneID,
+			TmuxSession: &tmux,
+			Machine:     h.spawn.selfMachine,
+			Role:        req.Role,
+			Metadata:    metadata,
+		})
+		if aerr != nil {
+			writeJSONError(w, http.StatusConflict, aerr.Error())
+			return
+		}
+		// turn_state pending_first_turn when a seed message is in flight.
+		// AllocateParams carries no turn_state, so set it post-register through the
+		// registry FSM-orthogonal field (mirrors the Python turn_state arg).
+		if req.Message != nil {
+			if reg, ok := h.spawn.reg.(turnStateRegistry); ok {
+				reg.UpdateTurnState(r.Context(), peerID, proto.TurnPendingFirstTurn)
+			}
+		}
+		// Re-record ownership now that we know the assigned peer_id (so the durable
+		// proof carries the strong disambiguator).
+		pid := string(peerID)
+		svc.Ownership().Record(OwnershipRecord{
+			PaneID:      paneID,
+			Path:        resolvedPath,
+			Backend:     string(backend),
+			Circle:      req.Circle,
+			Role:        string(req.Role),
+			DisplayName: string(displayName),
+			TmuxSession: tmux,
+			Machine:     h.spawn.selfMachine,
+			PeerID:      &pid,
+		})
+		idStr := string(peerID)
+		resp.PeerID = &idStr
+		resp.DisplayName = string(displayName)
+		resp.RegistrationState = "cli_fallback"
+		resp.Warnings = append(resp.Warnings,
+			backendStr(backend)+" plugin hooks are pending upstream; peer was pre-registered for CLI polling, "+
+				"so ask/notify delivery queues until the peer drains it with `repowire peer asks` / `repowire peer deliveries`.")
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// turnStateRegistry is the optional seam for seeding pending_first_turn after a
+// CLI-fallback pre-registration; *peer.Registry satisfies it (UpdateTurnState).
+type turnStateRegistry interface {
+	UpdateTurnState(ctx context.Context, id proto.PeerID, ts proto.TurnState)
+}
+
+// resolveLegacyCommand maps a legacy command string to a backend whose configured
+// command equals it (or whose value the string matches). Returns false when none.
+func (h *Hub) resolveLegacyCommand(command string) (proto.AgentType, bool) {
+	for backend, configured := range h.spawn.svc.Commands() {
+		if command == configured || command == string(backend) {
+			return backend, true
+		}
+	}
+	return "", false
+}
+
+// writeSpawnError surfaces a *SpawnError as its carried HTTP status + detail; any
+// other error is a 500.
+func (h *Hub) writeSpawnError(w http.ResponseWriter, err error) {
+	if se, ok := asSpawnError(err); ok {
+		writeJSONError(w, se.Status, se.Detail)
+		return
+	}
+	writeJSONError(w, http.StatusInternalServerError, err.Error())
+}
+
+func backendStr(b proto.AgentType) string { return string(b) }
+
+// ---------------------------------------------------------------------------
+// POST /kill-peer
+// ---------------------------------------------------------------------------
+
+// KillPeerRequest mirrors spawn.py KillPeerRequest.
+type KillPeerRequest struct {
+	PeerIdentifier string  `json:"peer_identifier"`
+	Circle         *string `json:"circle"`
+	FromPeer       *string `json:"from_peer"`
+}
+
+// KillResponse mirrors spawn.py KillResponse. tmux_killed: true (killed), false
+// (kill attempted but failed), null (kill skipped — ownership unproven).
+type KillResponse struct {
+	OK         bool  `json:"ok"`
+	TmuxKilled *bool `json:"tmux_killed"`
+}
+
+func (h *Hub) handleKillPeer(w http.ResponseWriter, r *http.Request) {
+	if !h.spawnReady(w) {
+		return
+	}
+	var req KillPeerRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	ctx := r.Context()
+	h.spawn.reg.LazyRepair(ctx)
+
+	resolved, ok := h.resolveStrict(w, req.PeerIdentifier, req.Circle)
+	if !ok {
+		return
+	}
+
+	peerCopy := h.peerWithAdoptedOwnership(resolved)
+	proof := h.destructivePaneProof(peerCopy)
+	if !proof.ok || proof.paneID == "" {
+		// No proof: unregister identity but DO NOT touch any pane. tmux_killed=null.
+		h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
+		writeJSON(w, http.StatusOK, KillResponse{OK: true, TmuxKilled: nil})
+		return
+	}
+
+	killed := h.spawn.svc.tmux.KillPane(proof.paneID)
+	if !killed {
+		// Fail loud: verified pane could not be killed; leave the peer registered.
+		writeJSONError(w, http.StatusInternalServerError, map[string]any{
+			"error":   "kill_failed",
+			"hint":    "tmux kill-pane failed for the peer's verified pane; the peer remains registered so the operator can inspect it.",
+			"pane_id": proof.paneID,
+		})
+		return
+	}
+	h.spawn.svc.Ownership().Forget(proof.paneID)
+	h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
+	t := true
+	writeJSON(w, http.StatusOK, KillResponse{OK: true, TmuxKilled: &t})
+}
+
+// ---------------------------------------------------------------------------
+// POST /peers/{name}/restart
+// ---------------------------------------------------------------------------
+
+// RestartPeerRequest mirrors spawn.py RestartPeerRequest.
+type RestartPeerRequest struct {
+	Circle   *string `json:"circle"`
+	FromPeer *string `json:"from_peer"`
+	DryRun   bool    `json:"dry_run"`
+	Message  *string `json:"message"`
+}
+
+// RestartPeerResponse mirrors spawn.py RestartPeerResponse.
+type RestartPeerResponse struct {
+	OK                bool            `json:"ok"`
+	Status            string          `json:"status"`
+	Restarted         bool            `json:"restarted"`
+	PeerID            string          `json:"peer_id"`
+	DisplayName       string          `json:"display_name"`
+	Backend           proto.AgentType `json:"backend"`
+	Path              string          `json:"path"`
+	Circle            string          `json:"circle"`
+	TmuxSession       *string         `json:"tmux_session"`
+	ResumeMode        string          `json:"resume_mode"`
+	ResumeWarning     *string         `json:"resume_warning"`
+	UnsupportedReason *string         `json:"unsupported_reason"`
+	Command           *string         `json:"command"`
+}
+
+func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
+	if !h.spawnReady(w) {
+		return
+	}
+	name := r.PathValue("name")
+	var req RestartPeerRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	ctx := r.Context()
+	h.spawn.reg.LazyRepair(ctx)
+
+	resolved, ok := h.resolveStrict(w, name, req.Circle)
+	if !ok {
+		return
+	}
+	peerCopy := h.peerWithAdoptedOwnership(resolved)
+
+	if !h.sameHostOK(w, peerCopy, "Peer restart is same-host only in this slice.") {
+		return
+	}
+	if peerCopy.Path == "" {
+		writeJSONError(w, http.StatusConflict, map[string]any{
+			"error": "missing_path",
+			"hint":  "Peer has no recorded working directory; cannot restart.",
+		})
+		return
+	}
+
+	svc := h.spawn.svc
+	resolvedPath, perr := svc.ValidatePath(peerCopy.Path)
+	if perr != nil {
+		h.writeSpawnError(w, perr)
+		return
+	}
+	spawnCircle := peerCopy.Circle
+	if spawnCircle == "" {
+		spawnCircle = "default"
+	}
+
+	// Resume pre-validation is the strict-kill gate: the daemon must build a
+	// validated backend-native resume command BEFORE killing the pane. The
+	// resume_safety seam is NOT yet ported to daemon-go.
+	//
+	// ponytail: until resume_safety lands, restart resolves the configured backend
+	// command (which IS available — the peer is already running this backend) and
+	// records resume_mode="fresh" with a warning, instead of fabricating a
+	// transcript-resume command we cannot validate. This keeps the kill+respawn
+	// truthful (it restarts the runtime in-place) without claiming a resumed
+	// transcript. Upgrade path: port daemon/resume_safety.py + session_bindings
+	// newest-match (_restart_resume_target) and swap this block for resume_target().
+	resumeCommand, cerr := svc.ResolveCommand(peerCopy.Backend, nil)
+	if cerr != nil {
+		h.writeSpawnError(w, cerr)
+		return
+	}
+	resumeMode := "fresh"
+	resumeWarning := "Backend transcript resume is not yet available in the Go hub; the runtime is restarted fresh in its working directory."
+
+	proof := h.destructivePaneProof(peerCopy)
+	canSkipKill := peerCopy.Status == proto.StatusOffline &&
+		(proof.errCode == "missing_pane" || proof.errCode == "pane_not_live")
+	if !proof.ok && !canSkipKill {
+		writeJSONError(w, http.StatusConflict, h.paneControlErrorDetail(peerCopy, proof))
+		return
+	}
+
+	tmuxSession := proof.tmuxSession
+	if tmuxSession == "" && peerCopy.TmuxSession != nil {
+		tmuxSession = *peerCopy.TmuxSession
+	}
+
+	if req.DryRun {
+		ts := tmuxSession
+		rw := resumeWarning
+		writeJSON(w, http.StatusOK, RestartPeerResponse{
+			OK:            true,
+			Status:        "restart_available",
+			Restarted:     false,
+			PeerID:        string(peerCopy.PeerID),
+			DisplayName:   string(peerCopy.DisplayName),
+			Backend:       peerCopy.Backend,
+			Path:          resolvedPath,
+			Circle:        spawnCircle,
+			TmuxSession:   &ts,
+			Command:       &resumeCommand,
+			ResumeMode:    resumeMode,
+			ResumeWarning: &rw,
+		})
+		return
+	}
+
+	// Quiesce barrier: blocks new asks in either direction + verifies none are
+	// open. ErrQuiesceHasOpen → 409 in_flight_asks; ErrQuiesced (concurrent
+	// restart) → 409 restart_in_progress.
+	if h.spawn.asks != nil {
+		if qerr := h.spawn.asks.BeginQuiesce(ctx, peerCopy.PeerID); qerr != nil {
+			h.writeQuiesceError(w, qerr, ctx, peerCopy.PeerID, "restart_in_progress",
+				"Another restart/switch is in progress for this peer. Retry shortly.")
+			return
+		}
+		defer h.spawn.asks.EndQuiesce(ctx, peerCopy.PeerID)
+	}
+
+	if proof.ok {
+		if !h.spawn.svc.tmux.KillPane(proof.paneID) {
+			writeJSONError(w, http.StatusInternalServerError, map[string]any{
+				"error":   "kill_failed",
+				"hint":    "tmux kill-pane failed for the peer's verified pane; the old runtime may still be alive. Aborting restart to avoid duplicates.",
+				"pane_id": proof.paneID,
+			})
+			return
+		}
+		h.spawn.svc.Ownership().Forget(proof.paneID)
+		_, _ = h.spawn.reg.MarkOffline(ctx, peerCopy.PeerID, false)
+	}
+
+	result, serr := svc.Spawn(SpawnConfig{
+		Path:    resolvedPath,
+		Circle:  spawnCircle,
+		Backend: peerCopy.Backend,
+		Command: resumeCommand,
+		Message: req.Message,
+		Role:    peerCopy.Role,
+		PeerID:  &peerCopy.PeerID,
+	})
+	if serr != nil {
+		h.writeSpawnError(w, serr)
+		return
+	}
+
+	ts := result.TmuxSession
+	rw := resumeWarning
+	cmd := resumeCommand
+	writeJSON(w, http.StatusOK, RestartPeerResponse{
+		OK:            true,
+		Status:        "restarted",
+		Restarted:     true,
+		PeerID:        string(peerCopy.PeerID),
+		DisplayName:   string(peerCopy.DisplayName),
+		Backend:       peerCopy.Backend,
+		Path:          resolvedPath,
+		Circle:        spawnCircle,
+		TmuxSession:   &ts,
+		Command:       &cmd,
+		ResumeMode:    resumeMode,
+		ResumeWarning: &rw,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// POST /peers/{name}/switch-backend
+// ---------------------------------------------------------------------------
+
+// SwitchBackendRequest mirrors spawn.py SwitchBackendRequest.
+type SwitchBackendRequest struct {
+	NewBackend proto.AgentType `json:"new_backend"`
+}
+
+// SwitchBackendResponse mirrors spawn.py SwitchBackendResponse.
+type SwitchBackendResponse struct {
+	OK          bool            `json:"ok"`
+	DisplayName string          `json:"display_name"`
+	TmuxSession string          `json:"tmux_session"`
+	OldBackend  proto.AgentType `json:"old_backend"`
+	NewBackend  proto.AgentType `json:"new_backend"`
+	Command     string          `json:"command"`
+}
+
+func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
+	if !h.spawnReady(w) {
+		return
+	}
+	name := r.PathValue("name")
+	var req SwitchBackendRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	var circle *string
+	if c := r.URL.Query().Get("circle"); c != "" {
+		circle = &c
+	}
+	ctx := r.Context()
+	h.spawn.reg.LazyRepair(ctx)
+
+	resolved, ok := h.resolveStrict(w, name, circle)
+	if !ok {
+		return
+	}
+	peerCopy := resolved // switch uses identity + spawned-set ownership, not adoption
+
+	if !h.sameHostOK(w, peerCopy, "Backend switch is same-host only in v1; ACP transport required for remote peers.") {
+		return
+	}
+	if peerCopy.Backend == req.NewBackend {
+		writeJSONError(w, http.StatusConflict, map[string]any{
+			"error":   "same_backend",
+			"hint":    "Peer is already running " + string(peerCopy.Backend),
+			"backend": string(peerCopy.Backend),
+		})
+		return
+	}
+	if peerCopy.Path == "" {
+		writeJSONError(w, http.StatusConflict, map[string]any{
+			"error": "missing_path",
+			"hint":  "Peer has no recorded working directory; cannot respawn.",
+		})
+		return
+	}
+
+	svc := h.spawn.svc
+	resolvedPath, perr := svc.ValidatePath(peerCopy.Path)
+	if perr != nil {
+		h.writeSpawnError(w, perr)
+		return
+	}
+	command, cerr := svc.ResolveCommand(req.NewBackend, nil)
+	if cerr != nil {
+		// Decorate command_unavailable with new_backend (parity with Python).
+		if se, ok := asSpawnError(cerr); ok {
+			if m, ok := se.Detail.(map[string]any); ok && m["error"] == "command_unavailable" {
+				m["new_backend"] = string(req.NewBackend)
+			}
+		}
+		h.writeSpawnError(w, cerr)
+		return
+	}
+
+	if h.spawn.asks != nil {
+		if qerr := h.spawn.asks.BeginQuiesce(ctx, peerCopy.PeerID); qerr != nil {
+			h.writeQuiesceError(w, qerr, ctx, peerCopy.PeerID, "switch_in_progress",
+				"Another switch is in progress for this peer. Retry shortly.")
+			return
+		}
+		defer h.spawn.asks.EndQuiesce(ctx, peerCopy.PeerID)
+	}
+
+	spawnCircle := peerCopy.Circle
+	if spawnCircle == "" {
+		spawnCircle = "default"
+	}
+
+	// Only kill daemon-owned panes (spawned-set), same rule as /kill-peer. If
+	// kill_pane fails the old agent is still alive — abort rather than zombie it.
+	if peerCopy.PaneID != nil && *peerCopy.PaneID != "" && svc.Ownership().IsSpawned(*peerCopy.PaneID) {
+		if !svc.tmux.KillPane(*peerCopy.PaneID) {
+			writeJSONError(w, http.StatusInternalServerError, map[string]any{
+				"error":   "kill_failed",
+				"hint":    "tmux kill-pane failed for the peer's pane; the old agent may still be alive. Aborting switch to avoid a zombie runtime. Check `tmux list-panes -a`.",
+				"pane_id": *peerCopy.PaneID,
+			})
+			return
+		}
+		svc.Ownership().Forget(*peerCopy.PaneID)
+	}
+	h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
+
+	result, serr := svc.Spawn(SpawnConfig{
+		Path:    resolvedPath,
+		Circle:  spawnCircle,
+		Backend: req.NewBackend,
+	})
+	if serr != nil {
+		h.writeSpawnError(w, serr)
+		return
+	}
+	writeJSON(w, http.StatusOK, SwitchBackendResponse{
+		OK:          true,
+		DisplayName: result.DisplayName,
+		TmuxSession: result.TmuxSession,
+		OldBackend:  peerCopy.Backend,
+		NewBackend:  req.NewBackend,
+		Command:     command,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// POST /peers/{name}/rehook — dry-run/report subset.
+// ---------------------------------------------------------------------------
+
+// RehookPeerRequest mirrors spawn.py RehookPeerRequest.
+type RehookPeerRequest struct {
+	Circle   *string `json:"circle"`
+	FromPeer *string `json:"from_peer"`
+	Apply    bool    `json:"apply"`
+}
+
+// RehookPeerResponse mirrors spawn.py RehookPeerResponse.
+type RehookPeerResponse struct {
+	OK              bool    `json:"ok"`
+	Acted           bool    `json:"acted"`
+	PeerID          string  `json:"peer_id"`
+	DisplayName     string  `json:"display_name"`
+	PaneID          *string `json:"pane_id"`
+	WSWasConnected  bool    `json:"ws_was_connected"`
+	PingOK          *bool   `json:"ping_ok"`
+	PaneVerified    bool    `json:"pane_verified"`
+	WSHookRespawned bool    `json:"ws_hook_respawned"`
+	Reason          string  `json:"reason"`
+}
+
+// handleRehookPeer ports the rehook dry-run/report + ownership-verification subset.
+// The actual ws-hook respawn (maybe_respawn / reconcile_spawn_ws_hook) is a
+// hook-supervisor concern; the Go hook supervisor is unported, so when apply=true
+// this returns acted=false with reason "hook_supervisor_unported".
+//
+// ponytail: the respawn machinery (hooks/ws_hook_supervisor.py) is not in
+// daemon-go. Follow-up: port maybe_respawn + reconcile_spawn_ws_hook (pid-file
+// liveness + flock-deduped respawn) and wire the apply path here.
+func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
+	if !h.spawnReady(w) {
+		return
+	}
+	name := r.PathValue("name")
+	var req RehookPeerRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	ctx := r.Context()
+	h.spawn.reg.LazyRepair(ctx)
+
+	resolved, ok := h.resolveStrict(w, name, req.Circle)
+	if !ok {
+		return
+	}
+	peerCopy := h.peerWithAdoptedOwnership(resolved)
+
+	if !h.sameHostOK(w, peerCopy, "Peer rehook is same-host only.") {
+		return
+	}
+	if peerCopy.PaneID == nil || *peerCopy.PaneID == "" {
+		writeJSONError(w, http.StatusConflict, map[string]any{
+			"error": "missing_pane",
+			"hint":  "Peer has no recorded pane; nothing to rehook.",
+		})
+		return
+	}
+
+	// Ownership gate: prove the pane is real AND belongs to THIS peer. Accept
+	// durable spawn-ownership proof OR live tmux evidence whose current_path
+	// matches the peer's path. (Pane-metadata hook files are unported in Go.)
+	paneVerified := svc(h).Ownership().IsSpawned(*peerCopy.PaneID) ||
+		svc(h).Ownership().ValidateForPeer(peerCopy).OK
+	if !paneVerified {
+		if ev := svc(h).tmux.ProbePane(*peerCopy.PaneID); ev != nil &&
+			peerCopy.Path != "" && normPath(ev.CurrentPath) == normPath(peerCopy.Path) {
+			paneVerified = true
+		}
+	}
+	if !paneVerified {
+		writeJSONError(w, http.StatusConflict, map[string]any{
+			"error":   "pane_unverified",
+			"hint":    "Could not prove the pane belongs to this peer (no spawn ownership, pane path mismatch).",
+			"pane_id": *peerCopy.PaneID,
+		})
+		return
+	}
+
+	if !req.Apply {
+		writeJSON(w, http.StatusOK, RehookPeerResponse{
+			OK:           true,
+			Acted:        false,
+			PeerID:       string(peerCopy.PeerID),
+			DisplayName:  string(peerCopy.DisplayName),
+			PaneID:       peerCopy.PaneID,
+			PaneVerified: true,
+			Reason:       "dry_run",
+		})
+		return
+	}
+
+	// apply=true: the hook supervisor is unported, so we cannot respawn the
+	// ws-hook. Report honestly (acted=false) rather than claim a respawn.
+	writeJSON(w, http.StatusOK, RehookPeerResponse{
+		OK:           true,
+		Acted:        false,
+		PeerID:       string(peerCopy.PeerID),
+		DisplayName:  string(peerCopy.DisplayName),
+		PaneID:       peerCopy.PaneID,
+		PaneVerified: true,
+		Reason:       "hook_supervisor_unported",
+	})
+}
+
+// svc is a tiny accessor to keep the rehook handler readable.
+func svc(h *Hub) *SpawnService { return h.spawn.svc }
+
+// ---------------------------------------------------------------------------
+// Shared resolution + destructive-proof helpers.
+// ---------------------------------------------------------------------------
+
+// resolveStrict resolves an identifier to a single peer via ResolvePeerStrict:
+// empty list → 404, ambiguous (>1) → 409 with a candidates list, error → 409.
+// Returns (peer, true) only on a unique resolution.
+func (h *Hub) resolveStrict(w http.ResponseWriter, identifier string, circle *string) (*proto.Peer, bool) {
+	candidates, err := h.spawn.reg.ResolvePeerStrict(identifier, circle)
+	if err != nil {
+		writeJSONError(w, http.StatusConflict, err.Error())
+		return nil, false
+	}
+	if len(candidates) == 0 {
+		writeJSONError(w, http.StatusNotFound, "Peer not found: "+identifier)
+		return nil, false
+	}
+	if len(candidates) > 1 {
+		cands := make([]map[string]any, 0, len(candidates))
+		for _, p := range candidates {
+			cands = append(cands, map[string]any{
+				"peer_id":      string(p.PeerID),
+				"display_name": string(p.DisplayName),
+				"circle":       p.Circle,
+				"tmux_session": p.TmuxSession,
+			})
+		}
+		writeJSONError(w, http.StatusConflict, map[string]any{
+			"error":      "Ambiguous peer identifier: " + identifier,
+			"candidates": cands,
+		})
+		return nil, false
+	}
+	return candidates[0], true
+}
+
+// sameHostOK enforces the same-host gate: a peer on another machine 409s
+// cross_host. machine "unknown"/"" passes (no host claim to contradict).
+func (h *Hub) sameHostOK(w http.ResponseWriter, p *proto.Peer, hint string) bool {
+	if p.Machine != "" && p.Machine != "unknown" && p.Machine != h.spawn.selfMachine {
+		writeJSONError(w, http.StatusConflict, map[string]any{
+			"error":        "cross_host",
+			"hint":         hint,
+			"peer_machine": p.Machine,
+			"self_machine": h.spawn.selfMachine,
+		})
+		return false
+	}
+	return true
+}
+
+// peerWithAdoptedOwnership ports _peer_with_adopted_ownership: when durable
+// ownership uniquely resolves to a different pane than the peer's recorded one,
+// return a copy carrying the record's pane/tmux/machine (so a rehydrated peer that
+// lost its pane fields across restart still has a kill handle).
+func (h *Hub) peerWithAdoptedOwnership(p *proto.Peer) *proto.Peer {
+	v := h.spawn.svc.Ownership().ValidateForPeer(p)
+	if !v.OK || v.Record == nil {
+		return p
+	}
+	if p.PaneID != nil && *p.PaneID == v.Record.PaneID {
+		return p
+	}
+	cp := *p
+	paneID := v.Record.PaneID
+	tmux := v.Record.TmuxSession
+	cp.PaneID = &paneID
+	cp.TmuxSession = &tmux
+	cp.Machine = v.Record.Machine
+	return &cp
+}
+
+// destructiveProof is the kill-authorization result (port of _DestructivePaneProof).
+type destructiveProof struct {
+	ok          bool
+	paneID      string
+	tmuxSession string
+	mode        string
+	errCode     string
+	hint        string
+}
+
+// destructivePaneProof ports _destructive_pane_proof VERBATIM: the only accepted
+// proofs are (1) the pane is in the in-process spawned set, (2) durable spawn
+// ownership validates, or (3) live pane metadata names THIS peer_id. Path match
+// alone is NEVER proof. (3) is currently unreachable in Go — pane-runtime hook
+// metadata files are unported — so a manual pane with no durable proof refuses.
+func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
+	own := h.spawn.svc.Ownership()
+
+	if p.PaneID != nil && *p.PaneID != "" && own.IsSpawned(*p.PaneID) {
+		return destructiveProof{ok: true, paneID: *p.PaneID, mode: "repowire_spawned_pane",
+			tmuxSession: spawnDerefStr(p.TmuxSession)}
+	}
+
+	ownership := own.ValidateForPeer(p)
+	if ownership.OK && ownership.Record != nil {
+		return destructiveProof{ok: true, paneID: ownership.Record.PaneID,
+			tmuxSession: ownership.Record.TmuxSession, mode: "durable_spawn_ownership"}
+	}
+	if ownership.Error != "" && ownership.Error != "missing_ownership" {
+		pane := spawnDerefStr(p.PaneID)
+		if ownership.Record != nil {
+			pane = ownership.Record.PaneID
+		}
+		ts := spawnDerefStr(p.TmuxSession)
+		if ownership.Evidence != nil {
+			ts = ownership.Evidence.TmuxSession
+		} else if ownership.Record != nil {
+			ts = ownership.Record.TmuxSession
+		}
+		return destructiveProof{paneID: pane, tmuxSession: ts, errCode: ownership.Error, hint: ownership.Hint}
+	}
+
+	if p.PaneID == nil || *p.PaneID == "" {
+		return destructiveProof{errCode: "missing_pane",
+			hint: "Peer has no pane id, so Repowire has no pane to kill."}
+	}
+
+	_ = own
+	ev := h.spawn.svc.tmux.ProbePane(*p.PaneID)
+	if ev == nil {
+		return destructiveProof{paneID: *p.PaneID, errCode: "pane_not_live",
+			hint: "The peer's recorded pane is not visible in tmux."}
+	}
+
+	// (3) Live pane metadata peer_id match — UNPORTED in Go (no pane-runtime hook
+	// metadata files). Path match alone is deliberately NOT proof.
+	//
+	// ponytail: when hooks/utils.read_pane_runtime_metadata is ported, accept a
+	// metadata.peer_id == p.PeerID match here (mode "verified_pane_metadata").
+	return destructiveProof{paneID: *p.PaneID, tmuxSession: ev.TmuxSession,
+		errCode: "missing_pane_metadata",
+		hint:    "Live pane has no peer_id metadata. Path match alone is not enough for destructive controls."}
+}
+
+// paneControlErrorDetail mirrors _pane_control_error_detail.
+func (h *Hub) paneControlErrorDetail(p *proto.Peer, proof destructiveProof) map[string]any {
+	errCode := proof.errCode
+	if errCode == "" {
+		errCode = "pane_unverified"
+	}
+	hint := proof.hint
+	if hint == "" {
+		hint = "Destructive peer controls require a Repowire spawn proof or pane metadata whose peer_id matches the target peer."
+	}
+	return map[string]any{
+		"error":   errCode,
+		"hint":    hint,
+		"pane_id": spawnDerefStr(p.PaneID),
+	}
+}
+
+// writeQuiesceError maps a BeginQuiesce error to the right 409 shape. An open-ask
+// failure surfaces in_flight_asks; a concurrent-quiesce failure uses the supplied
+// inProgress error/hint. Releases nothing (the caller never acquired the barrier).
+func (h *Hub) writeQuiesceError(w http.ResponseWriter, qerr error, ctx context.Context, id proto.PeerID, inProgressErr, inProgressHint string) {
+	if qerr == ErrQuiesceHasOpen {
+		open, _ := h.spawn.asks.PendingForPeer(ctx, id, -1, "both")
+		cids := make([]string, 0, len(open))
+		for _, a := range open {
+			cids = append(cids, a.CorrelationID)
+		}
+		writeJSONError(w, http.StatusConflict, map[string]any{
+			"error":     "in_flight_asks",
+			"hint":      "Peer has open asks; the operation would orphan them. Retry after they're acked or evicted.",
+			"open_asks": cids,
+		})
+		return
+	}
+	writeJSONError(w, http.StatusConflict, map[string]any{
+		"error": inProgressErr,
+		"hint":  inProgressHint,
+	})
+}
+
+// spawnDerefStr dereferences an optional string ("" when nil). Named to avoid
+// colliding with the work area's package-level derefStr helper.
+func spawnDerefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// selfHostname returns the daemon hostname for the same-host gate (used by main
+// wiring; here for the package's convenience).
+func selfHostname() string {
+	if hn, err := os.Hostname(); err == nil && hn != "" {
+		return hn
+	}
+	return "unknown"
+}

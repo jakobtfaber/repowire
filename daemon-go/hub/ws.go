@@ -16,6 +16,7 @@ import (
 
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 // validNameRe / maxNameLen mirror daemon/routes/_shared.py exactly so circle and
@@ -200,6 +201,16 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("ws: connected %s@%s (%s, %s)", assignedName, circle, peerID, backend)
 
+	// Flush-on-connect: the moment a polling peer (re)connects, drain its durable
+	// queued-delivery queue and replay each row directly onto this connection.
+	// This is the consumer for the delivery.go queueNotify producer — a no-live-
+	// transport notify is enqueued, and reconnecting drains it here. The seed gate
+	// already guards live deliveries (delivery.go gateOnSeedSettled); a peer that
+	// just completed the connect handshake is past pending_first_turn registration,
+	// so we replay without re-gating. Best-effort: a write failure stops the replay
+	// (the rows are already delete-on-drained, but the socket is going down anyway).
+	h.flushQueuedDeliveries(ctx, conn, peerID, assignedName)
+
 	// Read loop: dispatch frames by type until the socket drops.
 	for {
 		_, raw, err := conn.Read(ctx)
@@ -207,6 +218,57 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.dispatch(ctx, sessionID, raw)
+	}
+}
+
+// flushQueuedDeliveries drains the durable queued-delivery queue for the freshly
+// connected peer and replays each row onto this connection. notify rows become a
+// notify frame, ask rows an ask frame — the same wire shapes router.SendNotification
+// / router.SendAsk put on the wire (clients depend on them). The store is the
+// nil-checked *state.Store threaded via WithReadDeps; nil → no-op. DrainDeliveries
+// is delete-on-drain, so a row is replayed at most once. A single write failure
+// stops the replay (the socket is dropping); it never kills the connect path.
+func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, id proto.PeerID, toName proto.DisplayName) {
+	if h.store == nil {
+		return
+	}
+	drained, err := h.store.DrainDeliveries(ctx, string(id), defaultQueueMax, time.Time{})
+	if err != nil {
+		log.Printf("ws: flush-on-connect drain for %s failed: %v", id, err)
+		return
+	}
+	for _, d := range drained {
+		var frame map[string]any
+		switch d.Kind {
+		case state.DeliveryNotify:
+			frame = map[string]any{
+				"type":        string(proto.FrameNotify),
+				"delivery_id": d.DeliveryID,
+				"from_peer":   d.FromPeerName,
+				"to_peer":     string(toName),
+				"text":        d.Text,
+			}
+		case state.DeliveryAsk:
+			frame = map[string]any{
+				"type":        string(proto.FrameAsk),
+				"delivery_id": d.DeliveryID,
+				"from_peer":   d.FromPeerName,
+				"to_peer":     string(toName),
+				"text":        d.Text,
+			}
+			if d.CorrelationID != nil {
+				frame["correlation_id"] = *d.CorrelationID
+			}
+		default:
+			continue
+		}
+		if len(d.Attachments) > 0 {
+			frame["attachments"] = d.Attachments
+		}
+		if err := wsjson.Write(ctx, conn, frame); err != nil {
+			log.Printf("ws: flush-on-connect replay to %s stopped after write failure (%s): %v", id, d.DeliveryID, err)
+			return
+		}
 	}
 }
 
