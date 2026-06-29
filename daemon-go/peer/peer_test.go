@@ -143,6 +143,67 @@ func TestAllocate_StaleClaimIgnored(t *testing.T) {
 	}
 }
 
+// TestReconnect_PreservesDurableState proves a same-id reconnect updates
+// liveness without demoting role, moving circle, or dropping metadata — a
+// reconnect frame that omits role/circle must not silently downgrade an
+// orchestrator to an agent (parity with PeerRegistry reconnect).
+func TestReconnect_PreservesDurableState(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newRegistry(t)
+
+	idA, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "ops", Backend: proto.AgentClaudeCode, Path: ptr("/work/x"), Machine: "m",
+		Role:     proto.RoleOrchestrator,
+		Metadata: map[string]any{"project": "repowire", "branch": "main"},
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// Reconnect: same id, role/circle omitted, only a fresh metadata key.
+	idB, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		ClaimedPeerID: &idA, Backend: proto.AgentClaudeCode, Path: ptr("/work/x"), Machine: "m",
+		Metadata: map[string]any{"caps": "receipts"},
+	})
+	if err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if idB != idA {
+		t.Fatalf("reconnect minted %s, want reuse of %s", idB, idA)
+	}
+	p, ok := r.GetPeer(idA)
+	if !ok {
+		t.Fatal("peer gone after reconnect")
+	}
+	if p.Role != proto.RoleOrchestrator {
+		t.Fatalf("role demoted to %q on reconnect, want orchestrator", p.Role)
+	}
+	if p.Circle != "ops" {
+		t.Fatalf("circle changed to %q on reconnect, want ops", p.Circle)
+	}
+	if p.Metadata["project"] != "repowire" || p.Metadata["caps"] != "receipts" {
+		t.Fatalf("metadata not merged on reconnect: %v", p.Metadata)
+	}
+}
+
+func TestSanitizeFolderName(t *testing.T) {
+	for in, want := range map[string]string{
+		"myrepo":   "myrepo",
+		"my repo":  "my-repo",
+		"a@#b":     "a-b",
+		"--lead--": "lead",
+		"":         "peer",
+		"ok._-n":   "ok._-n",
+	} {
+		if got := sanitizeFolder(in); got != want {
+			t.Errorf("sanitizeFolder(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := baseFolder("/work/my repo/"); got != "my-repo" {
+		t.Errorf("baseFolder with spaces = %q, want my-repo", got)
+	}
+}
+
 func newRegistry(t *testing.T) (*Registry, *memStore) {
 	t.Helper()
 	store := newMemStore()

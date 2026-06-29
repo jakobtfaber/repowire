@@ -286,7 +286,10 @@ func (h *Hub) unregisterPeerImpl(r *http.Request, name string, circle *string) (
 	if p == nil {
 		return http.StatusNotFound, "Peer not found: " + name
 	}
-	h.reg.UnregisterPeer(ctx, name, circle)
+	// Delete by the RESOLVED peer_id, not the raw name: a second display-name scan
+	// inside UnregisterPeer iterates the map in random order and could remove a
+	// different same-named peer than ResolvePeer selected. peer_id is unambiguous.
+	h.reg.UnregisterPeer(ctx, string(p.PeerID), nil)
 	return http.StatusOK, ""
 }
 

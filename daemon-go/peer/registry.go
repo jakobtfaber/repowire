@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -207,7 +208,65 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		id = proto.PeerID(fmt.Sprintf("repow-%s-%s", params.Circle, uuid.NewString()[:8]))
 	}
 
-	// (d) Drive Unregistered --Connect--> Online through the FSM.
+	// (d) In-place reconnect when the id names a LIVE peer. Update liveness only;
+	// PRESERVE role/circle/display_name/path/description and MERGE metadata. A
+	// reconnect frame that omits role/circle/metadata must not demote, relocate,
+	// or strip the peer (parity with PeerRegistry same-id reconnect — otherwise an
+	// orchestrator silently becomes role=agent on its next SessionStart).
+	if existing, isLive := r.peers[id]; isLive {
+		target := existing.state
+		if existing.state == StateOffline {
+			if n, err := Apply(StateOffline, EventReconnect); err == nil {
+				target = n
+			}
+		}
+		existing.state = target
+		if status, ok := target.ToStatus(); ok {
+			existing.peer.Status = status
+		}
+		existing.peer.LastSeen = &now
+		if params.Model != nil {
+			existing.peer.Model = params.Model
+		}
+		if params.PaneID != nil {
+			existing.peer.PaneID = params.PaneID
+		}
+		if params.TmuxSession != nil {
+			existing.peer.TmuxSession = params.TmuxSession
+		}
+		if params.Machine != "" && params.Machine != "unknown" {
+			existing.peer.Machine = params.Machine
+		}
+		if params.AgentPID != nil {
+			existing.peer.AgentPID = params.AgentPID
+		}
+		if len(params.Metadata) > 0 {
+			merged := make(map[string]any, len(existing.peer.Metadata)+len(params.Metadata))
+			for k, v := range existing.peer.Metadata {
+				merged[k] = v
+			}
+			for k, v := range params.Metadata {
+				merged[k] = v
+			}
+			existing.peer.Metadata = merged
+		}
+		if m := r.mappings[id]; m != nil {
+			m.UpdatedAt = now
+			if params.Model != nil {
+				m.Model = params.Model
+			}
+			if params.AgentPID != nil {
+				m.AgentPID = params.AgentPID
+			}
+		}
+		r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: existing.peer.DisplayName, SessionID: id})
+		return id, existing.peer.DisplayName, nil
+	}
+
+	// (e) Fresh registration, or reclaim of an OFFLINE/evicted id. Restore the
+	// durable fields (role/circle/model) from a persisted mapping when the request
+	// omits them, so reclaiming a known id never silently demotes role or moves
+	// circle.
 	next, err := Apply(StateUnregistered, EventConnect)
 	if err != nil {
 		// Unreachable for a well-formed FSM; fail loud rather than paper over.
@@ -216,14 +275,27 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	}
 	status, _ := next.ToStatus()
 
+	role, circle, model := params.Role, params.Circle, params.Model
+	if m := r.mappings[id]; m != nil {
+		if role == "" {
+			role = m.Role
+		}
+		if circle == "" {
+			circle = m.Circle
+		}
+		if model == nil {
+			model = m.Model
+		}
+	}
+
 	p := &proto.Peer{
 		PeerID:      id,
 		DisplayName: displayName,
 		Backend:     params.Backend,
-		Circle:      params.Circle,
-		Role:        params.Role,
+		Circle:      circle,
+		Role:        role,
 		Status:      status,
-		Model:       params.Model,
+		Model:       model,
 		PaneID:      params.PaneID,
 		TmuxSession: params.TmuxSession,
 		Machine:     params.Machine,
@@ -240,12 +312,12 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	r.mappings[id] = &proto.SessionMapping{
 		SessionID:   id,
 		DisplayName: displayName,
-		Circle:      params.Circle,
+		Circle:      circle,
 		Backend:     params.Backend,
 		Path:        params.Path,
-		Role:        params.Role,
+		Role:        role,
 		UpdatedAt:   now,
-		Model:       params.Model,
+		Model:       model,
 		AgentPID:    params.AgentPID,
 	}
 
@@ -885,7 +957,8 @@ func (r *Registry) emitContradictionLocked(ctx context.Context, id proto.PeerID,
 	r.emitContradiction(ctx, id, name, from, event)
 }
 
-// baseFolder returns the trailing path component (the folder name) of a path.
+// baseFolder returns the trailing path component (the folder name) of a path,
+// sanitized for use in a display_name identifier.
 func baseFolder(path string) string {
 	end := len(path)
 	for end > 0 && path[end-1] == '/' {
@@ -898,5 +971,35 @@ func baseFolder(path string) string {
 	if start == end {
 		return "peer"
 	}
-	return path[start:end]
+	return sanitizeFolder(path[start:end])
+}
+
+// sanitizeFolder makes a folder name safe for a display_name identifier: any
+// char outside [a-zA-Z0-9._-] becomes '-', runs of '-' collapse to one, leading/
+// trailing '-' are trimmed, empty -> "peer". Mirrors PeerRegistry.
+// _sanitize_folder_name so a repo path with spaces or odd chars cannot produce
+// an invalid display_name on the wire (clients/routes enforce the identifier rules).
+func sanitizeFolder(name string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, c := range name {
+		ok := c == '.' || c == '_' || c == '-' ||
+			(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if !ok {
+			c = '-'
+		}
+		if c == '-' {
+			if prevDash {
+				continue
+			}
+			prevDash = true
+		} else {
+			prevDash = false
+		}
+		b.WriteRune(c)
+	}
+	if out := strings.Trim(b.String(), "-"); out != "" {
+		return out
+	}
+	return "peer"
 }
