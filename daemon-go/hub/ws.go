@@ -184,10 +184,19 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	sessionID = peerID
 	registered = true
 
+	// The registry is the source of truth for pane ownership: it may have rejected
+	// the connect-frame pane (sticky orchestrator / unproven live-holder claim) and
+	// registered the peer pane-less. Record the pane the registry ACTUALLY assigned,
+	// not the raw frame, so delivery tracing / pane_injected stays truthful.
+	connPane := cf.PaneID
+	if p, ok := h.reg.GetPeer(peerID); ok {
+		connPane = p.PaneID
+	}
+
 	h.transport.Connect(ctx, &ConnectionInfo{
 		SessionID:   peerID,
 		WS:          conn,
-		PaneID:      cf.PaneID,
+		PaneID:      connPane,
 		DisplayName: assignedName,
 		ConnectedAt: time.Now().UTC(),
 	})

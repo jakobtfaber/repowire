@@ -66,6 +66,10 @@ type AllocateParams struct {
 	ClaimedPeerID *proto.PeerID
 	Metadata      map[string]any
 	AgentPID      *int
+	// TurnState, when supplied, is applied to the peer on both fresh registration
+	// and same-id reconnect (parity with the Python initial turn_state). nil leaves
+	// the peer's turn_state untouched on reconnect / zero on fresh.
+	TurnState *proto.TurnState
 	// ParentPID is the registering hook's parent process id (SessionStart hooks
 	// send it). Used only by the direct-child pane-hijack guard: a claimant whose
 	// parent_pid is the live pane holder's agent_pid is a subprocess inheriting
@@ -278,6 +282,9 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		if params.AgentPID != nil {
 			existing.peer.AgentPID = params.AgentPID
 		}
+		if params.TurnState != nil {
+			existing.peer.TurnState = *params.TurnState
+		}
 		if len(params.Metadata) > 0 {
 			merged := make(map[string]any, len(existing.peer.Metadata)+len(params.Metadata))
 			for k, v := range existing.peer.Metadata {
@@ -298,6 +305,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 			}
 		}
 		r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: existing.peer.DisplayName, SessionID: id})
+		r.scheduleRedelivery(ctx, id)
 		return id, existing.peer.DisplayName, nil
 	}
 
@@ -366,14 +374,16 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	}
 	status, _ := next.ToStatus()
 
-	role, circle, model := params.Role, params.Circle, params.Model
+	// When a persisted mapping exists for this id (a RECLAIM of a known identity —
+	// daemon restart or offline takeover), the mapping is the durable source of
+	// truth for circle/role/description/display_name: it WINS over the caller's
+	// per-transport default ("global" for HTTP, "default" for ws), so a reclaim
+	// never silently demotes role, moves circle, or drops the description. model:
+	// caller wins, else mapping. No mapping → a truly fresh mint uses the caller's
+	// values. Parity with PeerRegistry fresh-creation restore.
+	role, circle, model, description := params.Role, params.Circle, params.Model, ""
 	if m := r.mappings[id]; m != nil {
-		if role == "" {
-			role = m.Role
-		}
-		if circle == "" {
-			circle = m.Circle
-		}
+		role, circle, description, displayName = m.Role, m.Circle, m.Description, m.DisplayName
 		if model == nil {
 			model = m.Model
 		}
@@ -391,8 +401,12 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		TmuxSession: params.TmuxSession,
 		Machine:     params.Machine,
 		Metadata:    params.Metadata,
+		Description: description,
 		AgentPID:    params.AgentPID,
 		LastSeen:    &now,
+	}
+	if params.TurnState != nil {
+		p.TurnState = *params.TurnState
 	}
 	if params.Path != nil {
 		p.Path = *params.Path
@@ -413,12 +427,25 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		Path:        params.Path,
 		Role:        role,
 		UpdatedAt:   now,
+		Description: description,
 		Model:       model,
 		AgentPID:    params.AgentPID,
 	}
 
 	r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: displayName, SessionID: id})
+	r.scheduleRedelivery(ctx, id)
 	return id, displayName, nil
+}
+
+// scheduleRedelivery drains any stashed replies owed to a just-(re)registered
+// asker — same-id reconnect (pass-1) and fresh-id identity-tuple rebind (pass-2).
+// Safe to call while holding r.mu: it launches an async goroutine that re-acquires
+// the lock. redeliverPendingReplies snapshots (not drains), so a redundant call
+// from a later UpdateStatus in the same flow is harmless. No tracker → no-op.
+func (r *Registry) scheduleRedelivery(ctx context.Context, id proto.PeerID) {
+	if rec := r.recOrZero(); rec.asks != nil {
+		go r.redeliverPendingReplies(ctx, id)
+	}
 }
 
 // claimMatchesIdentity reports whether a claimed peer_id may be reused for an
@@ -711,12 +738,12 @@ func (r *Registry) UpdateStatus(ctx context.Context, id proto.PeerID, status pro
 
 	r.appendEvent(ctx, Event{Type: "peer_status", Timestamp: now, PeerID: id, PeerName: ps.peer.DisplayName, SessionID: id, Payload: map[string]any{"status": string(status)}})
 
-	// OFFLINE->(ONLINE|BUSY) drains any stashed replies owed to this asker. The
-	// flag-off / no-tracker path has zero overhead: no goroutine, no scan.
-	becameLive := old == StateOffline && (next == StateOnline || next == StateBusy)
-	rec := r.recOrZero()
-	if becameLive && rec.experiments.ACPBrokerClient && rec.asks != nil {
-		go r.redeliverPendingReplies(ctx, id)
+	// OFFLINE->(ONLINE|BUSY) drains any stashed replies owed to this asker.
+	// Redelivery is NOT ACP-specific (it was wrongly gated on the experiment flag,
+	// which is off in production, so stashed replies never drained). Gate only on a
+	// tracker being wired; no-tracker path has zero overhead.
+	if old == StateOffline && (next == StateOnline || next == StateBusy) {
+		r.scheduleRedelivery(ctx, id)
 	}
 	return nil
 }
@@ -1147,7 +1174,11 @@ func (r *Registry) appendEvent(ctx context.Context, e Event) {
 	if e.EventID == "" {
 		e.EventID = uuid.NewString()
 	}
-	_ = r.store.AppendEvent(ctx, e)
+	if err := r.store.AppendEvent(ctx, e); err != nil {
+		// Fail loud: durable audit history is lost on error. Still mirror to the
+		// in-memory window (the live read surface) so the dashboard isn't blinded.
+		log.Printf("repowire: append event %q for %s failed: %v", e.Type, e.PeerID, err)
+	}
 	// Mirror the durable journal row into the in-memory dashboard window so a
 	// GET /events caller (and the SSE catch-up) sees lifecycle events alongside
 	// the route-emitted chat_turn/query/response events. The buffer is the live
