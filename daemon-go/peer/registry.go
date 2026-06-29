@@ -3,6 +3,7 @@ package peer
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -164,10 +165,35 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 
 	var id proto.PeerID
 	if params.ClaimedPeerID != nil {
-		if _, ok := r.peers[*params.ClaimedPeerID]; ok {
-			id = *params.ClaimedPeerID
-		} else if _, ok := r.mappings[*params.ClaimedPeerID]; ok {
-			id = *params.ClaimedPeerID
+		cid := *params.ClaimedPeerID
+		claimPath := ""
+		if params.Path != nil {
+			claimPath = *params.Path
+		}
+		// Reuse a claimed peer_id ONLY when it still describes the same identity:
+		// same backend and a compatible path. Stale pane/cert metadata from another
+		// workspace or backend must not take over a live id — that reintroduces the
+		// misbind class one level above routing. Mirrors PeerRegistry's stale-claim
+		// guards (live peer + persisted mapping). On mismatch, fall through to
+		// reclaim/mint.
+		if ps, ok := r.peers[cid]; ok {
+			if claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) {
+				id = cid
+			} else {
+				log.Printf("repowire: ignoring stale peer_id claim %s (existing=%s backend=%s/%s path=%q/%q)",
+					cid, ps.peer.DisplayName, ps.peer.Backend, params.Backend, ps.peer.Path, claimPath)
+			}
+		} else if m, ok := r.mappings[cid]; ok {
+			mPath := ""
+			if m.Path != nil {
+				mPath = *m.Path
+			}
+			if claimMatchesIdentity(m.Backend, mPath, params.Backend, claimPath) {
+				id = cid
+			} else {
+				log.Printf("repowire: ignoring stale persisted peer_id claim %s (mapping=%s backend=%s/%s path=%q/%q)",
+					cid, m.DisplayName, m.Backend, params.Backend, mPath, claimPath)
+			}
 		}
 	}
 	if id == "" {
@@ -225,6 +251,16 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 
 	r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: displayName, SessionID: id})
 	return id, displayName, nil
+}
+
+// claimMatchesIdentity reports whether a claimed peer_id may be reused for an
+// incoming registration: same backend, and a compatible path (a path matches
+// when either side is unset, mirroring the Python guard). Same rule for a live
+// peer and a persisted mapping.
+func claimMatchesIdentity(existingBackend proto.AgentType, existingPath string, claimBackend proto.AgentType, claimPath string) bool {
+	sameBackend := existingBackend == claimBackend
+	samePath := existingPath == "" || claimPath == "" || existingPath == claimPath
+	return sameBackend && samePath
 }
 
 // buildDisplayName derives the addressing name, auto-suffixing past distinct
@@ -514,9 +550,9 @@ func (r *Registry) GetPeersByCircle(circle string) []*proto.Peer {
 // never run on a timer. All status changes go through Apply; an illegal move
 // emits a contradiction and leaves state unchanged.
 func (r *Registry) LazyRepair(ctx context.Context) {
-	if time.Since(r.lastRepair) < repairDebounce {
-		return
-	}
+	// lastRepair is read AND written only under repairMu, so the debounce is
+	// race-free. (An unsynchronized pre-lock peek here raced the write below —
+	// the TryLock is cheap enough that the peek bought nothing but a data race.)
 	if !r.repairMu.TryLock() {
 		return
 	}
@@ -740,8 +776,14 @@ func (r *Registry) reapDangling(ctx context.Context) {
 		if rec.asks != nil {
 			rec.asks.ForgetPeer(d.id)
 		}
-		_ = r.store.DeleteMapping(ctx, d.id)
-		_ = r.store.Retire(ctx, d.id, now)
+		if err := r.store.DeleteMapping(ctx, d.id); err != nil {
+			log.Printf("repowire: reap DeleteMapping failed for %s: %v", d.id, err)
+		}
+		if err := r.store.Retire(ctx, d.id, now); err != nil {
+			log.Printf("repowire: reap Retire FAILED for %s: %v (orphan may reclaim after restart)", d.id, err)
+			r.appendEvent(ctx, Event{Type: "retire_persist_failed", Timestamp: now, PeerID: d.id, SessionID: d.id,
+				Payload: map[string]any{"error": err.Error(), "reason": "reap"}})
+		}
 		r.appendEvent(ctx, Event{Type: "peer_reaped", Timestamp: now, PeerID: d.id, PeerName: d.name, SessionID: d.id,
 			Payload: map[string]any{"reason": "offline_ttl"}})
 	}
@@ -757,7 +799,9 @@ func (r *Registry) persistMappings(ctx context.Context) {
 	}
 	r.mu.RUnlock()
 	for _, m := range snapshot {
-		_ = r.store.UpsertMapping(ctx, m)
+		if err := r.store.UpsertMapping(ctx, m); err != nil {
+			log.Printf("repowire: mapping flush failed for %s: %v", m.SessionID, err)
+		}
 	}
 }
 
@@ -776,7 +820,9 @@ func (r *Registry) pruneRetired(ctx context.Context) {
 	}
 	r.mu.Unlock()
 	for _, id := range expired {
-		_ = r.store.Unretire(ctx, id)
+		if err := r.store.Unretire(ctx, id); err != nil {
+			log.Printf("repowire: prune Unretire failed for %s: %v", id, err)
+		}
 	}
 }
 
@@ -785,12 +831,21 @@ func (r *Registry) pruneRetired(ctx context.Context) {
 func (r *Registry) retireLocked(ctx context.Context, id proto.PeerID) {
 	at := time.Now().UTC()
 	r.retired[id] = at
-	_ = r.store.Retire(ctx, id, at)
+	if err := r.store.Retire(ctx, id, at); err != nil {
+		// Fail loud: the in-memory `retired` set only protects until restart. If
+		// this write is lost, an orphan ws-hook can reclaim the id on the next
+		// boot via its persisted mapping. Surface it, don't swallow.
+		log.Printf("repowire: TERMINAL retire persist FAILED for %s: %v (orphan may reclaim after restart)", id, err)
+		r.appendEvent(ctx, Event{Type: "retire_persist_failed", Timestamp: at, PeerID: id, SessionID: id,
+			Payload: map[string]any{"error": err.Error()}})
+	}
 }
 
 func (r *Registry) unretireLocked(ctx context.Context, id proto.PeerID) {
 	delete(r.retired, id)
-	_ = r.store.Unretire(ctx, id)
+	if err := r.store.Unretire(ctx, id); err != nil {
+		log.Printf("repowire: unretire persist failed for %s: %v", id, err)
+	}
 }
 
 // --- event/contradiction helpers ---

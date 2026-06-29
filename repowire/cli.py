@@ -91,12 +91,16 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
         config.save()
 
     # Go hub is the default daemon. Fall back to the Python ASGI app when the
-    # binary is absent, REPOWIRE_DAEMON=python, or relay is enabled (the Go hub
-    # has no relay bridge yet — relay_client is a deferred client port). The Go
-    # hub reads the same ~/.repowire/state.db (schema v12) and serves the same
+    # binary is absent, REPOWIRE_DAEMON=python, or the config uses a feature the
+    # Go hub does not yet honor — relay (no relay bridge yet) or daemon.spawn
+    # (config-backed spawn commands/paths are not ported, so /spawn would 503).
+    # Falling back is safer than silently dropping a configured capability. The
+    # Go hub reads the same ~/.repowire/state.db (schema v12) and serves the same
     # wire protocol, so existing hooks/MCP/bots connect to it unchanged.
     backend = os.environ.get("REPOWIRE_DAEMON", "go").strip().lower()
     go_bin = _resolve_go_hub_binary()
+    spawn_configured = bool(config.daemon.spawn.commands and config.daemon.spawn.allowed_paths)
+    go_unsupported = config.relay.enabled or spawn_configured
     env_disable = os.environ.get("REPOWIRE_DISABLE_HOOK_INSTALL", "").strip().lower() in (
         "1",
         "true",
@@ -104,7 +108,7 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
         "on",
     )
     install_hooks = not (no_install_hooks or env_disable)
-    if backend != "python" and go_bin and not config.relay.enabled:
+    if backend != "python" and go_bin and not go_unsupported:
         if install_hooks:
             from repowire.hooks import tmux_lifecycle
 
@@ -116,9 +120,18 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
         if config.relay.dashboard_url:
             console.print(f"[green]Dashboard:[/] {config.relay.dashboard_url}")
         # Replace this process with the Go hub; it owns the port for its lifetime.
-        os.execv(go_bin, [go_bin, "-addr", f"{host}:{port}"])
+        # Pass through configured auth — the Go hub only reads --auth-token /
+        # $REPOWIRE_AUTH_TOKEN, so without this a configured token would be
+        # silently dropped and the hub would serve unauthenticated.
+        argv = [go_bin, "-addr", f"{host}:{port}"]
+        if config.daemon.auth_token:
+            argv += ["-auth-token", config.daemon.auth_token]
+        os.execv(go_bin, argv)
     if backend != "python" and not go_bin:
         logging.info("Go hub binary not found; falling back to Python daemon")
+    elif backend != "python" and go_unsupported:
+        reason = "relay enabled" if config.relay.enabled else "daemon.spawn configured"
+        logging.info("Go hub does not yet support %s; falling back to Python daemon", reason)
 
     # App-level loggers (repowire.*) otherwise fall through to Python's
     # last-resort handler (WARNING+ only): registry demotions, the startup

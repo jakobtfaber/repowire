@@ -308,7 +308,7 @@ func (lh *LifecycleHandler) serveSessionRenamed(w http.ResponseWriter, r *http.R
 		return
 	}
 	if !validName(req.NewName) || !validNames(req.PaneIDs) {
-		http.Error(w, "invalid field", http.StatusUnprocessableEntity)
+		writeError(w, http.StatusUnprocessableEntity, "invalid field")
 		return
 	}
 	lh.HandleSessionRenamed(r.Context(), req.NewName, req.PaneIDs)
@@ -321,7 +321,7 @@ func (lh *LifecycleHandler) serveWindowRenamed(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if !validName(req.SessionName) || !validName(req.NewName) || !validNames(req.PaneIDs) {
-		http.Error(w, "invalid field", http.StatusUnprocessableEntity)
+		writeError(w, http.StatusUnprocessableEntity, "invalid field")
 		return
 	}
 	lh.HandleWindowRenamed(req.SessionName, req.NewName, req.PaneIDs)
@@ -344,7 +344,7 @@ func (lh *LifecycleHandler) serveClientDetached(w http.ResponseWriter, r *http.R
 func localhostOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !isLocalhost(r) {
-			http.Error(w, "Restricted to localhost", http.StatusForbidden)
+			writeError(w, http.StatusForbidden, "Restricted to localhost")
 			return
 		}
 		next(w, r)
@@ -366,11 +366,11 @@ func isLocalhost(r *http.Request) bool {
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return false
 	}
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		http.Error(w, "invalid json body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid json body")
 		return false
 	}
 	return true
@@ -382,7 +382,7 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 // runs would always see the zero value.
 func requireName(w http.ResponseWriter, name string) bool {
 	if !validName(name) {
-		http.Error(w, "invalid field", http.StatusUnprocessableEntity)
+		writeError(w, http.StatusUnprocessableEntity, "invalid field")
 		return false
 	}
 	return true

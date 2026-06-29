@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,22 +32,29 @@ type fakeTransport struct {
 
 	sendErr error
 
-	// captured state
+	// captured state — guarded by mu because Broadcast fans out Send across
+	// goroutines (production behaviour); the real per-connection transport is
+	// concurrency-safe, so the fake must be too.
+	mu          sync.Mutex
 	lastTarget  proto.PeerID
 	lastFrame   any
 	sentTargets []proto.PeerID
 }
 
 func (f *fakeTransport) Send(ctx context.Context, id proto.PeerID, v any) error {
+	f.mu.Lock()
 	f.lastTarget = id
 	f.lastFrame = v
 	f.sentTargets = append(f.sentTargets, id)
+	f.mu.Unlock()
 	return f.sendErr
 }
 
 func (f *fakeTransport) SendAndWaitDeliveryAck(ctx context.Context, id proto.PeerID, v any, timeout time.Duration) (map[string]any, error) {
+	f.mu.Lock()
 	f.lastTarget = id
 	f.lastFrame = v
+	f.mu.Unlock()
 	if f.ackErr != nil {
 		return nil, f.ackErr
 	}

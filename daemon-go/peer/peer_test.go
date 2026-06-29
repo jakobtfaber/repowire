@@ -92,6 +92,57 @@ func (t fakeTransport) Ping(context.Context, proto.PeerID, time.Duration) (map[s
 	return nil, nil
 }
 
+// TestAllocate_StaleClaimIgnored proves a claimed peer_id is reused ONLY when it
+// still describes the same identity (same backend + compatible path). A claim
+// from a different backend or a conflicting path must mint a fresh id, not
+// hijack the live peer — the stale-pane/cert misbind guard (parity with the
+// Python PeerRegistry stale-claim checks).
+func TestAllocate_StaleClaimIgnored(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newRegistry(t)
+
+	idA, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "alpha", Backend: proto.AgentClaudeCode, Path: ptr("/work/x"),
+		Machine: "m", Role: proto.RoleAgent,
+	})
+	if err != nil {
+		t.Fatalf("register A: %v", err)
+	}
+
+	// Wrong backend → must not take over idA.
+	idWrongBackend, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		ClaimedPeerID: &idA, Circle: "alpha", Backend: proto.AgentCodex,
+		Path: ptr("/work/x"), Machine: "m", Role: proto.RoleAgent,
+	})
+	if err != nil {
+		t.Fatalf("wrong-backend claim: %v", err)
+	}
+	if idWrongBackend == idA {
+		t.Fatalf("stale backend claim hijacked %s — must mint a fresh id", idA)
+	}
+
+	// Conflicting path (same backend) → also must not take over.
+	idWrongPath, _, _ := r.AllocateAndRegister(ctx, AllocateParams{
+		ClaimedPeerID: &idA, Circle: "alpha", Backend: proto.AgentClaudeCode,
+		Path: ptr("/work/OTHER"), Machine: "m", Role: proto.RoleAgent,
+	})
+	if idWrongPath == idA {
+		t.Fatalf("stale path claim hijacked %s — must mint a fresh id", idA)
+	}
+
+	// Matching identity (same backend + same path) → legitimate reconnect reuse.
+	idMatch, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		ClaimedPeerID: &idA, Circle: "alpha", Backend: proto.AgentClaudeCode,
+		Path: ptr("/work/x"), Machine: "m", Role: proto.RoleAgent,
+	})
+	if err != nil {
+		t.Fatalf("matching claim: %v", err)
+	}
+	if idMatch != idA {
+		t.Fatalf("matching claim minted %s, want reuse of %s", idMatch, idA)
+	}
+}
+
 func newRegistry(t *testing.T) (*Registry, *memStore) {
 	t.Helper()
 	store := newMemStore()

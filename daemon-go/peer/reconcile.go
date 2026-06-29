@@ -600,7 +600,9 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 	}
 
 	for _, peer := range evicted {
-		_ = r.store.DeleteMapping(ctx, peer.PeerID)
+		if err := r.store.DeleteMapping(ctx, peer.PeerID); err != nil {
+			log.Printf("repowire: stale-evict DeleteMapping failed for %s: %v", peer.PeerID, err)
+		}
 	}
 	if len(evicted) > 0 {
 		log.Printf("evicted %d stale offline peers", len(evicted))
