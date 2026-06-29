@@ -13,6 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon-go/go.mod
+          cache-dependency-path: daemon-go/go.sum
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -23,8 +27,33 @@ jobs:
       - name: Set version from tag
         run: uv version ${GITHUB_REF#refs/tags/v}
 
-      - name: Build
-        run: uv build
+      # Source dist: no native binary -> pure, installs anywhere (Python daemon).
+      - name: Build sdist
+        run: uv build --sdist -o dist
+
+      # One wheel per platform. Go cross-compiles with no cgo, so a single
+      # ubuntu runner produces every target. The build hook force-includes
+      # repowire/_bin/repowire-hub-go and stamps the platform tag.
+      - name: Build platform wheels
+        run: |
+          set -euo pipefail
+          targets=(
+            "darwin arm64 macosx_11_0_arm64"
+            "darwin amd64 macosx_10_12_x86_64"
+            "linux  amd64 manylinux2014_x86_64"
+            "linux  arm64 manylinux2014_aarch64"
+          )
+          for t in "${targets[@]}"; do
+            read -r goos goarch plat <<< "$t"
+            echo "::group::wheel $goos/$goarch ($plat)"
+            mkdir -p repowire/_bin
+            (cd daemon-go && CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch \
+              go build -o ../repowire/_bin/repowire-hub-go .)
+            REPOWIRE_WHEEL_TAG="py3-none-$plat" uv build --wheel -o dist
+            rm -rf repowire/_bin
+            echo "::endgroup::"
+          done
+          ls -la dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

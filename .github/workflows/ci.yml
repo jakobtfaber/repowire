@@ -23,3 +23,23 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+  go-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon-go/go.mod
+          cache-dependency-path: daemon-go/go.sum
+
+      - name: Vet, build, test
+        run: cd daemon-go && go vet ./... && go build ./... && go test ./...
+
+      - name: Cross-compile all release targets (no cgo)
+        run: |
+          cd daemon-go
+          for p in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            CGO_ENABLED=0 GOOS=${p%/*} GOARCH=${p#*/} go build -o /dev/null . \
+              && echo "ok $p" || exit 1
+          done

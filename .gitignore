@@ -33,3 +33,6 @@ site/
 .dolt/
 *.db
 .beads-credential-key
+
+# Go hub binary staged by the build hook
+repowire/_bin/

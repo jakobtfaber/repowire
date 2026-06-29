@@ -42,9 +42,16 @@ def _resolve_go_hub_binary() -> str | None:
     explicit = os.environ.get("REPOWIRE_HUB_BIN", "").strip()
     if explicit:
         return explicit if os.path.isfile(explicit) and os.access(explicit, os.X_OK) else None
+    # Bundled in the wheel by the build hook (platform wheels ship the binary here).
+    bundled = Path(__file__).resolve().parent / "_bin" / "repowire-hub-go"
+    if bundled.is_file():
+        if not os.access(bundled, os.X_OK):
+            os.chmod(bundled, 0o755)  # wheel install may drop the exec bit
+        return str(bundled)
     on_path = shutil.which("repowire-hub-go")
     if on_path:
         return on_path
+    # Dev tree: a local `go build` under daemon-go/.
     for name in ("repowire-hub-go", "daemon-go"):
         candidate = Path(__file__).resolve().parent.parent / "daemon-go" / name
         if candidate.is_file() and os.access(candidate, os.X_OK):
