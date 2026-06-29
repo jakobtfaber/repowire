@@ -251,9 +251,19 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	// or strip the peer (parity with PeerRegistry same-id reconnect — otherwise an
 	// orchestrator silently becomes role=agent on its next SessionStart).
 	if existing, isLive := r.peers[id]; isLive {
+		// A (re)register means the hook just (re)started: reset to ONLINE, parity
+		// with PeerRegistry assigning initial_status on reconnect. Stale BUSY must
+		// not survive a reconnect (a genuine in-progress turn re-reports BUSY via
+		// the next UserPromptSubmit); the pane-handoff initial-OFFLINE case is
+		// applied afterward by the route's post-register MarkOffline.
 		target := existing.state
-		if existing.state == StateOffline {
+		switch existing.state {
+		case StateOffline:
 			if n, err := Apply(StateOffline, EventReconnect); err == nil {
+				target = n
+			}
+		case StateBusy:
+			if n, err := Apply(StateBusy, EventStop); err == nil {
 				target = n
 			}
 		}
@@ -444,7 +454,12 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 // from a later UpdateStatus in the same flow is harmless. No tracker → no-op.
 func (r *Registry) scheduleRedelivery(ctx context.Context, id proto.PeerID) {
 	if rec := r.recOrZero(); rec.asks != nil {
-		go r.redeliverPendingReplies(ctx, id)
+		// Detach from the triggering request/WS context: a one-shot register or
+		// status request returns immediately, and a canceled ctx would strand the
+		// owed reply (the stash stays in place until some later reconnect). Keep
+		// any context values for tracing, drop cancellation. (Python's
+		// asyncio.create_task is likewise not bound to the request scope.)
+		go r.redeliverPendingReplies(context.WithoutCancel(ctx), id)
 	}
 }
 
@@ -943,7 +958,10 @@ func (r *Registry) demoteDisconnected(ctx context.Context) {
 			continue
 		}
 		if ps.peer.PaneID != nil && *ps.peer.PaneID != "" {
-			paneCandidates = append(paneCandidates, ps.peer)
+			// Value-copy snapshot: the evidence probe reads these off-lock, so it
+			// must not touch the live *proto.Peer (race vs concurrent writers).
+			cp := *ps.peer
+			paneCandidates = append(paneCandidates, &cp)
 		} else {
 			candidates = append(candidates, id)
 		}
@@ -1026,7 +1044,10 @@ func (r *Registry) reapDangling(ctx context.Context) {
 		if ps.peer.LastSeen == nil || !ps.peer.LastSeen.Before(cutoff) {
 			continue
 		}
-		stale = append(stale, ps.peer)
+		// Value-copy snapshot: off-lock probe must not read the live peer (race),
+		// and the TOCTOU guard below compares this snapshot to the current peer.
+		cp := *ps.peer
+		stale = append(stale, &cp)
 	}
 	r.mu.RUnlock()
 

@@ -204,6 +204,34 @@ func TestSanitizeFolderName(t *testing.T) {
 	}
 }
 
+// TestReconnect_ResetsStaleBusy proves a re-register of a BUSY peer resets it to
+// ONLINE (parity with PeerRegistry applying initial_status on reconnect); a genuine
+// in-progress turn re-reports BUSY via the next UserPromptSubmit.
+func TestReconnect_ResetsStaleBusy(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newRegistry(t)
+	id, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "x", Backend: proto.AgentClaudeCode, Path: ptr("/w"), Machine: "m", Role: proto.RoleAgent,
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := r.UpdateStatus(ctx, id, proto.StatusBusy); err != nil {
+		t.Fatalf("set busy: %v", err)
+	}
+	if p, _ := r.GetPeer(id); p.Status != proto.StatusBusy {
+		t.Fatalf("setup: want busy, got %q", p.Status)
+	}
+	if _, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		ClaimedPeerID: &id, Circle: "x", Backend: proto.AgentClaudeCode, Path: ptr("/w"), Machine: "m", Role: proto.RoleAgent,
+	}); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if p, _ := r.GetPeer(id); p.Status != proto.StatusOnline {
+		t.Fatalf("stale BUSY survived reconnect: status %q, want online", p.Status)
+	}
+}
+
 func newRegistry(t *testing.T) (*Registry, *memStore) {
 	t.Helper()
 	store := newMemStore()

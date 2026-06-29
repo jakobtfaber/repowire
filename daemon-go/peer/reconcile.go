@@ -548,7 +548,12 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 		if ps.peer.LastSeen == nil || !ps.peer.LastSeen.Before(cutoff) {
 			continue
 		}
-		stale = append(stale, ps.peer)
+		// Snapshot a VALUE COPY under the lock. The off-lock evidence probe must
+		// not read the live *proto.Peer (data race vs allocate/reconnect/status
+		// writers), and the TOCTOU guard below must compare the snapshot against
+		// the CURRENT live peer — a shared pointer would make that guard a no-op.
+		cp := *ps.peer
+		stale = append(stale, &cp)
 	}
 	r.mu.RUnlock()
 
