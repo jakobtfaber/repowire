@@ -58,7 +58,7 @@ type AskerIdentity struct {
 
 // Answer is the typed resolution of a structured-question ask (rides on the ack).
 type Answer struct {
-	Outcome  string  // "answered" | "denied" | "timed_out" | "cancelled" | "acknowledged"
+	Outcome  string // "answered" | "denied" | "timed_out" | "cancelled" | "acknowledged"
 	OptionID *string
 	Text     *string
 	Message  *string

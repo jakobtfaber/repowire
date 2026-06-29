@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -85,6 +86,59 @@ func (tmuxPaneLister) ListAllPanes() []hub.PaneInfo {
 		panes = append(panes, hub.PaneInfo{PaneID: parts[0], Session: parts[1]})
 	}
 	return panes
+}
+
+// realProcessProbe implements peer.ProcessProbe for the destructive pane-claim
+// proof: one `ps` snapshot for the ancestor walk, and `tmux display-message` for
+// the pane root pid. Both are best-effort — ok=false on any error lets the claim
+// through (matching the Python guard's safe default). Mirrors
+// repowire.daemon.registry_repair.process_ancestors / tmux_pane_pid.
+type realProcessProbe struct{}
+
+func (realProcessProbe) Ancestors(pid int) (map[int]struct{}, bool) {
+	out, err := exec.Command("ps", "-axo", "pid=,ppid=").Output()
+	if err != nil {
+		return nil, false
+	}
+	parent := make(map[int]int)
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		p, err1 := strconv.Atoi(f[0])
+		pp, err2 := strconv.Atoi(f[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		parent[p] = pp
+	}
+	ancestors := make(map[int]struct{})
+	cur := pid
+	for len(ancestors) < 128 {
+		next, ok := parent[cur]
+		if !ok || next <= 0 {
+			break
+		}
+		if _, seen := ancestors[next]; seen {
+			break // cycle guard
+		}
+		ancestors[next] = struct{}{}
+		cur = next
+	}
+	return ancestors, true
+}
+
+func (realProcessProbe) PaneRootPID(paneID string) (int, bool) {
+	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_pid}").Output()
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, false
+	}
+	return pid, true
 }
 
 // ----------------------------------------------------------------------------
@@ -311,6 +365,8 @@ func main() {
 		30*time.Minute, // stale_busy_timeout (default)
 		72*time.Hour,   // prune_max_age (default)
 	)
+	// Process/tmux probe for the destructive pane-claim proof (hijack guard).
+	reg.WithProcessProbe(realProcessProbe{})
 
 	// (8) Spawn area. The SpawnService owns the real tmux controller + durable
 	// pane-ownership store (proof for destructive kill/restart). SessionControl
@@ -362,7 +418,11 @@ func main() {
 		WithWorkRegistry(reg).
 		WithSchedules(store, scheduler).
 		WithShares(relayCfg).
-		WithLifecycle(hub.NewLifecycleHandler(reg, transport, tmuxPaneLister{}, nil, nil))
+		// forgetSpawnedPane drops a dead pane from the spawn-ownership store so
+		// destructivePaneProof can't authorize kill/restart against a reused pane id.
+		// clearPaneRuntimeState stays nil — the Go hub does not own hook-side pane
+		// runtime files (ponytail: wire when those land).
+		WithLifecycle(hub.NewLifecycleHandler(reg, transport, tmuxPaneLister{}, spawnService.Ownership().Forget, nil))
 	// Reviews defaults its JSON store at Routes() time if unset; leave it.
 
 	// (12) Start the background dispatch loops (deadline-driven, never polling).

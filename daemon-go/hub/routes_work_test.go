@@ -370,4 +370,3 @@ func TestRunJobRejectsTerminalState(t *testing.T) {
 		t.Fatalf("RunJob on completed work returned %#v, want nil", out)
 	}
 }
-

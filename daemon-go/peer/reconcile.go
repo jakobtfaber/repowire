@@ -46,12 +46,12 @@ type PaneProbe interface {
 // needs. The Ask is NEVER mutated outside AskTracker locks; the reconciler reads
 // these fields and asks the tracker to mutate atomically.
 type StashedAsk struct {
-	CorrelationID string
-	FromPeerID    proto.PeerID // the asker (redelivery target)
-	FromPeerName  proto.DisplayName
-	ToPeerID      proto.PeerID // the answerer (notify "from")
-	ToPeerName    proto.DisplayName
-	PendingReply  *string
+	CorrelationID  string
+	FromPeerID     proto.PeerID // the asker (redelivery target)
+	FromPeerName   proto.DisplayName
+	ToPeerID       proto.PeerID // the answerer (notify "from")
+	ToPeerName     proto.DisplayName
+	PendingReply   *string
 	PendingReplyAt *time.Time
 	// Asker identity tuple captured at stash time (pass-2 rebind). Empty when the
 	// asker lacked a complete stable identity; only same-id reconnect can then

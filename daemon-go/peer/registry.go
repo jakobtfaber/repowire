@@ -30,6 +30,27 @@ type Transport interface {
 	Ping(ctx context.Context, id proto.PeerID, timeout time.Duration) (map[string]any, error)
 }
 
+// ProcessProbe resolves process ancestry and a tmux pane's root pid for the
+// destructive pane-claim proof: it tells a process that genuinely runs in a pane
+// from a subprocess that merely inherited TMUX_PANE. Injected like Liveness;
+// production shells out to ps/tmux, tests fake it. Best-effort by contract — an
+// unprobeable result (ok=false) lets a claim through, matching the Python guard's
+// safe default. A nil probe on the Registry behaves the same way.
+type ProcessProbe interface {
+	// Ancestors returns the ancestor pids of pid (excluding itself). ok=false when
+	// the process table is unprobeable (inconclusive).
+	Ancestors(pid int) (map[int]struct{}, bool)
+	// PaneRootPID returns the tmux pane's root process pid. ok=false when the pane
+	// is unprobeable.
+	PaneRootPID(paneID string) (int, bool)
+}
+
+// paneHeartbeatTolerance bounds how stale a peer's LastSeen may be before it is
+// no longer "live" for pane-ownership decisions.
+// ponytail: 2× the 30s default heartbeat (Python heartbeat_tolerance). Not yet
+// config-driven — wire from DaemonConfig.heartbeat_interval when config lands.
+const paneHeartbeatTolerance = 60 * time.Second
+
 // AllocateParams carries everything allocate_and_register needs. Identity-
 // sensitive routing only ever flows through proto.PeerID (ClaimedPeerID); the
 // human-facing DisplayName is derived, never an input key for routing.
@@ -45,12 +66,23 @@ type AllocateParams struct {
 	ClaimedPeerID *proto.PeerID
 	Metadata      map[string]any
 	AgentPID      *int
+	// ParentPID is the registering hook's parent process id (SessionStart hooks
+	// send it). Used only by the direct-child pane-hijack guard: a claimant whose
+	// parent_pid is the live pane holder's agent_pid is a subprocess inheriting
+	// TMUX_PANE, and is rejected.
+	ParentPID *int
 }
 
 // ErrPeerRetired is returned by AllocateAndRegister when a claim names a retired
 // peer_id without proof of a live agent — an orphan ws-hook trying to resurrect
 // a terminally-offlined identity.
 var ErrPeerRetired = fmt.Errorf("peer: retired peer_id cannot be reclaimed without a live agent")
+
+// ErrPaneHijackRejected is returned when a fresh SessionStart claims a pane held
+// by a live peer whose agent is the claimant's parent process — a subprocess
+// inheriting TMUX_PANE trying to register on its parent's pane. A hard rejection
+// (mapped to 409) so the hook leaves the incumbent untouched.
+var ErrPaneHijackRejected = fmt.Errorf("peer: pane claim rejected (direct-child hijack)")
 
 // peerState pairs the wire-facing proto.Peer with its authoritative lifecycle
 // state. The FSM state is the source of truth; proto.Peer.Status is a projection
@@ -72,6 +104,7 @@ type Registry struct {
 	store     Store
 	live      Liveness
 	transport Transport
+	proc      ProcessProbe // optional; nil → pane-claim proof defaults to "let through"
 
 	repairMu   sync.Mutex
 	lastRepair time.Time
@@ -230,6 +263,11 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		}
 		if params.PaneID != nil {
 			existing.peer.PaneID = params.PaneID
+			// Displace any OTHER peer still holding this pane (stale after a
+			// restart in the same tmux pane), parity with PeerRegistry._release_pane.
+			if *params.PaneID != "" {
+				r.releasePaneLocked(ctx, *params.PaneID, id, now)
+			}
 		}
 		if params.TmuxSession != nil {
 			existing.peer.TmuxSession = params.TmuxSession
@@ -261,6 +299,59 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		}
 		r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: existing.peer.DisplayName, SessionID: id})
 		return id, existing.peer.DisplayName, nil
+	}
+
+	// (d.5) Pane-claim evidence gates — a FRESH registration (the id is not a live
+	// peer) claiming a pane. Env inheritance (TMUX_PANE) is NOT proof of running in
+	// the pane. Mirrors PeerRegistry: (1) reject a direct-child hijack hard; (2)
+	// never displace a sticky orchestrator; (3) require proof before taking a live
+	// holder's pane, else register pane-less. Pane ownership transfer is destructive
+	// — fail loud (event) and keep the incumbent rather than silently stealing.
+	effectivePane := params.PaneID
+	if effectivePane != nil && *effectivePane != "" {
+		pane := *effectivePane
+		// (1) Direct-child hijack: claimant's parent_pid IS the live holder's agent.
+		if params.ParentPID != nil {
+			for _, ps := range r.peers {
+				if ps.peer.PaneID == nil || *ps.peer.PaneID != pane {
+					continue
+				}
+				if ps.peer.AgentPID == nil || *ps.peer.AgentPID != *params.ParentPID {
+					continue
+				}
+				connected := r.transport != nil && r.transport.IsConnected(ps.peer.PeerID)
+				if !recentlySeen(ps.peer, now) && !connected {
+					continue
+				}
+				r.appendEvent(ctx, Event{Type: "pane_claim_rejected", Timestamp: now, PeerID: ps.peer.PeerID, PeerName: ps.peer.DisplayName, SessionID: ps.peer.PeerID,
+					Payload: map[string]any{"pane_id": pane, "holder_peer_id": string(ps.peer.PeerID), "claimant_parent_pid": *params.ParentPID, "holder_agent_pid": *ps.peer.AgentPID, "outcome": "registration_rejected"}})
+				return "", "", fmt.Errorf("%w: pane %s held by %s (%s); claimant parent_pid=%d matches holder agent_pid=%d",
+					ErrPaneHijackRejected, pane, ps.peer.DisplayName, ps.peer.PeerID, *params.ParentPID, *ps.peer.AgentPID)
+			}
+		}
+		// (2) Sticky orchestrator: do not displace; register pane-less.
+		// ponytail: the Python same-identity sticky-reuse-and-return optimization
+		// (is_configured_orchestrator_path) is not ported — config-backed orchestrator
+		// paths aren't in Go yet. Pane-less registration preserves the safety property
+		// (the orchestrator keeps its pane); a same-id reconnect still reuses via (d).
+		if h := r.isFreshOrchestratorPaneLocked(pane, now); h != nil {
+			log.Printf("repowire: sticky orchestrator %s (%s) holds pane %s; registering claimant pane-less",
+				h.peer.DisplayName, h.peer.PeerID, pane)
+			effectivePane = nil
+		}
+	}
+	// (3) Destructive pane-claim proof against a live holder.
+	if effectivePane != nil && *effectivePane != "" {
+		pane := *effectivePane
+		if holder := r.livePaneHolderLocked(pane, now); holder != nil {
+			if proven, why := r.paneClaimProvenLocked(pane, holder.peer, params.AgentPID); !proven {
+				log.Printf("repowire: rejecting pane claim for %s: held by live %s (%s); %s — registering pane-less",
+					pane, holder.peer.DisplayName, holder.peer.PeerID, why)
+				r.appendEvent(ctx, Event{Type: "pane_claim_rejected", Timestamp: now, PeerID: holder.peer.PeerID, PeerName: holder.peer.DisplayName, SessionID: holder.peer.PeerID,
+					Payload: map[string]any{"pane_id": pane, "holder_peer_id": string(holder.peer.PeerID), "reason": why, "outcome": "registered_pane_less"}})
+				effectivePane = nil
+			}
+		}
 	}
 
 	// (e) Fresh registration, or reclaim of an OFFLINE/evicted id. Restore the
@@ -296,7 +387,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		Role:        role,
 		Status:      status,
 		Model:       model,
-		PaneID:      params.PaneID,
+		PaneID:      effectivePane,
 		TmuxSession: params.TmuxSession,
 		Machine:     params.Machine,
 		Metadata:    params.Metadata,
@@ -307,6 +398,11 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		p.Path = *params.Path
 	}
 	r.peers[id] = &peerState{peer: p, state: next}
+
+	// A proven pane claim displaces any other (non-sticky) peer still holding it.
+	if effectivePane != nil && *effectivePane != "" {
+		r.releasePaneLocked(ctx, *effectivePane, id, now)
+	}
 
 	// Persist mapping in-memory; disk flush is deferred to lazy_repair.
 	r.mappings[id] = &proto.SessionMapping{
@@ -333,6 +429,131 @@ func claimMatchesIdentity(existingBackend proto.AgentType, existingPath string, 
 	sameBackend := existingBackend == claimBackend
 	samePath := existingPath == "" || claimPath == "" || existingPath == claimPath
 	return sameBackend && samePath
+}
+
+// WithProcessProbe injects the ps/tmux probe the destructive pane-claim proof
+// uses. Optional: a nil probe makes the proof "let through" on the can't-decide
+// path (the Python best-effort default), but production should wire it.
+func (r *Registry) WithProcessProbe(p ProcessProbe) { r.proc = p }
+
+// recentlySeen reports whether a peer's LastSeen is within heartbeat tolerance.
+func recentlySeen(p *proto.Peer, now time.Time) bool {
+	return p.LastSeen != nil && now.Sub(*p.LastSeen) <= paneHeartbeatTolerance
+}
+
+// livePaneHolderLocked returns the pane's holder when it is live with a
+// verifiably-alive agent process, else nil. "Live" = status Online/Busy, a
+// recorded agent_pid still running, and either heartbeat-fresh or transport-
+// connected. A holder whose agent is gone is the legitimate pane-reuse case.
+// Must hold r.mu.
+func (r *Registry) livePaneHolderLocked(paneID string, now time.Time) *peerState {
+	for _, ps := range r.peers {
+		if ps.peer.PaneID == nil || *ps.peer.PaneID != paneID {
+			continue
+		}
+		if ps.peer.Status != proto.StatusOnline && ps.peer.Status != proto.StatusBusy {
+			continue
+		}
+		if ps.peer.AgentPID == nil || !r.live.PIDAlive(*ps.peer.AgentPID) {
+			continue
+		}
+		connected := r.transport != nil && r.transport.IsConnected(ps.peer.PeerID)
+		if recentlySeen(ps.peer, now) || connected {
+			return ps
+		}
+	}
+	return nil
+}
+
+// isFreshOrchestratorPaneLocked returns the live orchestrator holding paneID, or
+// nil. Used to make orchestrator pane ownership sticky against displacement by a
+// temporary same-pane peer. Must hold r.mu.
+func (r *Registry) isFreshOrchestratorPaneLocked(paneID string, now time.Time) *peerState {
+	for _, ps := range r.peers {
+		if ps.peer.PaneID == nil || *ps.peer.PaneID != paneID {
+			continue
+		}
+		if ps.peer.Role != proto.RoleOrchestrator {
+			continue
+		}
+		if ps.peer.Status != proto.StatusOnline && ps.peer.Status != proto.StatusBusy {
+			continue
+		}
+		if recentlySeen(ps.peer, now) {
+			return ps
+		}
+	}
+	return nil
+}
+
+// paneClaimProvenLocked decides whether a fresh claim may displace a live pane
+// holder. Env inheritance is not proof: proof requires the claimant's agent
+// process to actually run in the pane — it is the holder's own agent, or its
+// ancestor chain reaches the pane root pid without passing through the holder's
+// agent. Probes are best-effort; an inconclusive probe (or a claimant that
+// reported no agent_pid) lets the claim through. Must hold r.mu.
+func (r *Registry) paneClaimProvenLocked(paneID string, holder *proto.Peer, claimantPID *int) (bool, string) {
+	if claimantPID == nil {
+		return true, ""
+	}
+	if holder.AgentPID != nil && *claimantPID == *holder.AgentPID {
+		return true, ""
+	}
+	if r.proc == nil {
+		return true, ""
+	}
+	ancestors, ok := r.proc.Ancestors(*claimantPID)
+	if !ok {
+		return true, ""
+	}
+	if holder.AgentPID != nil {
+		if _, isSubprocess := ancestors[*holder.AgentPID]; isSubprocess {
+			return false, fmt.Sprintf("claimant agent_pid=%d is a subprocess of the live holder's agent_pid=%d", *claimantPID, *holder.AgentPID)
+		}
+	}
+	paneRoot, ok := r.proc.PaneRootPID(paneID)
+	if !ok {
+		return true, ""
+	}
+	if *claimantPID == paneRoot {
+		return true, ""
+	}
+	if _, inTree := ancestors[paneRoot]; inTree {
+		return true, ""
+	}
+	return false, fmt.Sprintf("claimant agent_pid=%d is not in pane %s's process tree (pane_pid=%d)", *claimantPID, paneID, paneRoot)
+}
+
+// releasePaneLocked clears paneID from any peer that holds it (except newID) and
+// drives that peer OFFLINE through the FSM — losing the pane means its ws-hook is
+// no longer the live owner. A fresh orchestrator is never flipped or detached:
+// pane ownership is sticky for it. Must hold r.mu. Mirrors PeerRegistry._release_pane.
+func (r *Registry) releasePaneLocked(ctx context.Context, paneID string, newID proto.PeerID, now time.Time) {
+	for sid, ps := range r.peers {
+		if sid == newID || ps.peer.PaneID == nil || *ps.peer.PaneID != paneID {
+			continue
+		}
+		isFreshOrch := ps.peer.Role == proto.RoleOrchestrator &&
+			(ps.peer.Status == proto.StatusOnline || ps.peer.Status == proto.StatusBusy) &&
+			recentlySeen(ps.peer, now)
+		if isFreshOrch {
+			log.Printf("repowire: _release_pane preserving fresh orchestrator %s (%s) on pane %s", ps.peer.DisplayName, ps.peer.PeerID, paneID)
+			continue
+		}
+		next, err := Apply(ps.state, EventPaneDisplaced)
+		if err != nil {
+			r.emitContradictionLocked(ctx, ps.peer.PeerID, ps.peer.DisplayName, ps.state, EventPaneDisplaced)
+			continue
+		}
+		ps.state = next
+		if status, ok := next.ToStatus(); ok {
+			ps.peer.Status = status
+		}
+		ps.peer.PaneID = nil
+		ps.peer.LastSeen = &now
+		r.appendEvent(ctx, Event{Type: "peer_offline", Timestamp: now, PeerID: ps.peer.PeerID, PeerName: ps.peer.DisplayName, SessionID: ps.peer.PeerID,
+			Payload: map[string]any{"reason": "pane_displaced", "pane_id": paneID, "new_peer_id": string(newID)}})
+	}
 }
 
 // buildDisplayName derives the addressing name, auto-suffixing past distinct

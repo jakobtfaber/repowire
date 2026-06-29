@@ -170,6 +170,7 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 		ClaimedPeerID: claimed,
 		Metadata:      req.Metadata,
 		AgentPID:      req.AgentPID,
+		ParentPID:     req.ParentPID,
 	}
 
 	peerID, displayName, err := h.reg.AllocateAndRegister(ctx, params)

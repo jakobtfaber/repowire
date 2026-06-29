@@ -77,6 +77,29 @@ func TestPaneDiedOfflinesPeer(t *testing.T) {
 	}
 }
 
+// TestPaneDiedForgetsSpawnOwnership: pane death must drop the pane from the
+// spawn-ownership store (the forgetSpawnedPane callback), so destructivePaneProof
+// can't later authorize kill/restart against a reused pane id. Guards the call
+// site that main.go wires to SpawnService.Ownership().Forget.
+func TestPaneDiedForgetsSpawnOwnership(t *testing.T) {
+	h := newTestHub(t)
+	mux := http.NewServeMux()
+	var forgotten []string
+	lh := NewLifecycleHandler(h.reg, h.transport, fakePaneLister{},
+		func(pane string) { forgotten = append(forgotten, pane) }, nil)
+	h.WithLifecycle(lh)
+	h.Routes(mux)
+
+	registerPanePeer(t, h.reg, "default", "%77")
+	rec := postLifecycle(t, mux, "/hooks/lifecycle/pane-died", paneDiedRequest{PaneID: "%77"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pane-died: status %d body %s", rec.Code, rec.Body.String())
+	}
+	if len(forgotten) != 1 || forgotten[0] != "%77" {
+		t.Fatalf("forgetSpawnedPane should be called with %%77, got %v", forgotten)
+	}
+}
+
 // TestPaneDiedNoPeerStillOK: a pane with no peer returns 200 (clears state, no-op).
 func TestPaneDiedNoPeerStillOK(t *testing.T) {
 	h := newTestHub(t)
