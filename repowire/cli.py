@@ -33,6 +33,25 @@ def main() -> None:
 # =============================================================================
 
 
+def _resolve_go_hub_binary() -> str | None:
+    """Locate the Go hub binary, if present. Order: REPOWIRE_HUB_BIN, PATH
+    (`repowire-hub-go`), then a repo-relative dev build under daemon-go/."""
+    import os
+    import shutil
+
+    explicit = os.environ.get("REPOWIRE_HUB_BIN", "").strip()
+    if explicit:
+        return explicit if os.path.isfile(explicit) and os.access(explicit, os.X_OK) else None
+    on_path = shutil.which("repowire-hub-go")
+    if on_path:
+        return on_path
+    for name in ("repowire-hub-go", "daemon-go"):
+        candidate = Path(__file__).resolve().parent.parent / "daemon-go" / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 @main.command()
 @click.option("--host", default=DEFAULT_HOST, help="Bind address")
 @click.option("--port", default=DEFAULT_PORT, type=int, help="Port")
@@ -64,6 +83,13 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
         config.relay.ensure_api_key()
         config.save()
 
+    # Go hub is the default daemon. Fall back to the Python ASGI app when the
+    # binary is absent, REPOWIRE_DAEMON=python, or relay is enabled (the Go hub
+    # has no relay bridge yet — relay_client is a deferred client port). The Go
+    # hub reads the same ~/.repowire/state.db (schema v12) and serves the same
+    # wire protocol, so existing hooks/MCP/bots connect to it unchanged.
+    backend = os.environ.get("REPOWIRE_DAEMON", "go").strip().lower()
+    go_bin = _resolve_go_hub_binary()
     env_disable = os.environ.get("REPOWIRE_DISABLE_HOOK_INSTALL", "").strip().lower() in (
         "1",
         "true",
@@ -71,6 +97,22 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
         "on",
     )
     install_hooks = not (no_install_hooks or env_disable)
+    if backend != "python" and go_bin and not config.relay.enabled:
+        if install_hooks:
+            from repowire.hooks import tmux_lifecycle
+
+            try:
+                tmux_lifecycle.install_hooks(host, port)
+            except Exception as exc:  # tmux absent/non-fatal — log and continue
+                logging.warning("tmux hook install failed (continuing): %s", exc)
+        console.print(f"[cyan]Starting Repowire Go hub on {host}:{port}...[/] [dim]({go_bin})[/]")
+        if config.relay.dashboard_url:
+            console.print(f"[green]Dashboard:[/] {config.relay.dashboard_url}")
+        # Replace this process with the Go hub; it owns the port for its lifetime.
+        os.execv(go_bin, [go_bin, "-addr", f"{host}:{port}"])
+    if backend != "python" and not go_bin:
+        logging.info("Go hub binary not found; falling back to Python daemon")
+
     # App-level loggers (repowire.*) otherwise fall through to Python's
     # last-resort handler (WARNING+ only): registry demotions, the startup
     # orphan sweep, and lazy-repair INFO lines never reach the service log.
