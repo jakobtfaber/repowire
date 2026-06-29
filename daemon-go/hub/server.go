@@ -155,6 +155,11 @@ func (h *Hub) Transport() *WebSocketTransport { return h.transport }
 // Router exposes the message router for HTTP routes built outside this package.
 func (h *Hub) Router() *MessageRouter { return h.router }
 
+// Tracker exposes the in-memory query tracker so main can wire it into the
+// session-routes group (the /response Stop-hook resolver shares the SAME
+// tracker the message router blocks on).
+func (h *Hub) Tracker() *QueryTracker { return h.tracker }
+
 // Routes registers the hub's HTTP handlers on the mux.
 func (h *Hub) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/ws", h.HandleWS)

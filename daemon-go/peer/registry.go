@@ -227,14 +227,60 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	return id, displayName, nil
 }
 
-// buildDisplayName derives the addressing name. Reclaim decides identity reuse;
-// here we just compute the human-facing name (folder-backend). Must hold lock.
+// buildDisplayName derives the addressing name, auto-suffixing past distinct
+// LIVE peers that already hold the candidate (mirrors PeerRegistry.
+// _build_display_name). Format: {folder}-{backend}, then {folder}-{N}-{backend}
+// for N=2,3,… A candidate held only by an Offline peer (or by the same runtime
+// session) is NOT suffixed — that peer is a clean-takeover/reconnect target and
+// the base name is reclaimed by reclaimableOfflineLocked / the ClaimedPeerID
+// path. Without this loop two live peers on the same path collide on one
+// display_name and ask/notify addressing becomes ambiguous. Must hold lock.
 func (r *Registry) buildDisplayName(params AllocateParams) proto.DisplayName {
 	folder := "peer"
 	if params.Path != nil && *params.Path != "" {
 		folder = baseFolder(*params.Path)
 	}
-	return proto.DisplayName(fmt.Sprintf("%s-%s", folder, params.Backend))
+	base := fmt.Sprintf("%s-%s", folder, params.Backend)
+	incomingSession := runtimeSessionID(params.Metadata)
+
+	candidate := base
+	for suffix := 2; ; suffix++ {
+		var blocker *peerState
+		for _, ps := range r.peers {
+			if ps.peer.DisplayName == proto.DisplayName(candidate) && ps.peer.Circle == params.Circle {
+				blocker = ps
+				break
+			}
+		}
+		if blocker == nil {
+			return proto.DisplayName(candidate)
+		}
+		// Same logical peer reconnecting (matching runtime session) or a dead
+		// peer holding the name: keep the base name — identity reuse is handled
+		// by the ClaimedPeerID / reclaimableOfflineLocked path in caller.
+		sameSession := incomingSession != "" && runtimeSessionID(blocker.peer.Metadata) == incomingSession
+		if sameSession || blocker.state == StateOffline {
+			return proto.DisplayName(candidate)
+		}
+		// Held by a distinct live peer — try the next suffix.
+		candidate = fmt.Sprintf("%s-%d-%s", folder, suffix, params.Backend)
+	}
+}
+
+// runtimeSessionID extracts the runtime (hook) session id from a peer's
+// metadata. Mirrors PeerRegistry._runtime_session_id: two peers can't share a
+// runtime session (except transiently during a fork), so it is a stable
+// reconnect identity for name reclaim.
+func runtimeSessionID(metadata map[string]any) string {
+	if metadata == nil {
+		return ""
+	}
+	for _, key := range []string{"hook_session_id", "runtime_session_id", "session_id"} {
+		if v, ok := metadata[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // reclaimableOfflineLocked returns a PeerID whose Offline peer currently holds
