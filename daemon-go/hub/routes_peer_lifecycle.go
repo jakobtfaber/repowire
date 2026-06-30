@@ -74,7 +74,7 @@ type RegisterResponse struct {
 	PeerID           string         `json:"peer_id"`
 	DisplayName      string         `json:"display_name"`
 	PaneAssigned     bool           `json:"pane_assigned"`
-	BirthCertificate map[string]any `json:"birth_certificate,omitempty"`
+	BirthCertificate map[string]any `json:"birth_certificate"`
 }
 
 // UnregisterPeerRequest is the POST /peer/unregister body.

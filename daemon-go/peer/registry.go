@@ -458,8 +458,9 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 // scheduleRedelivery drains any stashed replies owed to a just-(re)registered
 // asker — same-id reconnect (pass-1) and fresh-id identity-tuple rebind (pass-2).
 // Safe to call while holding r.mu: it launches an async goroutine that re-acquires
-// the lock. redeliverPendingReplies snapshots (not drains), so a redundant call
-// from a later UpdateStatus in the same flow is harmless. No tracker → no-op.
+// the lock. Overlapping calls (e.g. register + a later UpdateStatus in the same
+// flow) are made safe by the per-asker single-flight in redeliverPendingReplies
+// (claimRedelivery), not by snapshotting alone. No tracker → no-op.
 func (r *Registry) scheduleRedelivery(ctx context.Context, id proto.PeerID) {
 	if rec := r.recOrZero(); rec.asks != nil {
 		// Detach from the triggering request/WS context: a one-shot register or

@@ -217,7 +217,8 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	// already guards live deliveries (delivery.go gateOnSeedSettled); a peer that
 	// just completed the connect handshake is past pending_first_turn registration,
 	// so we replay without re-gating. Best-effort: a write failure stops the replay
-	// (the rows are already delete-on-drained, but the socket is going down anyway).
+	// (a row is deleted only after its frame is written, so unsent rows survive for
+	// the next reconnect).
 	h.flushQueuedDeliveries(ctx, conn, peerID, assignedName)
 
 	// Read loop: dispatch frames by type until the socket drops.
@@ -230,13 +231,14 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// flushQueuedDeliveries drains the durable queued-delivery queue for the freshly
-// connected peer and replays each row onto this connection. notify rows become a
-// notify frame, ask rows an ask frame — the same wire shapes router.SendNotification
-// / router.SendAsk put on the wire (clients depend on them). The store is the
-// nil-checked *state.Store threaded via WithReadDeps; nil → no-op. DrainDeliveries
-// is delete-on-drain, so a row is replayed at most once. A single write failure
-// stops the replay (the socket is dropping); it never kills the connect path.
+// flushQueuedDeliveries replays the durable queued-delivery queue for the freshly
+// connected peer onto this connection. notify rows become a notify frame, ask rows
+// an ask frame — the same wire shapes router.SendNotification / router.SendAsk put
+// on the wire (clients depend on them). The store is the nil-checked *state.Store
+// threaded via WithReadDeps; nil → no-op. It LISTS first and deletes each row only
+// after its frame is successfully written, so a write failure on a dropping socket
+// leaves unsent rows for the next reconnect (no data loss). It never kills the
+// connect path.
 func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, id proto.PeerID, toName proto.DisplayName) {
 	if h.store == nil {
 		return

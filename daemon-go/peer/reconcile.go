@@ -248,10 +248,11 @@ func (r *Registry) clearAllContradictions(id proto.PeerID) {
 // ---------------------------------------------------------------------------
 
 // redeliverPendingReplies drains stashed replies for an asker that just came
-// back ONLINE/BUSY. NOT called from LazyRepair — scheduled as a background
-// goroutine from UpdateStatus on an OFFLINE->live transition when
-// experiments.acp_broker_client is on and asks != nil. Best-effort: a failure
-// leaves the stash for the next reconnect/sweep.
+// back live. Scheduled as a background goroutine (via scheduleRedelivery) from
+// fresh registration, same-id reconnect, and the UpdateStatus OFFLINE->live
+// transition whenever a tracker is wired. Per-asker single-flight (claimRedelivery)
+// makes overlapping triggers safe: the loser returns early so a stash is never
+// sent twice. Best-effort: a failure leaves the stash for the next reconnect/sweep.
 func (r *Registry) redeliverPendingReplies(ctx context.Context, asker proto.PeerID) {
 	rec := r.recOrZero()
 	if rec.asks == nil || rec.delivery == nil {
