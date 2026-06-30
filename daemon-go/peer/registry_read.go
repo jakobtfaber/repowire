@@ -37,7 +37,11 @@ func (r *Registry) HeartbeatTolerance() time.Duration {
 func (r *Registry) ResolvePeer(identifier string, circle *string) (*proto.Peer, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.resolvePeerLocked(identifier, circle)
+	// Clone at the PUBLIC boundary only: resolvePeerLocked returns a live pointer
+	// because identity-mutating wrappers (touch/description) resolve then mutate
+	// under one write lock. Off-lock route callers must get a snapshot instead.
+	p, err := r.resolvePeerLocked(identifier, circle)
+	return clonePeer(p), err
 }
 
 // resolvePeerLocked is ResolvePeer's body; callers must hold at least the read

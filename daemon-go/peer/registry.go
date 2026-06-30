@@ -837,6 +837,26 @@ func (r *Registry) UpdateDisplayName(ctx context.Context, id proto.PeerID, name 
 	return true, nil
 }
 
+// clonePeer returns a value-copy snapshot safe to hand to off-lock callers: the
+// struct is copied and the Metadata map cloned. Other fields are pointers the
+// registry only ever REASSIGNS under r.mu (never mutates in place), so a shallow
+// copy of them is a stable snapshot. MUST be called while holding r.mu. Read APIs
+// return clones so hub code can't race a concurrent mutator on a live *proto.Peer.
+func clonePeer(p *proto.Peer) *proto.Peer {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	if p.Metadata != nil {
+		m := make(map[string]any, len(p.Metadata))
+		for k, v := range p.Metadata {
+			m[k] = v
+		}
+		cp.Metadata = m
+	}
+	return &cp
+}
+
 // GetPeer returns a peer by PeerID. Routing-sensitive callers MUST hold a
 // PeerID; the compiler refuses a DisplayName here.
 func (r *Registry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {
@@ -846,7 +866,7 @@ func (r *Registry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {
 	if !ok {
 		return nil, false
 	}
-	return ps.peer, true
+	return clonePeer(ps.peer), true
 }
 
 // GetPeerByPane returns the peer occupying a tmux pane, or (nil,false). pane_id
@@ -861,7 +881,7 @@ func (r *Registry) GetPeerByPane(pane string) (*proto.Peer, bool) {
 	defer r.mu.RUnlock()
 	for _, ps := range r.peers {
 		if ps.peer.PaneID != nil && *ps.peer.PaneID == pane {
-			return ps.peer, true
+			return clonePeer(ps.peer), true
 		}
 	}
 	return nil, false
@@ -874,7 +894,7 @@ func (r *Registry) GetPeersByCircle(circle string) []*proto.Peer {
 	var out []*proto.Peer
 	for _, ps := range r.peers {
 		if ps.peer.Circle == circle {
-			out = append(out, ps.peer)
+			out = append(out, clonePeer(ps.peer))
 		}
 	}
 	return out

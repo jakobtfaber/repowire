@@ -241,12 +241,16 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 	if h.store == nil {
 		return
 	}
-	drained, err := h.store.DrainDeliveries(ctx, string(id), defaultQueueMax, time.Time{})
+	// List-then-delete-after-success, NOT drain-then-replay: deleting on read
+	// loses an owed delivery if the replay write then fails on a dropping socket.
+	// A row is removed only once its frame has been written. (Parity with the
+	// Python list_for_peer -> send -> delete split.)
+	pending, err := h.store.ListDeliveries(ctx, string(id), defaultQueueMax, time.Time{})
 	if err != nil {
-		log.Printf("ws: flush-on-connect drain for %s failed: %v", id, err)
+		log.Printf("ws: flush-on-connect list for %s failed: %v", id, err)
 		return
 	}
-	for _, d := range drained {
+	for _, d := range pending {
 		var frame map[string]any
 		switch d.Kind {
 		case state.DeliveryNotify:
@@ -276,7 +280,11 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 		}
 		if err := wsjson.Write(ctx, conn, frame); err != nil {
 			log.Printf("ws: flush-on-connect replay to %s stopped after write failure (%s): %v", id, d.DeliveryID, err)
-			return
+			return // row NOT deleted — a later reconnect retries it
+		}
+		// Delete only after the frame is on the wire.
+		if _, err := h.store.DeleteDelivery(ctx, d.DeliveryID); err != nil {
+			log.Printf("ws: flush-on-connect delete after replay to %s failed (%s): %v", id, d.DeliveryID, err)
 		}
 	}
 }

@@ -98,13 +98,13 @@ func (r *Registry) ResolvePeerStrict(identifier string, circle *string) ([]*prot
 
 	// peer_id hit is unambiguous (single).
 	if ps, ok := r.peers[proto.PeerID(identifier)]; ok && inCircle(ps.peer) {
-		return []*proto.Peer{ps.peer}, nil
+		return []*proto.Peer{clonePeer(ps.peer)}, nil
 	}
 
 	var byName []*proto.Peer
 	for _, ps := range r.peers {
 		if string(ps.peer.DisplayName) == identifier && inCircle(ps.peer) {
-			byName = append(byName, ps.peer)
+			byName = append(byName, clonePeer(ps.peer))
 		}
 	}
 	return byName, nil
