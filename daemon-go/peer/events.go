@@ -225,7 +225,7 @@ func (r *Registry) ResolveByIdentifier(identifier string) (*proto.Peer, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if ps, ok := r.peers[proto.PeerID(identifier)]; ok {
-		return ps.peer, true
+		return clonePeer(ps.peer), true
 	}
 	var best *proto.Peer
 	for _, ps := range r.peers {
@@ -240,7 +240,8 @@ func (r *Registry) ResolveByIdentifier(identifier string) (*proto.Peer, bool) {
 			best = ps.peer
 		}
 	}
-	return best, best != nil
+	// Clone at the public boundary (off-lock route reader).
+	return clonePeer(best), best != nil
 }
 
 // lastSeenAfter reports whether a was seen more recently than b (nil last_seen

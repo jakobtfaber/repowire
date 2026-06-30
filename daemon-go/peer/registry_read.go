@@ -188,5 +188,5 @@ func (r *Registry) GetOrchestrator(circle string) (*proto.Peer, bool) {
 	if best == nil {
 		return nil, false
 	}
-	return best, true
+	return clonePeer(best), true // snapshot for the off-lock route reader
 }

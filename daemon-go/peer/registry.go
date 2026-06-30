@@ -113,6 +113,13 @@ type Registry struct {
 	repairMu   sync.Mutex
 	lastRepair time.Time
 
+	// redeliverActive single-flights stashed-reply redelivery per asker. Multiple
+	// triggers (register + reconnect + OFFLINE->live status) can fire concurrently
+	// for the same asker; without this, two workers snapshot the same un-cleared
+	// stash and BOTH send it (snapshot happens before MarkPendingReplyDelivered).
+	redeliverMu     sync.Mutex
+	redeliverActive map[proto.PeerID]struct{}
+
 	retiredTTL time.Duration
 	reapTTL    time.Duration
 
@@ -147,14 +154,15 @@ const (
 // retirement records still inside the TTL window.
 func NewRegistry(ctx context.Context, store Store, live Liveness, transport Transport) (*Registry, error) {
 	r := &Registry{
-		peers:      make(map[proto.PeerID]*peerState),
-		mappings:   make(map[proto.PeerID]*proto.SessionMapping),
-		retired:    make(map[proto.PeerID]time.Time),
-		store:      store,
-		live:       live,
-		transport:  transport,
-		retiredTTL: defaultRetiredTTL,
-		reapTTL:    defaultReapTTL,
+		peers:           make(map[proto.PeerID]*peerState),
+		mappings:        make(map[proto.PeerID]*proto.SessionMapping),
+		retired:         make(map[proto.PeerID]time.Time),
+		redeliverActive: make(map[proto.PeerID]struct{}),
+		store:           store,
+		live:            live,
+		transport:       transport,
+		retiredTTL:      defaultRetiredTTL,
+		reapTTL:         defaultReapTTL,
 	}
 
 	mappings, err := store.LoadMappings(ctx)
@@ -461,6 +469,26 @@ func (r *Registry) scheduleRedelivery(ctx context.Context, id proto.PeerID) {
 		// asyncio.create_task is likewise not bound to the request scope.)
 		go r.redeliverPendingReplies(context.WithoutCancel(ctx), id)
 	}
+}
+
+// claimRedelivery returns true if the caller won the single-flight slot for this
+// asker (and must releaseRedelivery when done); false if a worker is already
+// redelivering for this asker — the loser returns early so the same stash is
+// never sent twice by overlapping workers.
+func (r *Registry) claimRedelivery(id proto.PeerID) bool {
+	r.redeliverMu.Lock()
+	defer r.redeliverMu.Unlock()
+	if _, busy := r.redeliverActive[id]; busy {
+		return false
+	}
+	r.redeliverActive[id] = struct{}{}
+	return true
+}
+
+func (r *Registry) releaseRedelivery(id proto.PeerID) {
+	r.redeliverMu.Lock()
+	delete(r.redeliverActive, id)
+	r.redeliverMu.Unlock()
 }
 
 // claimMatchesIdentity reports whether a claimed peer_id may be reused for an
@@ -1097,7 +1125,7 @@ func (r *Registry) reapDangling(ctx context.Context) {
 			continue
 		}
 		if _, ok := evidence[peer.PeerID]; ok {
-			spared = append(spared, ps.peer)
+			spared = append(spared, clonePeer(ps.peer)) // stays in the map; emitted off-lock
 			continue
 		}
 		next, err := Apply(ps.state, EventReap)

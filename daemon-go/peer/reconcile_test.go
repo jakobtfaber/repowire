@@ -224,6 +224,63 @@ func eventsOfType(s *memStore, typ string) []Event {
 
 // --- 1. two-pass redelivery uniqueness gate ---
 
+// waitRedeliveryIdle blocks until no redelivery worker holds the single-flight
+// slot for asker (claim-then-release succeeds), so a test can call
+// redeliverPendingReplies directly without racing a register/status-triggered one.
+func waitRedeliveryIdle(t *testing.T, r *Registry, asker proto.PeerID) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if r.claimRedelivery(asker) {
+			r.releaseRedelivery(asker)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("redelivery slot never went idle")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestRedeliver_SingleFlight_NoDuplicate proves overlapping redelivery workers
+// for the same asker deliver a stash exactly once. Without single-flight, two
+// workers snapshot the same un-cleared stash and both send it.
+func TestRedeliver_SingleFlight_NoDuplicate(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newRegistry(t)
+	asks := newFakeAsks()
+	delivery := &fakeDelivery{}
+	r.WithReconciliation(asks, delivery, fakeProbe{}, ExperimentsConfig{}, 0, 0)
+
+	asker, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "a", Backend: proto.AgentClaudeCode, Path: ptr("/w"), Machine: "h", Role: proto.RoleAgent,
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	waitRedeliveryIdle(t, r, asker)
+
+	reply := "ans"
+	asks.add(StashedAsk{
+		CorrelationID: "ask1", FromPeerID: asker, FromPeerName: "a",
+		ToPeerID: "repow-a-answerer", ToPeerName: "answerer", PendingReply: &reply,
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); r.redeliverPendingReplies(ctx, asker) }()
+	}
+	wg.Wait()
+
+	delivery.mu.Lock()
+	got := len(delivery.calls)
+	delivery.mu.Unlock()
+	if got != 1 {
+		t.Fatalf("single-flight: expected exactly 1 delivery for 1 stash across 20 workers, got %d", got)
+	}
+}
+
 func TestRedeliverPendingReplies_TwoPass_UniquenessGate(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newRegistry(t)
@@ -258,11 +315,23 @@ func TestRedeliverPendingReplies_TwoPass_UniquenessGate(t *testing.T) {
 		},
 	})
 
-	r.redeliverPendingReplies(ctx, asker)
-
-	delivery.mu.Lock()
-	got := len(delivery.calls)
-	delivery.mu.Unlock()
+	// AllocateAndRegister also schedules an async redelivery; it may run before the
+	// stashes above existed (delivering 0) and briefly hold the single-flight slot.
+	// Poll the direct call until both passes have delivered. Single-flight + the
+	// tracker clearing PendingReply on delivery cap the total at 2, so this
+	// converges deterministically and still fails loud on any OVER-delivery.
+	var got int
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		r.redeliverPendingReplies(ctx, asker)
+		delivery.mu.Lock()
+		got = len(delivery.calls)
+		delivery.mu.Unlock()
+		if got >= 2 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if got != 2 {
 		t.Fatalf("expected 2 redeliveries (pass-1 + pass-2), got %d", got)
 	}

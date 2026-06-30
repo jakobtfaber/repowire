@@ -258,6 +258,15 @@ func (r *Registry) redeliverPendingReplies(ctx context.Context, asker proto.Peer
 		return
 	}
 
+	// Single-flight per asker: register/reconnect/status can all schedule a worker
+	// for the same asker concurrently. Snapshot-then-send-then-clear means two
+	// overlapping workers would each send the same stash. The loser returns early;
+	// the winner's snapshot already covers everything pending.
+	if !r.claimRedelivery(asker) {
+		return
+	}
+	defer r.releaseRedelivery(asker)
+
 	// PASS 1: same-id reconnect.
 	for _, ask := range rec.asks.TakePendingRepliesForAsker(asker) {
 		r.deliverOneStashed(ctx, ask, asker, false)
@@ -400,7 +409,7 @@ func (r *Registry) demoteUnsafeConnectedPeers(ctx context.Context) int {
 		ps, ok := r.peers[id]
 		var peerCopy *proto.Peer
 		if ok {
-			peerCopy = ps.peer
+			peerCopy = clonePeer(ps.peer) // value snapshot — read off-lock below
 		}
 		r.mu.RUnlock()
 		if peerCopy != nil {
@@ -575,10 +584,10 @@ func (r *Registry) evictStalePeers(ctx context.Context) int {
 			continue // runtime changed in the probe window; survive
 		}
 		if _, ok := evidence[peer.PeerID]; ok {
-			spared = append(spared, ps.peer)
+			spared = append(spared, clonePeer(ps.peer)) // stays in the map; emitted off-lock
 			continue
 		}
-		evicted = append(evicted, ps.peer)
+		evicted = append(evicted, ps.peer) // removed from the map below; no concurrent mutator
 		delete(r.peers, peer.PeerID)
 		delete(r.mappings, peer.PeerID)
 		r.clearAllContradictions(peer.PeerID)

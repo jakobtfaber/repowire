@@ -51,9 +51,11 @@ func (r *Registry) CheckAccess(ctx context.Context, fromPeer, toPeer string, byp
 	}
 
 	if cerr := checkCircleAccess(fromObj, target, bypassCircle); cerr != nil {
-		return fromObj, nil, cerr
+		return clonePeer(fromObj), nil, cerr
 	}
-	return fromObj, target, nil
+	// Clone at the public boundary: delivery/broadcast/query callers read these
+	// off-lock while register/status/metadata writers mutate the live structs.
+	return clonePeer(fromObj), clonePeer(target), nil
 }
 
 // checkCircleAccess enforces the circle boundary given already-resolved peers.
