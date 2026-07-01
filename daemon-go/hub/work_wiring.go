@@ -10,10 +10,9 @@ import (
 )
 
 var (
-	// *peer.Registry satisfies the registry seams used by SessionControl and the
-	// work routes (resolve/get/getbypane/getall/unregister).
-	_ controlRegistry    = (*peer.Registry)(nil)
-	_ workRoutesRegistry = (*peer.Registry)(nil)
+	// *peer.Registry satisfies the registry seam used by SessionControl
+	// (resolve/get/getbypane/getall/unregister).
+	_ controlRegistry = (*peer.Registry)(nil)
 
 	// *SpawnService satisfies the spawn seam SessionControl drives (the SAME
 	// shared instance main also hands to the spawn routes via WithSpawn).

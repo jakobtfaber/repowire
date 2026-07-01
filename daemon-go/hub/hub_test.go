@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -187,4 +188,124 @@ func dummyConn(t *testing.T) (*websocket.Conn, func()) {
 		server.CloseNow()
 		srv.Close()
 	}
+}
+
+// TestSendAskRealSocketAckWithin750ms exercises the GENUINE delivery-ack window
+// end-to-end: the router sends an ask over a real WebSocketTransport, the peer
+// reads the frame and replies with a delivery_ack inside the 750ms window, and
+// the hub's dispatch resolves it so SendAsk returns the receipt. This proves the
+// real SendAndWaitDeliveryAck path, not just the fake's branching.
+func TestSendAskRealSocketAckWithin750ms(t *testing.T) {
+	h := newTestHub(t)
+	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
+	defer srv.Close()
+	wsURL := "ws" + srv.URL[len("http"):]
+
+	c, peerID := dialAndConnect(t, wsURL, "beta")
+	defer c.CloseNow()
+	waitConnected(t, h, peerID)
+
+	// Peer side: read the ask frame, ack it as injected well within 750ms.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, raw, err := c.Read(ctx)
+		if err != nil {
+			return
+		}
+		var frame map[string]any
+		_ = json.Unmarshal(raw, &frame)
+		_ = wsjson.Write(ctx, c, map[string]any{
+			"type":        string(proto.FrameDeliveryAck),
+			"delivery_id": frame["delivery_id"],
+			"status":      "injected",
+		})
+	}()
+
+	start := time.Now()
+	hook, err := h.router.SendAsk(context.Background(), "alpha", peerID, "beta", "beta",
+		"cid-real", "real ask", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hook == nil || hook["status"] != "injected" {
+		t.Fatalf("expected injected receipt over real socket, got %+v", hook)
+	}
+	if elapsed := time.Since(start); elapsed >= deliveryAckTimeout {
+		t.Fatalf("ack should have resolved before the 750ms window, took %s", elapsed)
+	}
+}
+
+// TestSendNotificationRealSocketNoAckTimesOut covers the genuine 750ms timeout:
+// the peer reads the notify frame but never acks (legacy hook), so the real
+// SendAndWaitDeliveryAck waits the full window and returns (nil, nil) — a
+// missing ack is best-effort, never an error.
+func TestSendNotificationRealSocketNoAckTimesOut(t *testing.T) {
+	h := newTestHub(t)
+	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
+	defer srv.Close()
+	wsURL := "ws" + srv.URL[len("http"):]
+
+	c, peerID := dialAndConnect(t, wsURL, "gamma")
+	defer c.CloseNow()
+	waitConnected(t, h, peerID)
+
+	// Peer reads but deliberately never acks.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _, _ = c.Read(ctx)
+	}()
+
+	start := time.Now()
+	hook, err := h.router.SendNotification(context.Background(), "alpha", peerID, "gamma", "gamma",
+		"fyi no ack", nil, "")
+	if err != nil {
+		t.Fatalf("a missing ack must not error, got %v", err)
+	}
+	if hook != nil {
+		t.Fatalf("expected nil receipt on no-ack, got %+v", hook)
+	}
+	if elapsed := time.Since(start); elapsed < deliveryAckTimeout {
+		t.Fatalf("no-ack notify should wait the full 750ms window, only waited %s", elapsed)
+	}
+}
+
+// dialAndConnect dials the hub, sends a connect frame, and returns the live
+// client conn plus the assigned peer_id.
+func dialAndConnect(t *testing.T, wsURL, name string) (*websocket.Conn, proto.PeerID) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if err := wsjson.Write(ctx, c, proto.ConnectFrame{
+		Type:        proto.FrameConnect,
+		DisplayName: proto.DisplayName(name),
+		Circle:      "default",
+		Backend:     proto.AgentClaudeCode,
+		Role:        proto.RoleAgent,
+	}); err != nil {
+		t.Fatalf("write connect: %v", err)
+	}
+	var connected proto.ConnectedFrame
+	if err := wsjson.Read(ctx, c, &connected); err != nil {
+		t.Fatalf("read connected: %v", err)
+	}
+	return c, connected.SessionID
+}
+
+// waitConnected blocks until the transport registers the peer's socket.
+func waitConnected(t *testing.T, h *Hub, id proto.PeerID) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if h.transport.IsConnected(id) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("peer %s never connected", id)
 }

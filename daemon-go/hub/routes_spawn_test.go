@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/repowire/repowire/daemon-go/peer"
@@ -306,5 +307,49 @@ func TestSpawnRejectsDoubleSelector(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+}
+
+// writeSpawnTestPaneMeta writes a ws-hook meta.json for a pane directly via the
+// exported WSHookMetaPath (this file does not share pane_runtime_test.go's
+// writePaneMeta — that helper lives with the service-side pane-runtime tests).
+func writeSpawnTestPaneMeta(t *testing.T, paneID string, meta map[string]any) {
+	t.Helper()
+	if err := os.MkdirAll(paneLogsDir(), 0o755); err != nil {
+		t.Fatalf("mkdir pane logs: %v", err)
+	}
+	raw, _ := json.Marshal(meta)
+	if err := os.WriteFile(WSHookMetaPath(paneID), raw, 0o644); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+}
+
+// TestDestructivePaneProof_VerifiedByPaneMetadata proves the third proof mode:
+// a live pane whose ws-hook meta.json names THIS peer_id authorizes destructive
+// control; a mismatching/absent file does not (path match alone is never proof).
+func TestDestructivePaneProof_VerifiedByPaneMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
+
+	pane := "%77"
+	tmux := &fakeTmux{killOK: true, evidence: map[string]*TmuxPaneEvidence{pane: {TmuxSession: "sess"}}}
+	own := NewFileOwnership("test-host", tmux.ProbePane)
+	svc := NewSpawnService(tmux, own,
+		map[proto.AgentType]string{proto.AgentClaudeCode: "claude"}, []string{t.TempDir()})
+	h := &Hub{}
+	h.WithSpawn(svc, nil, NewAskTracker(0), "test-host")
+
+	id := proto.PeerID("repow-ops-abc123")
+	p := &proto.Peer{PeerID: id, PaneID: &pane}
+
+	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": string(id)})
+	if proof := h.destructivePaneProof(p); !proof.ok || proof.mode != "verified_pane_metadata" {
+		t.Fatalf("matching pane metadata must prove ownership: ok=%v mode=%q err=%q",
+			proof.ok, proof.mode, proof.errCode)
+	}
+
+	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": "repow-ops-someoneelse"})
+	if proof := h.destructivePaneProof(p); proof.ok {
+		t.Fatalf("mismatched pane metadata must NOT prove ownership")
 	}
 }

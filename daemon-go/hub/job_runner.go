@@ -62,6 +62,10 @@ func NewJobRunner(store *state.Store, delivery scheduledAskOpener, control *Sess
 // SetSenderPeerID addresses dispatch asks from the registered @jobs service peer.
 func (r *JobRunner) SetSenderPeerID(id proto.PeerID) { r.senderPeerID = id }
 
+// Control exposes the runner's SessionControl so routes can release executors
+// without a second control instance.
+func (r *JobRunner) Control() *SessionControl { return r.control }
+
 // Start recovers stale dispatching work, then launches the dispatch goroutine.
 func (r *JobRunner) Start(ctx context.Context) {
 	if r.started {

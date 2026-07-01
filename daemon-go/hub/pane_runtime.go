@@ -34,18 +34,18 @@ func paneFileToken(paneID string) string {
 	return s
 }
 
-func wsHookMetaPath(paneID string) string {
+func WSHookMetaPath(paneID string) string {
 	return filepath.Join(paneLogsDir(), "ws-hook-"+paneFileToken(paneID)+".meta.json")
 }
 
-// readPaneRuntimeMetadata reads the ws-hook meta.json for a pane. Missing/invalid
+// ReadPaneRuntimeMetadata reads the ws-hook meta.json for a pane. Missing/invalid
 // → empty map (best-effort, exactly like the Python reader). The legacy cwd
 // fallback is not ported — only peer_id matters for the destructive proof.
-func readPaneRuntimeMetadata(paneID string) map[string]any {
+func ReadPaneRuntimeMetadata(paneID string) map[string]any {
 	if paneID == "" {
 		return map[string]any{}
 	}
-	raw, err := os.ReadFile(wsHookMetaPath(paneID))
+	raw, err := os.ReadFile(WSHookMetaPath(paneID))
 	if err != nil {
 		return map[string]any{}
 	}
@@ -56,12 +56,12 @@ func readPaneRuntimeMetadata(paneID string) map[string]any {
 	return m
 }
 
-// clearPaneRuntimeState removes the transient pane-scoped hook files after a
+// ClearPaneRuntimeState removes the transient pane-scoped hook files after a
 // verified kill/restart or pane death (parity with utils.clear_pane_runtime_state).
 // Best-effort: a missing file is not an error. ponytail: pending-query-cid files
 // are hook-owned and not cleared here; the meta/pid/cwd trio is what gates the
 // destructive proof and stale-pane reuse.
-func clearPaneRuntimeState(paneID string) {
+func ClearPaneRuntimeState(paneID string) {
 	if paneID == "" {
 		return
 	}

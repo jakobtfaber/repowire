@@ -81,7 +81,7 @@ type LifecycleHandler struct {
 	// (ws-hook pid/meta) after a pane dies or is taken over.
 	//
 	// forgetSpawnedPane: main wires the SpawnService ownership Forget; nil → no-op.
-	// clearPaneRuntimeState: nil defaults to the real clearPaneRuntimeState in
+	// clearPaneRuntimeState: nil defaults to the real ClearPaneRuntimeState in
 	// NewLifecycleHandler (so pane death drops the stale meta.json that would
 	// otherwise re-prove a reused pane) — main need not wire it.
 	forgetSpawnedPane     func(paneID string)
@@ -104,7 +104,7 @@ func NewLifecycleHandler(
 	if clearRuntime == nil {
 		// Default to the real pane-runtime cleanup so pane death drops the stale
 		// meta.json that would otherwise re-prove a reused pane. main need not wire it.
-		clearRuntime = clearPaneRuntimeState
+		clearRuntime = ClearPaneRuntimeState
 	}
 	return &LifecycleHandler{
 		reg:                   reg,

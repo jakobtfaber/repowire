@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/state"
 )
@@ -26,6 +27,9 @@ import (
 type workRoutesRegistry interface {
 	ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error)
 }
+
+// *peer.Registry satisfies the work routes' assigned-peer resolver seam.
+var _ workRoutesRegistry = (*peer.Registry)(nil)
 
 // workRoutes bundles the work-route deps, wired onto the Hub via WithWork.
 type workRoutes struct {
@@ -41,7 +45,7 @@ type workRoutes struct {
 func (h *Hub) WithWork(runner *JobRunner, store *state.Store) *Hub {
 	h.work = &workRoutes{store: store, runner: runner}
 	if runner != nil {
-		h.work.control = runner.control
+		h.work.control = runner.Control()
 	}
 	return h
 }

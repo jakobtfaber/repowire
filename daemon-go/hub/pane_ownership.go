@@ -148,7 +148,7 @@ func (o *fileOwnership) Record(rec OwnershipRecord) {
 	if rec.PaneID == "" {
 		return
 	}
-	rec.Path = normPath(rec.Path)
+	rec.Path = NormPath(rec.Path)
 	if rec.CreatedAt == 0 {
 		rec.CreatedAt = float64(time.Now().UnixNano()) / 1e9
 	}
@@ -238,7 +238,7 @@ func (o *fileOwnership) validateDirect(p *proto.Peer) OwnershipValidation {
 		return OwnershipValidation{Record: &rec, Error: "pane_not_live",
 			Hint: "The recorded pane is not visible in tmux; refusing to use stale proof."}
 	}
-	if ev.TmuxSession != rec.TmuxSession || normPath(ev.CurrentPath) != normPath(rec.Path) {
+	if ev.TmuxSession != rec.TmuxSession || NormPath(ev.CurrentPath) != NormPath(rec.Path) {
 		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "pane_identity_mismatch",
 			Hint: "Live tmux pane evidence does not match the ownership proof."}
 	}
@@ -271,7 +271,7 @@ func (o *fileOwnership) findForPeer(p *proto.Peer) OwnershipValidation {
 			sawDead = true
 			continue
 		}
-		if ev.TmuxSession != rec.TmuxSession || normPath(ev.CurrentPath) != normPath(rec.Path) {
+		if ev.TmuxSession != rec.TmuxSession || NormPath(ev.CurrentPath) != NormPath(rec.Path) {
 			sawMismatch = true
 			continue
 		}
@@ -353,7 +353,7 @@ func (o *fileOwnership) recordMatchesIdentity(rec OwnershipRecord, p *proto.Peer
 	return rec.Backend == string(p.Backend) &&
 		rec.Circle == circle &&
 		rec.Role == string(p.Role) &&
-		normPath(rec.Path) == normPath(p.Path)
+		NormPath(rec.Path) == NormPath(p.Path)
 }
 
 // loadLocked reads the JSON record map (caller holds mu). A missing/corrupt file
@@ -399,10 +399,10 @@ func (o *fileOwnership) saveLocked(records map[string]OwnershipRecord) {
 	_ = os.Rename(tmp, o.path)
 }
 
-// normPath ports _norm_path: realpath of the expanded path, "" for empty. Falls
+// NormPath ports _norm_path: realpath of the expanded path, "" for empty. Falls
 // back to the cleaned absolute path when the target doesn't resolve (e.g. a peer
 // whose pane already died) so identity comparison stays stable.
-func normPath(path string) string {
+func NormPath(path string) string {
 	if path == "" {
 		return ""
 	}

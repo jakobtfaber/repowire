@@ -329,13 +329,6 @@ func isTransportUnavailable(err error) bool {
 	return errors.Is(err, ErrNotConnected)
 }
 
-func strPtr(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
 func nameStrPtr(n proto.DisplayName) *string {
 	if n == "" {
 		return nil

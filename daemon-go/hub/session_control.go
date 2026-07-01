@@ -716,6 +716,16 @@ func strPtrOrNil(p *string) any {
 	return *p
 }
 
+// strPtr returns nil for an empty string, else a pointer to s. Shared by
+// session_control.go and job_runner.go; routes_messaging.go keeps its own
+// 3-line copy on the route side.
+func strPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 func sleepCtx(ctx context.Context, d time.Duration) bool {
 	t := time.NewTimer(d)
 	defer t.Stop()

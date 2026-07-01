@@ -223,7 +223,7 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	// Non-self-registering backends are daemon-pre-registered for CLI polling.
 	if result.PaneID != "" && !selfRegistersOnSpawn(backend) {
-		resolvedPath := normPath(req.Path)
+		resolvedPath := NormPath(req.Path)
 		warning := backendStr(backend) + " hooks do not currently fire reliably; Repowire pre-registered this peer for CLI polling."
 		metadata := map[string]any{
 			"repowire_cli_fallback": true,
@@ -300,7 +300,7 @@ func (h *Hub) resolveLegacyCommand(command string) (proto.AgentType, bool) {
 // writeSpawnError surfaces a *SpawnError as its carried HTTP status + detail; any
 // other error is a 500.
 func (h *Hub) writeSpawnError(w http.ResponseWriter, err error) {
-	if se, ok := asSpawnError(err); ok {
+	if se, ok := AsSpawnError(err); ok {
 		writeJSONError(w, se.Status, se.Detail)
 		return
 	}
@@ -353,7 +353,7 @@ func (h *Hub) handleKillPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	killed := h.spawn.svc.tmux.KillPane(proof.paneID)
+	killed := h.spawn.svc.Tmux().KillPane(proof.paneID)
 	if !killed {
 		// Fail loud: verified pane could not be killed; leave the peer registered.
 		writeJSONError(w, http.StatusInternalServerError, map[string]any{
@@ -364,7 +364,7 @@ func (h *Hub) handleKillPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.spawn.svc.Ownership().Forget(proof.paneID)
-	clearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
+	ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
 	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
 	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
 	t := true
@@ -505,7 +505,7 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if proof.ok {
-		if !h.spawn.svc.tmux.KillPane(proof.paneID) {
+		if !h.spawn.svc.Tmux().KillPane(proof.paneID) {
 			writeJSONError(w, http.StatusInternalServerError, map[string]any{
 				"error":   "kill_failed",
 				"hint":    "tmux kill-pane failed for the peer's verified pane; the old runtime may still be alive. Aborting restart to avoid duplicates.",
@@ -514,7 +514,7 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.spawn.svc.Ownership().Forget(proof.paneID)
-		clearPaneRuntimeState(proof.paneID) // stale meta must not re-prove the reused pane
+		ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove the reused pane
 		_, _ = h.spawn.reg.MarkOffline(ctx, peerCopy.PeerID, false)
 	}
 
@@ -620,7 +620,7 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 	command, cerr := svc.ResolveCommand(req.NewBackend, nil)
 	if cerr != nil {
 		// Decorate command_unavailable with new_backend (parity with Python).
-		if se, ok := asSpawnError(cerr); ok {
+		if se, ok := AsSpawnError(cerr); ok {
 			if m, ok := se.Detail.(map[string]any); ok && m["error"] == "command_unavailable" {
 				m["new_backend"] = string(req.NewBackend)
 			}
@@ -646,7 +646,7 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 	// Only kill daemon-owned panes (spawned-set), same rule as /kill-peer. If
 	// kill_pane fails the old agent is still alive — abort rather than zombie it.
 	if peerCopy.PaneID != nil && *peerCopy.PaneID != "" && svc.Ownership().IsSpawned(*peerCopy.PaneID) {
-		if !svc.tmux.KillPane(*peerCopy.PaneID) {
+		if !svc.Tmux().KillPane(*peerCopy.PaneID) {
 			writeJSONError(w, http.StatusInternalServerError, map[string]any{
 				"error":   "kill_failed",
 				"hint":    "tmux kill-pane failed for the peer's pane; the old agent may still be alive. Aborting switch to avoid a zombie runtime. Check `tmux list-panes -a`.",
@@ -746,8 +746,8 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 	paneVerified := svc(h).Ownership().IsSpawned(*peerCopy.PaneID) ||
 		svc(h).Ownership().ValidateForPeer(peerCopy).OK
 	if !paneVerified {
-		if ev := svc(h).tmux.ProbePane(*peerCopy.PaneID); ev != nil &&
-			peerCopy.Path != "" && normPath(ev.CurrentPath) == normPath(peerCopy.Path) {
+		if ev := svc(h).Tmux().ProbePane(*peerCopy.PaneID); ev != nil &&
+			peerCopy.Path != "" && NormPath(ev.CurrentPath) == NormPath(peerCopy.Path) {
 			paneVerified = true
 		}
 	}
@@ -909,7 +909,7 @@ func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 	}
 
 	_ = own
-	ev := h.spawn.svc.tmux.ProbePane(*p.PaneID)
+	ev := h.spawn.svc.Tmux().ProbePane(*p.PaneID)
 	if ev == nil {
 		return destructiveProof{paneID: *p.PaneID, errCode: "pane_not_live",
 			hint: "The peer's recorded pane is not visible in tmux."}
@@ -919,7 +919,7 @@ func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 	// owning peer_id into ws-hook-<pane>.meta.json; a match proves this peer really
 	// occupies the live pane (not merely shares its path). Parity with
 	// spawn.py destructive proof mode 3. Path match alone is still NOT proof.
-	if meta := readPaneRuntimeMetadata(*p.PaneID); meta != nil {
+	if meta := ReadPaneRuntimeMetadata(*p.PaneID); meta != nil {
 		if mpid, _ := meta["peer_id"].(string); mpid != "" {
 			if mpid == string(p.PeerID) {
 				return destructiveProof{ok: true, paneID: *p.PaneID, tmuxSession: ev.TmuxSession,

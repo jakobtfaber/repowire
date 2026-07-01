@@ -91,8 +91,8 @@ func (e *SpawnError) Error() string {
 	return fmt.Sprintf("spawn error (%d)", e.Status)
 }
 
-// asSpawnError unwraps a *SpawnError from err, if present.
-func asSpawnError(err error) (*SpawnError, bool) {
+// AsSpawnError unwraps a *SpawnError from err, if present.
+func AsSpawnError(err error) (*SpawnError, bool) {
 	var se *SpawnError
 	if errors.As(err, &se) {
 		return se, true
@@ -123,6 +123,10 @@ func NewSpawnService(tmux TmuxController, own PaneOwnership, commands map[proto.
 // can consult/record proof without a second store instance.
 func (s *SpawnService) Ownership() PaneOwnership { return s.own }
 
+// Tmux exposes the TmuxController so routes can issue KillPane/ProbePane calls
+// without a second controller instance.
+func (s *SpawnService) Tmux() TmuxController { return s.tmux }
+
 // Enabled reports whether spawn is configured (commands AND allowed_paths set).
 func (s *SpawnService) Enabled() bool {
 	return len(s.commands) > 0 && len(s.allowedPaths) > 0
@@ -141,12 +145,12 @@ func (s *SpawnService) ValidatePath(path string) (string, error) {
 	if !s.Enabled() {
 		return "", &SpawnError{Status: 403, Detail: "Spawn is disabled. Set daemon.spawn.commands and daemon.spawn.allowed_paths in ~/.repowire/config.yaml"}
 	}
-	resolved := normPath(path)
+	resolved := NormPath(path)
 	if _, err := os.Stat(resolved); err != nil {
 		return "", &SpawnError{Status: 404, Detail: "Path does not exist: " + path}
 	}
 	for _, root := range s.allowedPaths {
-		r := normPath(root)
+		r := NormPath(root)
 		if resolved == r || strings.HasPrefix(resolved, r+string(os.PathSeparator)) {
 			return resolved, nil
 		}
@@ -254,7 +258,7 @@ func cacheDir() string {
 // hintPath returns the sha256-keyed hint file for (path, backend). Key derivation
 // matches _hint_key: sha256("{resolved}::{backend}")[:16].
 func hintPath(path, backend string) string {
-	key := sha256Hex16(fmt.Sprintf("%s::%s", normPath(path), backend))
+	key := sha256Hex16(fmt.Sprintf("%s::%s", NormPath(path), backend))
 	return filepath.Join(cacheDir(), "spawn-hints", key+".json")
 }
 
@@ -264,7 +268,7 @@ func hintPath(path, backend string) string {
 // swallowed — the hint is a discovery convenience, not load-bearing identity).
 func writeHint(path, backend, circle string, role *string, peerID *proto.PeerID, pendingFirstTurn bool) {
 	payload := map[string]any{
-		"path":    normPath(path),
+		"path":    NormPath(path),
 		"backend": backend,
 		"circle":  circle,
 		"ts":      float64(time.Now().UnixNano()) / 1e9,
