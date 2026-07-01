@@ -65,6 +65,12 @@ type Hub struct {
 	// (matches Python when relay is not configured).
 	relay *RelayConfig
 
+	// relayStatus, when set (WithRelayStatus), returns the relay-client health
+	// sub-object for /health. It also drives lazy self-heal: main's closure calls
+	// the relay client's EnsureRunning before returning the snapshot. A plain func
+	// (not the relay type) keeps hub decoupled from the relay package.
+	relayStatus func() map[string]any
+
 	// work holds the tracked-work / durable-job route dependencies (work store,
 	// JobRunner, SessionControl, assigned-peer resolver), wired via WithWork /
 	// WithWorkRegistry. The /work·/jobs handlers 503 while unwired.
@@ -82,6 +88,13 @@ type Hub struct {
 // JSON-backed store. Returns the hub for chaining; call before Routes.
 func (h *Hub) WithReviews(store *ReviewQueueStore) *Hub {
 	h.reviews = store
+	return h
+}
+
+// WithRelayStatus wires the relay-client health provider (see relayStatus).
+// Returns the hub for chaining; call before Routes.
+func (h *Hub) WithRelayStatus(fn func() map[string]any) *Hub {
+	h.relayStatus = fn
 	return h
 }
 
@@ -208,11 +221,15 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 func (h *Hub) health(w http.ResponseWriter, r *http.Request) {
 	go h.reg.LazyRepair(context.Background())
 	peers := len(h.transport.GetAllSessions())
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	out := map[string]any{
 		"status":         "ok",
 		"peers":          peers,
 		"schema_version": schemaVersion,
-	})
+	}
+	if h.relayStatus != nil {
+		out["relay"] = h.relayStatus() // also triggers relay lazy self-heal
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(out)
 }

@@ -32,7 +32,7 @@ go test ./...
 `repowire serve` launches this binary by default. Override:
 - `REPOWIRE_DAEMON=python` — use the Python daemon instead
 - `REPOWIRE_HUB_BIN=/path` — explicit binary path (else PATH `repowire-hub-go`, then dev build here)
-- Relay mode (`--relay`) falls back to Python — the Go hub has no relay bridge yet.
+- Relay is supported: the Go hub dials the relay itself (`relay/` package, `-relay-url`/`-relay-api-key`, threaded from config by `serve`). Only `REPOWIRE_DAEMON=python` or a missing binary falls back.
 
 ## Verified
 
@@ -43,9 +43,10 @@ pane, offlines only those without evidence).
 
 ## Deferred (still Python, or not yet ported)
 
-Clients/separate deployments — intentionally NOT daemon code: relay
-bridge/`relay_client`, Telegram/Slack bots, channel/ACP MCP transport, the
-`hooks/` ws-hook supervisor, legacy `sessions.json` import.
+Clients/separate deployments — intentionally NOT daemon code: the hosted relay
+SERVER (`relay/server.py`, GKE), Telegram/Slack bots, channel/ACP MCP transport,
+the `hooks/` ws-hook supervisor, legacy `sessions.json` import. (The relay
+CLIENT is ported — see `relay/`.)
 
 Not yet ported in the hub: full config (yaml) loading (db/addr/auth wired via
 flags+env; spawn allowlist/relay read minimally), the ACP subprocess transport

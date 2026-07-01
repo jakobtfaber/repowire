@@ -104,10 +104,9 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
     if backend != "python" and os.environ.get("REPOWIRE_HUB_BIN", "").strip() and not go_bin:
         console.print("[red]REPOWIRE_HUB_BIN is set but not an executable file.[/]")
         raise SystemExit(1)
-    # Relay is the only config feature the Go hub still can't honor (no relay
-    # bridge yet); spawn config IS threaded through below, so it no longer forces
-    # the Python fallback.
-    go_unsupported = config.relay.enabled
+    # Both spawn AND relay config are threaded through to the Go hub below, so
+    # neither forces the Python fallback anymore. The Go hub now serves the full
+    # config surface; only REPOWIRE_DAEMON=python or a missing binary falls back.
     env_disable = os.environ.get("REPOWIRE_DISABLE_HOOK_INSTALL", "").strip().lower() in (
         "1",
         "true",
@@ -115,7 +114,7 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
         "on",
     )
     install_hooks = not (no_install_hooks or env_disable)
-    if backend != "python" and go_bin and not go_unsupported:
+    if backend != "python" and go_bin:
         # Ensure the state DB exists and is migrated to the schema the Go hub
         # requires. Python owns migrations; the Go hub fatals on any version != 12
         # and cannot migrate itself. On a fresh install ~/.repowire/state.db does
@@ -158,11 +157,14 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
             }
             argv += ["-spawn-commands", _json.dumps(commands)]
             argv += ["-spawn-allowed-paths", ",".join(spawn.allowed_paths)]
+        # Thread relay config so the Go hub dials the relay itself (api_key was
+        # ensured/registered above when relay is enabled). The Go relay client
+        # forwards tunneled requests back to this local daemon.
+        if config.relay.enabled and config.relay.api_key:
+            argv += ["-relay-url", config.relay.url, "-relay-api-key", config.relay.api_key]
         os.execv(go_bin, argv)
     if backend != "python" and not go_bin:
         logging.info("Go hub binary not found; falling back to Python daemon")
-    elif backend != "python" and go_unsupported:
-        logging.info("Go hub does not yet support relay; falling back to Python daemon")
 
     # App-level loggers (repowire.*) otherwise fall through to Python's
     # last-resort handler (WARNING+ only): registry demotions, the startup

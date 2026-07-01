@@ -31,6 +31,7 @@ import (
 	"github.com/repowire/repowire/daemon-go/hub"
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/relay"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -411,6 +412,14 @@ func main() {
 		URL:     *relayURL,
 		APIKey:  *relayKey,
 	}
+	// The relay CLIENT (outbound tunnel to repowire.io). Separate from the /shares
+	// proxy above: this is what makes the dashboard/phone reach THIS daemon. nil
+	// when relay is disabled. Dials the relay and forwards tunneled requests to the
+	// local HTTP surface (127.0.0.1) — same trust model as the Python client.
+	var relayClient *relay.Client
+	if relayCfg.Enabled {
+		relayClient = relay.NewClient(relayCfg.URL, relayCfg.APIKey, selfMachine, "http://"+*addr)
+	}
 
 	// (11) Wire EVERY route group onto the hub. Each With* gates a route group
 	// that is otherwise a nil-guarded no-op in Routes(); the order is
@@ -432,9 +441,21 @@ func main() {
 		WithLifecycle(hub.NewLifecycleHandler(reg, transport, tmuxPaneLister{}, spawnService.Ownership().Forget, nil))
 	// Reviews defaults its JSON store at Routes() time if unset; leave it.
 
+	// Surface relay-client status on /health and drive its lazy self-heal there
+	// (mirrors the Python /health relay block + ensure_running).
+	if relayClient != nil {
+		h.WithRelayStatus(func() map[string]any {
+			relayClient.EnsureRunning(ctx)
+			return relayClient.Status().HealthMap()
+		})
+	}
+
 	// (12) Start the background dispatch loops (deadline-driven, never polling).
 	jobRunner.Start(ctx)
 	scheduler.Start(ctx)
+	if relayClient != nil {
+		relayClient.Start(ctx)
+	}
 
 	// (13) Register HTTP/ws handlers.
 	mux := http.NewServeMux()
@@ -473,6 +494,9 @@ func main() {
 
 	jobRunner.Stop()
 	scheduler.Stop()
+	if relayClient != nil {
+		relayClient.Stop()
+	}
 	if err := store.Close(); err != nil {
 		log.Printf("close state db: %v", err)
 	}
