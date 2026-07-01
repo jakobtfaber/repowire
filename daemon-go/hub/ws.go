@@ -155,6 +155,12 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		ClaimedPeerID: cf.PeerID,
 		AgentPID:      cf.AgentPID,
 	}
+	// Thread circle_source: cross-circle mapping adoption is only permitted for an
+	// unset/"fallback" source. Without this an explicit source (e.g. "tmux") would
+	// be seen as fallback and could wrongly adopt an older non-default mapping.
+	if cf.CircleSource != nil {
+		params.CircleSource = *cf.CircleSource
+	}
 	if len(cf.ModelDetails) > 0 || len(cf.Capabilities) > 0 || cf.HookVersion != nil {
 		md := map[string]any{}
 		if cf.HookVersion != nil {

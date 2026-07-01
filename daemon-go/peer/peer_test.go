@@ -270,6 +270,56 @@ func TestReclaim_MappingAdoptedByIdentity(t *testing.T) {
 	}
 }
 
+// TestReclaim_CrossCircleAdoptionRespectsSource proves the default-circle
+// cross-adoption only fires for an unset/"fallback" circle_source. An explicit
+// source (e.g. "tmux") must NOT pull the peer into an older non-default mapping
+// with the same name/backend/path — that would move it to the wrong circle.
+func TestReclaim_CrossCircleAdoptionRespectsSource(t *testing.T) {
+	ctx := context.Background()
+
+	seed := func() (*Registry, *memStore, proto.PeerID) {
+		r, s := newRegistry(t)
+		id, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+			Circle: "ops", Backend: proto.AgentClaudeCode, Path: ptr("/work/x"),
+			Machine: "m", Role: proto.RoleOrchestrator,
+		})
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		delete(r.peers, id) // simulate restart: mapping survives, peer gone
+		return r, s, id
+	}
+
+	// Explicit source "tmux" in circle "default" → must NOT adopt the "ops" mapping.
+	r, _, seedID := seed()
+	got, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "default", CircleSource: "tmux", Backend: proto.AgentClaudeCode,
+		Path: ptr("/work/x"), Machine: "m", Role: proto.RoleAgent,
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if got == seedID {
+		t.Fatalf("explicit source=tmux cross-adopted mapping %s — must mint fresh", seedID)
+	}
+
+	// "fallback" source in circle "default" → SHOULD adopt (identity preserved).
+	r2, _, seedID2 := seed()
+	got2, _, err := r2.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "default", CircleSource: "fallback", Backend: proto.AgentClaudeCode,
+		Path: ptr("/work/x"), Machine: "m", Role: proto.RoleAgent,
+	})
+	if err != nil {
+		t.Fatalf("register fallback: %v", err)
+	}
+	if got2 != seedID2 {
+		t.Fatalf("fallback source minted %s, want adoption of %s", got2, seedID2)
+	}
+	if p, _ := r2.GetPeer(got2); p.Role != proto.RoleOrchestrator || p.Circle != "ops" {
+		t.Fatalf("adopted peer lost identity: role=%q circle=%q", p.Role, p.Circle)
+	}
+}
+
 func newRegistry(t *testing.T) (*Registry, *memStore) {
 	t.Helper()
 	store := newMemStore()

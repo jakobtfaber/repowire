@@ -917,9 +917,17 @@ func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 	// occupies the live pane (not merely shares its path). Parity with
 	// spawn.py destructive proof mode 3. Path match alone is still NOT proof.
 	if meta := readPaneRuntimeMetadata(*p.PaneID); meta != nil {
-		if mpid, _ := meta["peer_id"].(string); mpid != "" && mpid == string(p.PeerID) {
-			return destructiveProof{ok: true, paneID: *p.PaneID, tmuxSession: ev.TmuxSession,
-				mode: "verified_pane_metadata"}
+		if mpid, _ := meta["peer_id"].(string); mpid != "" {
+			if mpid == string(p.PeerID) {
+				return destructiveProof{ok: true, paneID: *p.PaneID, tmuxSession: ev.TmuxSession,
+					mode: "verified_pane_metadata"}
+			}
+			// Meta names a DIFFERENT peer — the live pane is another peer's, not this
+			// one. Distinguish from "no metadata" for diagnostics (parity with Python
+			// pane_metadata_mismatch). Same blocking behavior either way.
+			return destructiveProof{paneID: *p.PaneID, tmuxSession: ev.TmuxSession,
+				errCode: "pane_metadata_mismatch",
+				hint:    "Live pane's peer_id metadata names a different peer. Refusing destructive control."}
 		}
 	}
 

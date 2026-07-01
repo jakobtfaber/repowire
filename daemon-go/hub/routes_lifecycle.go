@@ -78,14 +78,12 @@ type LifecycleHandler struct {
 	// forgetSpawnedPane removes a pane id from the spawn-ownership set on pane
 	// death, so a tmux server restart can't reuse the id and match an externally
 	// attached peer. clearPaneRuntimeState drops transient pane-scoped hook files
-	// (ws-hook pid/meta, pending cids) after a pane dies or is taken over.
+	// (ws-hook pid/meta) after a pane dies or is taken over.
 	//
-	// ponytail: STUBS in this phase. The Go daemon has not yet ported spawn-
-	// ownership tracking (Python routes/spawn._SPAWNED_PANE_IDS) or the hook-side
-	// pane-runtime-state files (Python hooks/utils.clear_pane_runtime_state), so
-	// these default to no-ops. Upgrade path: when the spawn route group and the
-	// hook filesystem state land in Go, inject the real implementations here —
-	// the call sites already invoke them at the right moments.
+	// forgetSpawnedPane: main wires the SpawnService ownership Forget; nil → no-op.
+	// clearPaneRuntimeState: nil defaults to the real clearPaneRuntimeState in
+	// NewLifecycleHandler (so pane death drops the stale meta.json that would
+	// otherwise re-prove a reused pane) — main need not wire it.
 	forgetSpawnedPane     func(paneID string)
 	clearPaneRuntimeState func(paneID string)
 }
