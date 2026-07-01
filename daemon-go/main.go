@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log"
 	"net/http"
@@ -311,6 +312,7 @@ func main() {
 	// the safe default; the spawn routes 503 rather than spawn into an
 	// unexpected directory.
 	spawnPathsFlag := flag.String("spawn-allowed-paths", os.Getenv("REPOWIRE_SPAWN_ALLOWED_PATHS"), "comma-separated spawn allowlist roots ($REPOWIRE_SPAWN_ALLOWED_PATHS); empty disables spawn")
+	spawnCommandsFlag := flag.String("spawn-commands", os.Getenv("REPOWIRE_SPAWN_COMMANDS"), "per-backend launch commands as JSON {\"claude-code\":\"...\"} ($REPOWIRE_SPAWN_COMMANDS); empty disables spawn")
 	relayURL := flag.String("relay-url", envOr("REPOWIRE_RELAY_URL", "wss://repowire.io"), "relay base url for the /shares proxy ($REPOWIRE_RELAY_URL)")
 	relayKey := flag.String("relay-api-key", os.Getenv("REPOWIRE_RELAY_API_KEY"), "relay api key ($REPOWIRE_RELAY_API_KEY); empty leaves /shares as a 503 stub")
 	flag.Parse()
@@ -375,11 +377,16 @@ func main() {
 	// later consult.
 	tmuxCtl := hub.NewRealTmuxController()
 	ownership := hub.NewFileOwnership(selfMachine, tmuxCtl.ProbePane)
-	// ponytail: per-backend launch commands are not sourced from config yet (see
-	// the flag block). An empty commands map keeps spawn disabled-by-default;
-	// allowedPaths gates the rest. When config lands, populate both from
-	// SpawnSettings.
+	// Per-backend launch commands come from -spawn-commands (JSON), which
+	// `repowire serve` populates from config.daemon.spawn.commands. An empty/invalid
+	// map keeps spawn disabled-by-default (SpawnService.Enabled()==false → 503);
+	// allowedPaths gates the rest.
 	spawnCommands := map[proto.AgentType]string{}
+	if s := *spawnCommandsFlag; s != "" {
+		if err := json.Unmarshal([]byte(s), &spawnCommands); err != nil {
+			log.Fatalf("parse -spawn-commands JSON: %v", err)
+		}
+	}
 	spawnService := hub.NewSpawnService(tmuxCtl, ownership, spawnCommands, splitCSV(*spawnPathsFlag))
 
 	// (9) Work/jobs + scheduler. SessionControl is the executor-acquisition

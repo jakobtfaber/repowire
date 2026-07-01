@@ -104,8 +104,10 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
     if backend != "python" and os.environ.get("REPOWIRE_HUB_BIN", "").strip() and not go_bin:
         console.print("[red]REPOWIRE_HUB_BIN is set but not an executable file.[/]")
         raise SystemExit(1)
-    spawn_configured = bool(config.daemon.spawn.commands and config.daemon.spawn.allowed_paths)
-    go_unsupported = config.relay.enabled or spawn_configured
+    # Relay is the only config feature the Go hub still can't honor (no relay
+    # bridge yet); spawn config IS threaded through below, so it no longer forces
+    # the Python fallback.
+    go_unsupported = config.relay.enabled
     env_disable = os.environ.get("REPOWIRE_DISABLE_HOOK_INSTALL", "").strip().lower() in (
         "1",
         "true",
@@ -145,12 +147,22 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
         argv = [go_bin, "-addr", f"{host}:{port}", "-db", db_path]
         if config.daemon.auth_token:
             argv += ["-auth-token", config.daemon.auth_token]
+        # Thread spawn config through so /spawn works under the Go hub (it reads
+        # commands as JSON + paths as CSV; the Go config loader isn't ported yet).
+        spawn = config.daemon.spawn
+        if spawn.commands and spawn.allowed_paths:
+            import json as _json
+
+            commands = {
+                (k.value if hasattr(k, "value") else str(k)): v for k, v in spawn.commands.items()
+            }
+            argv += ["-spawn-commands", _json.dumps(commands)]
+            argv += ["-spawn-allowed-paths", ",".join(spawn.allowed_paths)]
         os.execv(go_bin, argv)
     if backend != "python" and not go_bin:
         logging.info("Go hub binary not found; falling back to Python daemon")
     elif backend != "python" and go_unsupported:
-        reason = "relay enabled" if config.relay.enabled else "daemon.spawn configured"
-        logging.info("Go hub does not yet support %s; falling back to Python daemon", reason)
+        logging.info("Go hub does not yet support relay; falling back to Python daemon")
 
     # App-level loggers (repowire.*) otherwise fall through to Python's
     # last-resort handler (WARNING+ only): registry demotions, the startup
