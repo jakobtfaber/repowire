@@ -98,20 +98,22 @@ func NewLifecycleHandler(
 	transport LifecycleTransport,
 	panes PaneLister,
 	forgetSpawnedPane func(paneID string),
-	clearPaneRuntimeState func(paneID string),
+	clearRuntime func(paneID string),
 ) *LifecycleHandler {
 	if forgetSpawnedPane == nil {
 		forgetSpawnedPane = func(string) {}
 	}
-	if clearPaneRuntimeState == nil {
-		clearPaneRuntimeState = func(string) {}
+	if clearRuntime == nil {
+		// Default to the real pane-runtime cleanup so pane death drops the stale
+		// meta.json that would otherwise re-prove a reused pane. main need not wire it.
+		clearRuntime = clearPaneRuntimeState
 	}
 	return &LifecycleHandler{
 		reg:                   reg,
 		transport:             transport,
 		panes:                 panes,
 		forgetSpawnedPane:     forgetSpawnedPane,
-		clearPaneRuntimeState: clearPaneRuntimeState,
+		clearPaneRuntimeState: clearRuntime,
 	}
 }
 

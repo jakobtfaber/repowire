@@ -232,6 +232,44 @@ func TestReconnect_ResetsStaleBusy(t *testing.T) {
 	}
 }
 
+// TestReclaim_MappingAdoptedByIdentity proves that after a "restart" (mapping
+// persists, in-memory peer gone) a re-registration WITHOUT an explicit peer_id
+// adopts the durable mapping by identity (display_name/circle/backend) and
+// restores role — instead of minting a fresh id and demoting the orchestrator.
+func TestReclaim_MappingAdoptedByIdentity(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newRegistry(t)
+	id, name, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "ops", Backend: proto.AgentClaudeCode, Path: ptr("/w/x"), Machine: "m",
+		Role: proto.RoleOrchestrator,
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	// Simulate a daemon restart: the durable mapping survives, the in-memory peer
+	// does not.
+	r.mu.Lock()
+	delete(r.peers, id)
+	r.mu.Unlock()
+
+	// Re-register by identity, NO peer_id, role omitted.
+	id2, name2, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "ops", Backend: proto.AgentClaudeCode, Path: ptr("/w/x"), Machine: "m",
+	})
+	if err != nil {
+		t.Fatalf("re-register: %v", err)
+	}
+	if id2 != id {
+		t.Fatalf("minted fresh id %s, want adoption of %s", id2, id)
+	}
+	if name2 != name {
+		t.Fatalf("display name changed on adoption: %q vs %q", name2, name)
+	}
+	if p, _ := r.GetPeer(id); p.Role != proto.RoleOrchestrator {
+		t.Fatalf("role demoted to %q on mapping adoption, want orchestrator", p.Role)
+	}
+}
+
 func newRegistry(t *testing.T) (*Registry, *memStore) {
 	t.Helper()
 	store := newMemStore()

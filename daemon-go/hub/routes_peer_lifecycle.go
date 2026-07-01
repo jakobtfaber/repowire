@@ -173,6 +173,9 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 		ParentPID:     req.ParentPID,
 		TurnState:     req.TurnState,
 	}
+	if req.CircleSource != nil {
+		params.CircleSource = *req.CircleSource
+	}
 
 	peerID, displayName, err := h.reg.AllocateAndRegister(ctx, params)
 	if err != nil {

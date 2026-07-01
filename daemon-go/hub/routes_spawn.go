@@ -363,6 +363,7 @@ func (h *Hub) handleKillPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.spawn.svc.Ownership().Forget(proof.paneID)
+	clearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
 	h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
 	t := true
 	writeJSON(w, http.StatusOK, KillResponse{OK: true, TmuxKilled: &t})
@@ -511,6 +512,7 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.spawn.svc.Ownership().Forget(proof.paneID)
+		clearPaneRuntimeState(proof.paneID) // stale meta must not re-prove the reused pane
 		_, _ = h.spawn.reg.MarkOffline(ctx, peerCopy.PeerID, false)
 	}
 
@@ -910,11 +912,17 @@ func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 			hint: "The peer's recorded pane is not visible in tmux."}
 	}
 
-	// (3) Live pane metadata peer_id match — UNPORTED in Go (no pane-runtime hook
-	// metadata files). Path match alone is deliberately NOT proof.
-	//
-	// ponytail: when hooks/utils.read_pane_runtime_metadata is ported, accept a
-	// metadata.peer_id == p.PeerID match here (mode "verified_pane_metadata").
+	// (3) Live pane metadata names THIS peer_id. The ws-hook writes the pane's
+	// owning peer_id into ws-hook-<pane>.meta.json; a match proves this peer really
+	// occupies the live pane (not merely shares its path). Parity with
+	// spawn.py destructive proof mode 3. Path match alone is still NOT proof.
+	if meta := readPaneRuntimeMetadata(*p.PaneID); meta != nil {
+		if mpid, _ := meta["peer_id"].(string); mpid != "" && mpid == string(p.PeerID) {
+			return destructiveProof{ok: true, paneID: *p.PaneID, tmuxSession: ev.TmuxSession,
+				mode: "verified_pane_metadata"}
+		}
+	}
+
 	return destructiveProof{paneID: *p.PaneID, tmuxSession: ev.TmuxSession,
 		errCode: "missing_pane_metadata",
 		hint:    "Live pane has no peer_id metadata. Path match alone is not enough for destructive controls."}

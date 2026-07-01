@@ -66,6 +66,11 @@ type AllocateParams struct {
 	ClaimedPeerID *proto.PeerID
 	Metadata      map[string]any
 	AgentPID      *int
+	// CircleSource is the provenance of Circle ("tmux", "spawn_hint", "fallback",
+	// or "" when unknown). Only "" / "fallback" permit cross-circle mapping
+	// adoption: a real tmux session named "default" is intentional and must not be
+	// remapped to a peer's prior non-default circle.
+	CircleSource string
 	// TurnState, when supplied, is applied to the peer on both fresh registration
 	// and same-id reconnect (parity with the Python initial turn_state). nil leaves
 	// the peer's turn_state untouched on reconnect / zero on fresh.
@@ -248,7 +253,19 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		}
 	}
 
-	// (c) Mint a fresh peer_id when not reclaiming.
+	// (b2) Durable-mapping adoption by identity. After a restart r.mappings is
+	// hydrated but r.peers is empty, and a SessionStart whose hook metadata lacks
+	// peer_id would otherwise mint a NEW id and lose the peer's durable role/circle/
+	// description. Reuse the persisted mapping keyed on identity, not peer_id, so
+	// the (e) mapping-wins block restores those fields. Parity with
+	// PeerRegistry._find_or_allocate_mapping.
+	if id == "" {
+		if adopted, ok := r.findReusableMappingLocked(displayName, params.Circle, params.Backend, params.Path, params.CircleSource); ok {
+			id = adopted
+		}
+	}
+
+	// (c) Mint a fresh peer_id when not reclaiming/adopting.
 	if id == "" {
 		id = proto.PeerID(fmt.Sprintf("repow-%s-%s", params.Circle, uuid.NewString()[:8]))
 	}
@@ -692,6 +709,39 @@ func (r *Registry) reclaimableOfflineLocked(name proto.DisplayName, circle strin
 			ps.peer.Backend == backend &&
 			ps.state == StateOffline {
 			return id, true
+		}
+	}
+	return "", false
+}
+
+// findReusableMappingLocked returns a persisted mapping's PeerID to adopt for an
+// incoming registration keyed on IDENTITY (not peer_id), so a restart-without-
+// peer_id preserves the peer's durable role/circle/description. Two passes mirror
+// PeerRegistry._find_or_allocate_mapping:
+//  1. exact match on (display_name, circle, backend);
+//  2. cross-circle adoption — only when the incoming circle is the "default"
+//     fallback (CircleSource "" or "fallback") and a path is present: match on
+//     (display_name, backend, path) ignoring circle, so a prior non-default circle
+//     survives a restart where the tmux session name didn't propagate.
+//
+// An explicit tmux/spawn "default" (CircleSource != "" and != "fallback") is
+// intentional and must NOT be remapped — hence the source gate.
+func (r *Registry) findReusableMappingLocked(name proto.DisplayName, circle string, backend proto.AgentType, path *string, circleSource string) (proto.PeerID, bool) {
+	for sid, m := range r.mappings {
+		if m.DisplayName == name && m.Circle == circle && m.Backend == backend {
+			return sid, true
+		}
+	}
+	canCrossCircle := circleSource == "" || circleSource == "fallback"
+	if circle == "default" && path != nil && *path != "" && canCrossCircle {
+		for sid, m := range r.mappings {
+			mPath := ""
+			if m.Path != nil {
+				mPath = *m.Path
+			}
+			if m.DisplayName == name && m.Backend == backend && mPath == *path {
+				return sid, true
+			}
 		}
 	}
 	return "", false
