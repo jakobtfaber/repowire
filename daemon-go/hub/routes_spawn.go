@@ -868,11 +868,11 @@ type destructiveProof struct {
 	hint        string
 }
 
-// destructivePaneProof ports _destructive_pane_proof VERBATIM: the only accepted
-// proofs are (1) the pane is in the in-process spawned set, (2) durable spawn
-// ownership validates, or (3) live pane metadata names THIS peer_id. Path match
-// alone is NEVER proof. (3) is currently unreachable in Go — pane-runtime hook
-// metadata files are unported — so a manual pane with no durable proof refuses.
+// destructivePaneProof ports _destructive_pane_proof: the only accepted proofs
+// are (1) the pane is in the in-process spawned set, (2) durable spawn ownership
+// validates, or (3) live pane metadata (the ws-hook meta.json) names THIS
+// peer_id. Path match alone is NEVER proof. A live pane whose metadata names a
+// different peer is a mismatch (distinct from no metadata); both refuse.
 func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 	own := h.spawn.svc.Ownership()
 
