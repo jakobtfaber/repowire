@@ -99,6 +99,11 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
     # wire protocol, so existing hooks/MCP/bots connect to it unchanged.
     backend = os.environ.get("REPOWIRE_DAEMON", "go").strip().lower()
     go_bin = _resolve_go_hub_binary()
+    # Fail loud on an explicit-but-unusable operator override rather than silently
+    # falling back to Python (surprising when someone deliberately set the path).
+    if backend != "python" and os.environ.get("REPOWIRE_HUB_BIN", "").strip() and not go_bin:
+        console.print("[red]REPOWIRE_HUB_BIN is set but not an executable file.[/]")
+        raise SystemExit(1)
     spawn_configured = bool(config.daemon.spawn.commands and config.daemon.spawn.allowed_paths)
     go_unsupported = config.relay.enabled or spawn_configured
     env_disable = os.environ.get("REPOWIRE_DISABLE_HOOK_INSTALL", "").strip().lower() in (
@@ -109,6 +114,19 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
     )
     install_hooks = not (no_install_hooks or env_disable)
     if backend != "python" and go_bin and not go_unsupported:
+        # Ensure the state DB exists and is migrated to the schema the Go hub
+        # requires. Python owns migrations; the Go hub fatals on any version != 12
+        # and cannot migrate itself. On a fresh install ~/.repowire/state.db does
+        # not exist, so without this the Go hub would open an empty user_version=0
+        # DB and exit before ever serving. Constructing StateDatabase creates the
+        # dir + applies migrations, then we close the connection and hand off.
+        from repowire.daemon.state import StateDatabase
+
+        db_path = os.environ.get("REPOWIRE_STATE_DB", "").strip() or str(
+            Path.home() / ".repowire" / "state.db"
+        )
+        StateDatabase(Path(db_path)).conn.close()
+
         if install_hooks:
             from repowire.hooks import tmux_lifecycle
 
@@ -122,8 +140,9 @@ def serve(host: str, port: int, relay: bool, no_install_hooks: bool) -> None:
         # Replace this process with the Go hub; it owns the port for its lifetime.
         # Pass through configured auth — the Go hub only reads --auth-token /
         # $REPOWIRE_AUTH_TOKEN, so without this a configured token would be
-        # silently dropped and the hub would serve unauthenticated.
-        argv = [go_bin, "-addr", f"{host}:{port}"]
+        # silently dropped and the hub would serve unauthenticated. Pass the same
+        # -db we just migrated so Go and Python never disagree on the path.
+        argv = [go_bin, "-addr", f"{host}:{port}", "-db", db_path]
         if config.daemon.auth_token:
             argv += ["-auth-token", config.daemon.auth_token]
         os.execv(go_bin, argv)
