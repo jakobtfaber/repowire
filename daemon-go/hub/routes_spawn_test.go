@@ -55,9 +55,9 @@ func (r *fakeSpawnRegistry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {
 	return nil, false
 }
 
-func (r *fakeSpawnRegistry) UnregisterPeer(_ context.Context, identifier string, _ *string) bool {
+func (r *fakeSpawnRegistry) UnregisterPeer(_ context.Context, identifier string, _ *string) (bool, error) {
 	r.unregistered = append(r.unregistered, identifier)
-	return true
+	return true, nil
 }
 
 func (r *fakeSpawnRegistry) MarkOffline(context.Context, proto.PeerID, bool) (int, error) {

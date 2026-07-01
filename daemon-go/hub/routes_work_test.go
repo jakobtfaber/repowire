@@ -146,8 +146,8 @@ func (f *fakeControlRegistry) GetPeerByPane(pane string) (*proto.Peer, bool) {
 	p, ok := f.byPane[pane]
 	return p, ok
 }
-func (f *fakeControlRegistry) UnregisterPeer(ctx context.Context, identifier string, circle *string) bool {
-	return true
+func (f *fakeControlRegistry) UnregisterPeer(ctx context.Context, identifier string, circle *string) (bool, error) {
+	return true, nil
 }
 
 // fakeSpawner records the spawn call and returns a fixed pane; the registry is

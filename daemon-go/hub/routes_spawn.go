@@ -38,7 +38,7 @@ type spawnRegistry interface {
 	ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error)
 	AllocateAndRegister(ctx context.Context, p peer.AllocateParams) (proto.PeerID, proto.DisplayName, error)
 	GetPeer(id proto.PeerID) (*proto.Peer, bool)
-	UnregisterPeer(ctx context.Context, identifier string, circle *string) bool
+	UnregisterPeer(ctx context.Context, identifier string, circle *string) (bool, error)
 	MarkOffline(ctx context.Context, id proto.PeerID, terminal bool) (int, error)
 }
 
@@ -347,7 +347,8 @@ func (h *Hub) handleKillPeer(w http.ResponseWriter, r *http.Request) {
 	proof := h.destructivePaneProof(peerCopy)
 	if !proof.ok || proof.paneID == "" {
 		// No proof: unregister identity but DO NOT touch any pane. tmux_killed=null.
-		h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
+		// id is already resolved (resolveStrict), so the ambiguity error can't fire.
+		_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
 		writeJSON(w, http.StatusOK, KillResponse{OK: true, TmuxKilled: nil})
 		return
 	}
@@ -364,7 +365,8 @@ func (h *Hub) handleKillPeer(w http.ResponseWriter, r *http.Request) {
 	}
 	h.spawn.svc.Ownership().Forget(proof.paneID)
 	clearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
-	h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
+	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
+	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
 	t := true
 	writeJSON(w, http.StatusOK, KillResponse{OK: true, TmuxKilled: &t})
 }
@@ -654,7 +656,8 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 		}
 		svc.Ownership().Forget(*peerCopy.PaneID)
 	}
-	h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
+	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
+	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
 
 	result, serr := svc.Spawn(SpawnConfig{
 		Path:    resolvedPath,

@@ -17,40 +17,38 @@ import (
 
 // UnregisterPeer removes a peer (registry + durable mapping) addressed by peer_id
 // or display_name, optionally scoped to a circle to disambiguate same-name peers.
-// Returns true if a peer was found and removed. Mirrors
-// PeerRegistry.unregister_peer. NON-terminal: it does NOT retire the identity
-// (unlike a terminal MarkOffline) — a fresh SessionStart may legitimately reuse
-// the name. The pane-adoption rollback path relies on exactly this (no
-// retirement residue).
-func (r *Registry) UnregisterPeer(ctx context.Context, identifier string, circle *string) bool {
+// Returns (found, err); an ambiguous name (→ 409) is now a fail-loud error, same
+// as every other by-name mutator in this file — this deliberately diverges from
+// Python's unregister_peer, which silently takes the first match on the
+// display_name scan. NON-terminal: it does NOT retire the identity (unlike a
+// terminal MarkOffline) — a fresh SessionStart may legitimately reuse the name.
+// The pane-adoption rollback path relies on exactly this (no retirement residue).
+func (r *Registry) UnregisterPeer(ctx context.Context, identifier string, circle *string) (bool, error) {
 	r.mu.Lock()
 	// peer_id hit is unambiguous and matches Python's "try as session_id first".
 	if ps, ok := r.peers[proto.PeerID(identifier)]; ok {
-		name := ps.peer.DisplayName
 		delete(r.peers, ps.peer.PeerID)
 		delete(r.mappings, ps.peer.PeerID)
 		id := ps.peer.PeerID
 		r.mu.Unlock()
 		_ = r.store.DeleteMapping(ctx, id)
-		_ = name
-		return true
+		return true, nil
 	}
-	// display_name scan with optional circle filter.
-	for id, ps := range r.peers {
-		if ps.peer.DisplayName != proto.DisplayName(identifier) {
-			continue
-		}
-		if circle != nil && ps.peer.Circle != *circle {
-			continue
-		}
-		delete(r.peers, id)
-		delete(r.mappings, id)
+	p, err := r.resolvePeerLocked(identifier, circle)
+	if err != nil {
 		r.mu.Unlock()
-		_ = r.store.DeleteMapping(ctx, id)
-		return true
+		return false, err
 	}
+	if p == nil {
+		r.mu.Unlock()
+		return false, nil
+	}
+	id := p.PeerID
+	delete(r.peers, id)
+	delete(r.mappings, id)
 	r.mu.Unlock()
-	return false
+	_ = r.store.DeleteMapping(ctx, id)
+	return true, nil
 }
 
 // MarkOfflineByName resolves an addressing string to its canonical PeerID, then

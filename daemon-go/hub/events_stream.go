@@ -23,6 +23,10 @@ import (
 // the Python SSE_HEARTBEAT_SECS.
 const sseHeartbeat = 15 * time.Second
 
+// sseWriteTimeout bounds each write batch (initial replay, wake-driven batch,
+// keepalive): a wedged client must not park the handler goroutine forever.
+const sseWriteTimeout = 30 * time.Second
+
 // EventsStreamRoutes registers GET /events/stream behind the shared bearer-token
 // gate. Kept separate from EventRoutes so the SSE handler (which holds the
 // connection open) is wired with one line and the base events group is
@@ -60,8 +64,14 @@ func (h *Hub) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 	wake, unsubscribe := h.reg.SubscribeEvents()
 	defer unsubscribe()
 
+	// rc lets us bound each write batch below; SetWriteDeadline may return
+	// ErrNotSupported for exotic ResponseWriter wrappers — best-effort hardening,
+	// so that error is ignored rather than aborting the stream.
+	rc := http.NewResponseController(w)
+
 	var lastEventID string
 	initial := h.reg.GetEvents()
+	_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 	for _, ev := range initial {
 		if !writeSSEEvent(w, ev) {
 			return
@@ -88,6 +98,7 @@ func (h *Hub) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-wake:
 			newEvents := h.reg.EventsSince(lastEventID)
+			_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 			for _, ev := range newEvents {
 				if !writeSSEEvent(w, ev) {
 					return
@@ -98,6 +109,7 @@ func (h *Hub) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 			}
 			flusher.Flush()
 		case <-ticker.C:
+			_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
 				return
 			}

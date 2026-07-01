@@ -41,7 +41,7 @@ type controlRegistry interface {
 	GetAllPeers() []*proto.Peer
 	GetPeer(id proto.PeerID) (*proto.Peer, bool)
 	GetPeerByPane(pane string) (*proto.Peer, bool)
-	UnregisterPeer(ctx context.Context, identifier string, circle *string) bool
+	UnregisterPeer(ctx context.Context, identifier string, circle *string) (bool, error)
 }
 
 // spawnExecutor is the narrow SpawnService seam: the methods SessionControl
@@ -333,8 +333,10 @@ func (c *SessionControl) ReleaseExecutorForWork(ctx context.Context, work *state
 	}
 
 	// ponytail: physical kill deferred to the spawn area; unregister + record.
+	// peerID is already resolved (from the release handle), so the ambiguity
+	// error can't fire.
 	if peerID != "" {
-		c.reg.UnregisterPeer(ctx, peerID, nil)
+		_, _ = c.reg.UnregisterPeer(ctx, peerID, nil)
 	}
 	result := map[string]any{
 		"status":          "released",

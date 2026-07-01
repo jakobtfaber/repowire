@@ -25,6 +25,10 @@ var validNameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 const maxNameLen = 64
 
+// flushWriteTimeout bounds each queued-delivery replay write on the connect
+// path: a wedged client must not park the connect handshake forever.
+const flushWriteTimeout = 10 * time.Second
+
 func isValidIdentifier(v string) bool {
 	return v != "" && len(v) <= maxNameLen && validNameRe.MatchString(v)
 }
@@ -286,7 +290,10 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 		if len(d.Attachments) > 0 {
 			frame["attachments"] = d.Attachments
 		}
-		if err := wsjson.Write(ctx, conn, frame); err != nil {
+		writeCtx, cancel := context.WithTimeout(ctx, flushWriteTimeout)
+		err := wsjson.Write(writeCtx, conn, frame)
+		cancel()
+		if err != nil {
 			log.Printf("ws: flush-on-connect replay to %s stopped after write failure (%s): %v", id, d.DeliveryID, err)
 			return // row NOT deleted — a later reconnect retries it
 		}
