@@ -1,14 +1,15 @@
 // Command daemon-go is the Go hub: it wires the SQLite state store into the
 // peer registry and serves the WebSocket mesh protocol over HTTP. The
 // dependency-inversion seam: peer never imports state; it depends on the
-// peer.Store interface, which state satisfies. This file (and hub, which
-// imports both) wire the concrete Store into the registry. Routing, identity,
-// and lifecycle live in the registry/hub; this file is plumbing.
+// peer.Store interface, which state satisfies. This file (and hub/service,
+// which import both) wire the concrete Store into the registry. Routing,
+// identity, and lifecycle live in the registry/hub; this file is plumbing.
 //
-// This file assembles the FULL daemon: every hub service (AskTracker,
-// PeerDelivery, messaging, ask-lifecycle, session wiring, spawn, jobs/work,
-// schedules, reviews, shares, read deps) is constructed and wired so its route
-// group is live rather than a nil-guarded no-op. The wiring order is
+// This file assembles the FULL daemon: every application service (AskTracker,
+// PeerDelivery, session control, spawn, jobs/work, scheduling — package
+// service) is constructed and handed to the matching hub route group
+// (messaging, ask-lifecycle, session wiring, schedules, reviews, shares, read
+// deps) so it is live rather than a nil-guarded no-op. The wiring order is
 // load-bearing (transport → registry → hub → services → reconciliation) and is
 // called out at each step.
 package main
@@ -147,8 +148,9 @@ func (realProcessProbe) PaneRootPID(paneID string) (int, bool) {
 // ----------------------------------------------------------------------------
 // Registry seam adapters.
 //
-// The hub route groups depend on NARROW registry interfaces (accessRegistry,
-// askRoutesRegistry, sessionRegistry, …) that were authored ahead of the
+// Both the hub route groups and the service constructors depend on NARROW
+// registry interfaces (service's accessRegistry / controlRegistry, hub's
+// askRoutesRegistry / sessionRegistry, …) that were authored ahead of the
 // registry port. *peer.Registry satisfies most of those method sets directly,
 // but three method shapes diverge and need a thin shim:
 //
@@ -160,7 +162,7 @@ func (realProcessProbe) PaneRootPID(paneID string) (int, bool) {
 //     nil (no circle scope), matching the Python by-name updaters' default.
 //
 // ponytail: this shim exists only because the seams predate the registry port.
-// When the hub seams are collapsed onto *peer.Registry's actual signatures (or
+// When these seams are collapsed onto *peer.Registry's actual signatures (or
 // the registry methods are reshaped to match), delete regShim and pass `reg`
 // directly. Everything else below already takes the concrete *peer.Registry.
 // ----------------------------------------------------------------------------
@@ -184,14 +186,15 @@ func (s regShim) UpdateMetadataByName(ctx context.Context, identifier string, me
 //
 // reg.WithReconciliation takes peer.AskTracker + peer.PeerDelivery interface
 // values, which are NARROWER, StashedAsk-projection variants of the concrete
-// *service.AskTracker / *service.PeerDelivery (the hub types return []*service.Ask and a
-// NotifyParams-shaped Notify; the peer seams want []peer.StashedAsk and a
-// positional Notify). These adapters bridge the two so the OFFLINE→live
-// stash-redelivery pass and stash-loss emission run against the real tracker.
+// *service.AskTracker / *service.PeerDelivery (the service types return
+// []*service.Ask and a NotifyParams-shaped Notify; the peer seams want
+// []peer.StashedAsk and a positional Notify). These adapters bridge the two so
+// the OFFLINE→live stash-redelivery pass and stash-loss emission run against
+// the real tracker.
 //
-// ponytail: pure shape conversion. If the peer package later imports the hub
-// projection directly (or the hub tracker exposes StashedAsk variants), these
-// collapse away.
+// ponytail: pure shape conversion. If the peer package later imports the
+// service projection directly (or the service tracker exposes StashedAsk
+// variants), these collapse away.
 // ----------------------------------------------------------------------------
 
 // reconcileAsks adapts *service.AskTracker to peer.AskTracker.
@@ -225,7 +228,7 @@ func (a reconcileAsks) ForgetPeer(id proto.PeerID) int {
 	return a.t.ForgetPeer(context.Background(), id)
 }
 
-// toStashed projects hub Asks to the read-only peer.StashedAsk shape the
+// toStashed projects service Asks to the read-only peer.StashedAsk shape the
 // reconciler consumes.
 func toStashed(asks []*service.Ask) []peer.StashedAsk {
 	if len(asks) == 0 {

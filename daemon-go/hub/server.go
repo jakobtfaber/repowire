@@ -1,3 +1,12 @@
+// Package hub owns the WebSocket server, message router, and HTTP route
+// layer. It is the only network hub: every peer speaks the same wire protocol
+// to it. Routing is keyed on proto.PeerID throughout, so a DisplayName can
+// never be passed where a routing target is required.
+//
+// hub is the route/transport layer: it decodes requests, composes the
+// application services in the service package (delivery, ask lifecycle,
+// spawn, session control, scheduling), and writes responses. service must
+// never import hub — see service's package doc for the layering rule.
 package hub
 
 import (

@@ -41,9 +41,10 @@ import (
 //
 // ponytail: a narrow seam because the REGISTRY port (which adds GetPeerByPane /
 // GetPeerByName / AddEvent to *peer.Registry) is still in flight — the same
-// reason hub.accessRegistry (delivery.go) is narrow. *peer.Registry satisfies
-// this once those land; the handler bodies don't change. Kept narrow also keeps
-// the route handler test hermetic (no SQLite, no live transport).
+// reason service's accessRegistry (delivery.go) is narrow. *peer.Registry
+// satisfies this once those land; the handler bodies don't change. Kept
+// narrow also keeps the route handler test hermetic (no SQLite, no live
+// transport).
 type askRoutesRegistry interface {
 	// GetPeerByPane resolves a tmux-pane-keyed transport (Claude Code / Codex /
 	// Gemini Stop hooks) to its peer. (nil,false) when no peer owns the pane.

@@ -228,13 +228,14 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Flush-on-connect: the moment a polling peer (re)connects, drain its durable
 	// queued-delivery queue and replay each row directly onto this connection.
-	// This is the consumer for the delivery.go queueNotify producer — a no-live-
-	// transport notify is enqueued, and reconnecting drains it here. The seed gate
-	// already guards live deliveries (delivery.go gateOnSeedSettled); a peer that
-	// just completed the connect handshake is past pending_first_turn registration,
-	// so we replay without re-gating. Best-effort: a write failure stops the replay
-	// (a row is deleted only after its frame is written, so unsent rows survive for
-	// the next reconnect).
+	// This is the consumer for service/delivery.go's queueNotify producer — a
+	// no-live-transport notify is enqueued, and reconnecting drains it here. The
+	// seed gate already guards live deliveries (service/delivery.go's
+	// gateOnSeedSettled); a peer that just completed the connect handshake is
+	// past pending_first_turn registration, so we replay without re-gating.
+	// Best-effort: a write failure stops the replay (a row is deleted only
+	// after its frame is written, so unsent rows survive for the next
+	// reconnect).
 	h.flushQueuedDeliveries(ctx, conn, peerID, assignedName)
 
 	// Read loop: dispatch frames by type until the socket drops.

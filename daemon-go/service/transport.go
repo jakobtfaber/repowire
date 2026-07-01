@@ -1,9 +1,10 @@
-// Package hub owns the WebSocket server, message router, and HTTP wiring. It is
-// the only network hub: every peer speaks the same wire protocol to it. hub
-// imports proto (wire contract) and peer (lifecycle registry); routing is keyed
-// on proto.PeerID throughout, so a DisplayName can never be passed where a
-// routing target is required.
 package service
+
+// transport.go owns WebSocketTransport, the concrete per-connection socket
+// registry that the router and delivery services send frames through. It
+// implements peer.Transport (the registry's liveness/sever seam) so the same
+// transport instance is both the registry's runtime-evidence source and the
+// socket the hub package's /ws handler serves on.
 
 import (
 	"context"

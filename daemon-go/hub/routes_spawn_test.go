@@ -83,7 +83,9 @@ type fakeTmux struct {
 	evidence    map[string]*service.TmuxPaneEvidence
 }
 
-func (f *fakeTmux) Spawn(service.SpawnConfig) (service.SpawnResult, error) { return f.spawnResult, f.spawnErr }
+func (f *fakeTmux) Spawn(service.SpawnConfig) (service.SpawnResult, error) {
+	return f.spawnResult, f.spawnErr
+}
 func (f *fakeTmux) KillPane(paneID string) bool {
 	f.killed = append(f.killed, paneID)
 	return f.killOK
