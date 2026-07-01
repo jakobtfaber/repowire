@@ -12,11 +12,12 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
-// noopRepairer satisfies lazyRepairer; LazyRepair is a maintenance side-effect
-// the routes kick off and never await, so the test only needs it to not panic.
+// noopRepairer satisfies lazyRepairer; LazyRepairAsync is a maintenance
+// side-effect the routes kick off and never await, so the test only needs it
+// to not panic.
 type noopRepairer struct{}
 
-func (noopRepairer) LazyRepair(context.Context) {}
+func (noopRepairer) LazyRepairAsync(context.Context) {}
 
 // captureTracer satisfies deliveryTracer and records the stage sequence so the
 // test can assert the truthful-trace breadcrumbs (created/resolved_peer/...).

@@ -417,6 +417,46 @@ func TestBroadcastDefersPendingFirstTurnPeer(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// Close (shutdown correctness)
+// ----------------------------------------------------------------------------
+
+// TestDeliveryClose_UnblocksSeedGate is the load-bearing shutdown-correctness
+// check: the seeding peer never leaves pending_first_turn in this test, so the
+// deferBroadcastUntilSeedSettled goroutine would otherwise be parked in
+// awaitSeedSettled's poll for up to seedSettleWait (25s). Close must return in
+// well under that. A mis-wired closeCh (or a plain WaitGroup join with no early-
+// exit signal) would still pass a "Close eventually returns" test — it would
+// just take the full 25s — so the assertion is on wall-clock time.
+func TestDeliveryClose_UnblocksSeedGate(t *testing.T) {
+	sender := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	seeding := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	seeding.TurnState = proto.TurnPendingFirstTurn
+	reg := &fakeRegistry{peers: []*proto.Peer{sender, seeding}}
+	f := &fakeTransport{
+		sessions:  []proto.PeerID{sender.PeerID, seeding.PeerID},
+		connected: map[proto.PeerID]bool{},
+	}
+	d := NewPeerDelivery(reg, newRouterWithFake(f), f, nil, nil)
+
+	// Broadcast excludes the seeding peer from the synchronous fanout and defers
+	// it behind the seed gate (deferBroadcastUntilSeedSettled), exactly as
+	// TestBroadcastDefersPendingFirstTurnPeer exercises.
+	d.Broadcast(context.Background(), "alpha", "hello", nil, false)
+
+	done := make(chan struct{})
+	go func() {
+		d.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Close did not return within 3s; the deferred seed-gate goroutine was not unblocked")
+	}
+}
+
+// ----------------------------------------------------------------------------
 // Query
 // ----------------------------------------------------------------------------
 

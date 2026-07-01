@@ -216,10 +216,10 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 // helpers defined in routes_ask_lifecycle.go; server.go does not redeclare them.
 
 // health returns liveness plus the live peer count and schema version. Like /ws,
-// it opportunistically kicks lazy_repair in a goroutine — maintenance piggy-
-// backs on real requests, never a timer.
+// it opportunistically kicks lazy_repair in a tracked goroutine — maintenance
+// piggy-backs on real requests, never a timer.
 func (h *Hub) health(w http.ResponseWriter, r *http.Request) {
-	go h.reg.LazyRepair(context.Background())
+	h.reg.LazyRepairAsync(context.Background())
 	peers := len(h.transport.GetAllSessions())
 	out := map[string]any{
 		"status":         "ok",

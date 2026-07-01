@@ -1,9 +1,9 @@
 // Command daemon-go is the Go hub: it wires the SQLite state store into the
-// peer registry and serves the WebSocket mesh protocol over HTTP. main is the
-// ONLY package that imports both state and peer — that's the dependency-
-// inversion seam. peer never imports state; it depends on the peer.Store
-// interface, which state satisfies. Routing, identity, and lifecycle live in
-// the registry/hub; this file is plumbing.
+// peer registry and serves the WebSocket mesh protocol over HTTP. The
+// dependency-inversion seam: peer never imports state; it depends on the
+// peer.Store interface, which state satisfies. This file (and hub, which
+// imports both) wire the concrete Store into the registry. Routing, identity,
+// and lifecycle live in the registry/hub; this file is plumbing.
 //
 // This file assembles the FULL daemon: every hub service (AskTracker,
 // PeerDelivery, messaging, ask-lifecycle, session wiring, spawn, jobs/work,
@@ -497,6 +497,20 @@ func main() {
 	if relayClient != nil {
 		relayClient.Stop()
 	}
+	// delivery.Close() before reg.Close() is load-bearing: closing PeerDelivery's
+	// closeCh unblocks any deferBroadcastUntilSeedSettled goroutine parked in the
+	// (up to 25s) seed-gate poll, so the registry's Close (which joins
+	// redelivery/LazyRepairAsync goroutines, some of which call back into
+	// delivery) doesn't itself wait out that poll. Both must finish before
+	// store.Close() — either can still touch the DB.
+	//
+	// Known limitation (tracked as repowire-fk4): per-connection WS handler
+	// goroutines spawned by HandleWS are NOT drained here — srv.Shutdown stops
+	// accepting new connections but does not close already-hijacked sockets. A
+	// live WS read loop can still be running when store.Close() returns; closing
+	// it requires a hub-level socket sweep, which is out of scope for this fix.
+	delivery.Close()
+	reg.Close()
 	if err := store.Close(); err != nil {
 		log.Printf("close state db: %v", err)
 	}

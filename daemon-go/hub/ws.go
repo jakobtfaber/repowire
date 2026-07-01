@@ -40,7 +40,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Lazy repair piggy-backs on a real request; never a timer.
-	go h.reg.LazyRepair(context.Background())
+	h.reg.LazyRepairAsync(context.Background())
 
 	ctx := r.Context()
 	var sessionID proto.PeerID

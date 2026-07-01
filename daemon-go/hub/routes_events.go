@@ -52,7 +52,7 @@ func (h *Hub) getEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	go h.reg.LazyRepair(context.Background())
+	h.reg.LazyRepairAsync(context.Background())
 
 	since := r.URL.Query().Get("since")
 	var events []map[string]any

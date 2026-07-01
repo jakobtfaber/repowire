@@ -32,10 +32,12 @@ import (
 // ============================================================================
 
 // lazyRepairer is the narrow seam the messaging routes need from the registry:
-// demand-driven maintenance kicked off in a goroutine on every request. The
-// concrete *peer.Registry satisfies it.
+// demand-driven maintenance kicked off in a TRACKED goroutine on every request
+// (LazyRepairAsync, not a bare `go LazyRepair(...)`, so Registry.Close can join
+// it before shutdown closes the Store). The concrete *peer.Registry satisfies
+// it.
 type lazyRepairer interface {
-	LazyRepair(ctx context.Context)
+	LazyRepairAsync(ctx context.Context)
 }
 
 // deliveryTracer records delivery-trace stages. *state.Store satisfies it via
@@ -135,7 +137,7 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 
 	ctx := r.Context()
 	// Maintenance piggy-backs on the request; never a timer.
-	go mr.reg.LazyRepair(context.Background())
+	mr.reg.LazyRepairAsync(context.Background())
 
 	// Mint the delivery id up front — it is also the trace id, recorded on the
 	// "created" stage before the send so a trace exists even if delivery throws.
@@ -252,7 +254,7 @@ func (mr *MessagingRoutes) handleBroadcast(w http.ResponseWriter, r *http.Reques
 	}
 
 	ctx := r.Context()
-	go mr.reg.LazyRepair(context.Background())
+	mr.reg.LazyRepairAsync(context.Background())
 
 	// Best-effort per-recipient: PeerDelivery.Broadcast never aborts the fanout
 	// on a single failure, splits ACP recipients off the WS fanout (when the ACP

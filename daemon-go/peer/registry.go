@@ -147,6 +147,13 @@ type Registry struct {
 	// cascade query cancellation (the hub owns the QueryTracker). The registry
 	// stays query-agnostic. Called with the registry lock released.
 	OnOffline func(proto.PeerID)
+
+	// closeMu/closed/wg track detached goroutines spawned via spawnTracked
+	// (redelivery, LazyRepairAsync) so Close can join them before the caller
+	// closes the underlying Store. See spawnTracked and Close.
+	closeMu sync.Mutex
+	closed  bool
+	wg      sync.WaitGroup
 }
 
 const (
@@ -485,8 +492,51 @@ func (r *Registry) scheduleRedelivery(ctx context.Context, id proto.PeerID) {
 		// owed reply (the stash stays in place until some later reconnect). Keep
 		// any context values for tracing, drop cancellation. (Python's
 		// asyncio.create_task is likewise not bound to the request scope.)
-		go r.redeliverPendingReplies(context.WithoutCancel(ctx), id)
+		r.spawnTracked(func() { r.redeliverPendingReplies(context.WithoutCancel(ctx), id) })
 	}
+}
+
+// spawnTracked runs f in a background goroutine that Close can join. No-op
+// after Close (the goroutine is simply never started).
+//
+// The closed-gate is load-bearing, not decorative: srv.Shutdown stops accepting
+// new connections but does not drain already-hijacked WS connections (the read
+// loop owns the socket once the handshake completes), so a live WS handler can
+// still call into the registry and spawn a tracked goroutine WHILE Close() is
+// running. Without the gate that races either a wg.Add after Wait has already
+// returned (sync.WaitGroup panics on that) or an untracked goroutine that
+// outlives Close() and hits store.Close() mid-flight.
+func (r *Registry) spawnTracked(f func()) {
+	r.closeMu.Lock()
+	if r.closed {
+		r.closeMu.Unlock()
+		return
+	}
+	r.wg.Add(1)
+	r.closeMu.Unlock()
+	go func() {
+		defer r.wg.Done()
+		f()
+	}()
+}
+
+// LazyRepairAsync is the tracked async form of LazyRepair. Every fire-and-forget
+// call site (health, /ws, /events, messaging routes) must spawn through this,
+// not a bare `go r.LazyRepair(...)`, so Close can join the goroutine before the
+// caller closes the Store.
+func (r *Registry) LazyRepairAsync(ctx context.Context) {
+	r.spawnTracked(func() { r.LazyRepair(ctx) })
+}
+
+// Close joins every goroutine spawned via spawnTracked (redelivery,
+// LazyRepairAsync). Call after stopping the dispatch loops and PeerDelivery,
+// before store.Close() — a tracked goroutine racing a closed SQLite store would
+// panic or error mid-write.
+func (r *Registry) Close() {
+	r.closeMu.Lock()
+	r.closed = true
+	r.closeMu.Unlock()
+	r.wg.Wait()
 }
 
 // claimRedelivery returns true if the caller won the single-flight slot for this

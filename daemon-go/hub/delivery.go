@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -81,6 +82,14 @@ type PeerDelivery struct {
 
 	queueTTLSeconds float64
 	queueMax        int
+
+	// closeMu/closed/wg/closeCh track the deferBroadcastUntilSeedSettled
+	// goroutines so Close can join them without waiting out a 25s seed-gate
+	// poll. See Close and awaitSeedSettled.
+	closeMu sync.Mutex
+	closed  bool
+	wg      sync.WaitGroup
+	closeCh chan struct{}
 }
 
 // NewPeerDelivery wires the delivery service. store may be nil (queued-delivery
@@ -101,6 +110,7 @@ func NewPeerDelivery(reg accessRegistry, router *MessageRouter, transport Transp
 		store:           store,
 		queueTTLSeconds: defaultQueueTTLSeconds,
 		queueMax:        defaultQueueMax,
+		closeCh:         make(chan struct{}),
 	}
 }
 
@@ -564,24 +574,49 @@ func (d *PeerDelivery) awaitSeedSettled(ctx context.Context, id proto.PeerID) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-d.closeCh:
+			return
 		case <-time.After(seedSettlePoll):
 		}
 	}
 }
 
 // deferBroadcastUntilSeedSettled schedules a single broadcast to a still-seeding
-// WS peer in a background goroutine. The peer is already connected, so the
-// queued-delivery store (which only flushes on ws connect) would strand the
-// message — instead we wait out the seed gate and send directly. One pending
-// peer must never block the rest of the broadcast fanout.
+// WS peer in a background goroutine, tracked so Close can join it. The peer is
+// already connected, so the queued-delivery store (which only flushes on ws
+// connect) would strand the message — instead we wait out the seed gate and
+// send directly. One pending peer must never block the rest of the broadcast
+// fanout. No-op after Close (mirrors peer.Registry.spawnTracked's gate).
 func (d *PeerDelivery) deferBroadcastUntilSeedSettled(fromPeer, text string, id proto.PeerID) {
+	d.closeMu.Lock()
+	if d.closed {
+		d.closeMu.Unlock()
+		return
+	}
+	d.wg.Add(1)
+	d.closeMu.Unlock()
 	go func() {
+		defer d.wg.Done()
 		ctx := context.Background()
 		d.awaitSeedSettled(ctx, id)
 		if err := d.router.BroadcastToSession(ctx, proto.DisplayName(fromPeer), text, id); err != nil {
 			log.Printf("delivery: deferred broadcast to %s failed after seed gate: %v", id, err)
 		}
 	}()
+}
+
+// Close unblocks any goroutine parked in awaitSeedSettled's seed-gate poll
+// (up to seedSettleWait=25s) and joins them. Call before the registry/store
+// shut down — a deferred broadcast that outlives them would read/write closed
+// state.
+func (d *PeerDelivery) Close() {
+	d.closeMu.Lock()
+	if !d.closed {
+		d.closed = true
+		close(d.closeCh)
+	}
+	d.closeMu.Unlock()
+	d.wg.Wait()
 }
 
 // markTransportUnreachable drives a peer offline after a genuine TransportError
