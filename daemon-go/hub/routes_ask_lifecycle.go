@@ -15,9 +15,9 @@ package hub
 //	POST /asks/{cid}/wait              bounded wait for resolution (wait_on_ack)
 //
 // Identity discipline: routing-sensitive lookups resolve to proto.PeerID via the
-// registry / AskTracker; reply routing in /ack and /answer uses the STORED ask
+// registry / service.AskTracker; reply routing in /ack and /answer uses the STORED ask
 // recipient (ask.ToPeerID), never the request's compat from_peer. Fail loud over
-// silent-degrade: a DeliveryInjectionError is a 503 with the ask left for the
+// silent-degrade: a service.DeliveryInjectionError is a 503 with the ask left for the
 // route to close as send_failed (the peer is NOT marked unreachable — the socket
 // is alive); an undeliverable ack reply is a 503 with the ask left OPEN for retry.
 
@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 )
 
 // askRoutesRegistry is the narrow registry seam the ask-lifecycle routes need.
@@ -60,15 +61,15 @@ type askRoutesRegistry interface {
 // askLifecycleDeps bundles the services the ask-lifecycle routes compose. Wired
 // onto the Hub via WithAskLifecycle; nil-safe (handlers 503 when unwired).
 type askLifecycleDeps struct {
-	asks     *AskTracker
-	delivery *PeerDelivery
+	asks     *service.AskTracker
+	delivery *service.PeerDelivery
 	reg      askRoutesRegistry
 }
 
 // WithAskLifecycle wires the ask-lifecycle route dependencies onto the hub. The
 // concrete *peer.Registry satisfies askRoutesRegistry once the registry port
 // lands; until then a test/fake registry is passed. Returns the receiver.
-func (h *Hub) WithAskLifecycle(asks *AskTracker, delivery *PeerDelivery, reg askRoutesRegistry) *Hub {
+func (h *Hub) WithAskLifecycle(asks *service.AskTracker, delivery *service.PeerDelivery, reg askRoutesRegistry) *Hub {
 	h.ask = &askLifecycleDeps{asks: asks, delivery: delivery, reg: reg}
 	return h
 }
@@ -191,9 +192,9 @@ type AskResponse struct {
 }
 
 // handleAsk opens a non-blocking ask: resolve+authorize via CheckAccess (inside
-// DeliverAsk), register in the AskTracker (minting ask-<hex8> or reusing the
-// caller-supplied cid), then deliver. On ErrQuiesced → 409; on a
-// DeliveryInjectionError → close send_failed + 503 {injection_failed}; on a
+// DeliverAsk), register in the service.AskTracker (minting ask-<hex8> or reusing the
+// caller-supplied cid), then deliver. On service.ErrQuiesced → 409; on a
+// service.DeliveryInjectionError → close send_failed + 503 {injection_failed}; on a
 // genuine TransportError → close send_failed + 503 (the peer is marked offline
 // inside DeliverAsk). reply_to closes the referenced prior ask on success.
 func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +211,7 @@ func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	// Resolve the target FIRST so the AskTracker entry is keyed on the canonical
+	// Resolve the target FIRST so the service.AskTracker entry is keyed on the canonical
 	// peer_id (display names collide; PendingForPeer / reply routing are
 	// peer_id-keyed). Mirrors AskService.open_ask resolving the peer before
 	// register. An ambiguous name is a 409; an unknown one a 404.
@@ -234,7 +235,7 @@ func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
 
 	// reply_to closes a PRIOR ask; it is NOT this ask's cid. Register with an
 	// empty CorrelationID so a fresh ask-<hex8> is minted.
-	cid, err := h.ask.asks.Register(ctx, RegisterAskParams{
+	cid, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
 		FromPeerID:   fromID,
 		FromPeerName: fromName,
 		ToPeerID:     target.PeerID,
@@ -244,7 +245,7 @@ func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
 		Question:     req.Question,
 	})
 	if err != nil {
-		if errors.Is(err, ErrQuiesced) {
+		if errors.Is(err, service.ErrQuiesced) {
 			writeJSONError(w, http.StatusConflict, map[string]any{
 				"error": "peer_switching",
 				"hint":  fmt.Sprintf("Peer %s is mid-switch; retry shortly.", req.ToPeer),
@@ -255,7 +256,7 @@ func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = h.ask.delivery.DeliverAsk(ctx, DeliverAskParams{
+	_, err = h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
 		FromPeer:      string(fromID),
 		ToPeer:        string(target.PeerID),
 		Text:          req.Text,
@@ -267,7 +268,7 @@ func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
 		Question:      req.Question,
 	})
 	if err != nil {
-		if di, ok := AsDeliveryInjection(err); ok {
+		if di, ok := service.AsDeliveryInjection(err); ok {
 			// Fail loud: hook reached, pane rejected. Record injection_failed and
 			// 503; the socket is alive so the peer is NOT marked unreachable.
 			h.ask.reg.AddEvent(ctx, "delivery_trace", map[string]any{
@@ -285,7 +286,7 @@ func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
 		// Unknown target / circle violation surfaced by CheckAccess, or a genuine
 		// no-connection TransportError. Either way the ask cannot stand: close it.
 		_, _ = h.ask.asks.Close(ctx, cid, "send_failed")
-		if errors.Is(err, ErrNotConnected) {
+		if errors.Is(err, service.ErrNotConnected) {
 			writeJSONError(w, http.StatusServiceUnavailable,
 				fmt.Sprintf("Peer %s has no live connection: %s", req.ToPeer, err))
 			return
@@ -386,7 +387,7 @@ func (h *Hub) handleAck(w http.ResponseWriter, r *http.Request) {
 		framed := fmt.Sprintf("[ack #%s from @%s] %s",
 			req.CorrelationID, existing.ToPeerName, derefOr(req.Message, ""))
 		// Routing uses the STORED ask endpoints, never req.FromPeer (compat-only).
-		res, err := h.ask.delivery.Notify(ctx, NotifyParams{
+		res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{
 			FromPeer:     string(existing.ToPeerID),
 			ToPeer:       string(existing.FromPeerID),
 			Text:         framed,
@@ -394,7 +395,7 @@ func (h *Hub) handleAck(w http.ResponseWriter, r *http.Request) {
 			Attachments:  req.Attachments,
 		})
 		if err != nil {
-			if errors.Is(err, ErrNotConnected) {
+			if errors.Is(err, service.ErrNotConnected) {
 				// Asker has no live WS: keep the ask OPEN for retry, 503.
 				writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf(
 					"Reply delivery failed for %s: %s. Ask remains open; retry when "+
@@ -479,7 +480,7 @@ func (h *Hub) answerInternal(w http.ResponseWriter, r *http.Request, req AnswerR
 	if outcome == "" {
 		outcome = "answered"
 	}
-	ans := Answer{
+	ans := service.Answer{
 		Outcome:  outcome,
 		OptionID: req.OptionID,
 		Text:     req.Text,
@@ -487,12 +488,12 @@ func (h *Hub) answerInternal(w http.ResponseWriter, r *http.Request, req AnswerR
 	}
 	recorded, err := h.ask.asks.Answer(ctx, req.CorrelationID, ans)
 	if err != nil {
-		if errors.Is(err, ErrAlreadyAnswered) {
+		if errors.Is(err, service.ErrAlreadyAnswered) {
 			writeJSONError(w, http.StatusGone, fmt.Sprintf(
 				"Ask %s is already answered/closed.", req.CorrelationID))
 			return
 		}
-		if errors.Is(err, ErrAskNotFound) {
+		if errors.Is(err, service.ErrAskNotFound) {
 			writeJSONError(w, http.StatusNotFound,
 				"No open ask with correlation_id: "+req.CorrelationID)
 			return
@@ -518,7 +519,7 @@ func (h *Hub) answerInternal(w http.ResponseWriter, r *http.Request, req AnswerR
 	} else {
 		framed := fmt.Sprintf("[ack #%s from @%s] %s",
 			req.CorrelationID, existing.ToPeerName, body)
-		res, derr := h.ask.delivery.Notify(ctx, NotifyParams{
+		res, derr := h.ask.delivery.Notify(ctx, service.NotifyParams{
 			FromPeer:     string(existing.ToPeerID),
 			ToPeer:       string(existing.FromPeerID),
 			Text:         framed,
@@ -536,7 +537,7 @@ func (h *Hub) answerInternal(w http.ResponseWriter, r *http.Request, req AnswerR
 // answerReplyText resolves the human-readable reply body for an answer: explicit
 // text wins, else the chosen option's title, else the message. Mirrors
 // AskService._answer_reply_text.
-func answerReplyText(ask *Ask, ans Answer) string {
+func answerReplyText(ask *service.Ask, ans service.Answer) string {
 	if ans.Text != nil && *ans.Text != "" {
 		return *ans.Text
 	}
@@ -657,7 +658,7 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 		"default_answer":  map[string]any{"outcome": "timed_out", "message": timeoutMsg},
 	}
 
-	cid, err := h.ask.asks.Register(ctx, RegisterAskParams{
+	cid, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
 		FromPeerID:   proto.PeerID(fromPeer),
 		FromPeerName: proto.DisplayName(fromPeer),
 		ToPeerID:     target.PeerID,
@@ -666,7 +667,7 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 		Question:     question,
 	})
 	if err != nil {
-		if errors.Is(err, ErrQuiesced) {
+		if errors.Is(err, service.ErrQuiesced) {
 			writeJSON(w, http.StatusOK, QueryResponse{
 				Error: strPtr(fmt.Sprintf("Peer %s is mid-switch; retry shortly.", req.ToPeer)),
 			})
@@ -676,7 +677,7 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, derr := h.ask.delivery.DeliverAsk(ctx, DeliverAskParams{
+	if _, derr := h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
 		FromPeer:      fromPeer,
 		ToPeer:        string(target.PeerID),
 		Text:          req.Text,
@@ -690,7 +691,7 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defaultAns := Answer{Outcome: "timed_out", Message: &timeoutMsg}
+	defaultAns := service.Answer{Outcome: "timed_out", Message: &timeoutMsg}
 	ans, werr := h.ask.asks.WaitForAnswer(ctx, cid, timeout, &defaultAns)
 	if werr != nil {
 		writeJSON(w, http.StatusOK, QueryResponse{Error: strPtr(werr.Error())})
@@ -902,7 +903,7 @@ func (h *Hub) handleAskWait(w http.ResponseWriter, r *http.Request, cid string) 
 
 	ask, err := h.ask.asks.WaitForResolution(ctx, cid, timeout, true)
 	if err != nil {
-		if errors.Is(err, ErrAskNotFound) {
+		if errors.Is(err, service.ErrAskNotFound) {
 			writeJSONError(w, http.StatusNotFound, "No ask with correlation_id: "+cid)
 			return
 		}
@@ -942,7 +943,7 @@ func (h *Hub) handleAskWait(w http.ResponseWriter, r *http.Request, cid string) 
 // emitAckEvent records the "ack" journal event with the truthful delivered flag,
 // mirroring AskService._emit_ack_event. The from/to are swapped relative to the
 // ask (the acker is the ask recipient replying to the original asker).
-func (h *Hub) emitAckEvent(ctx context.Context, ask *Ask, reason string, delivered, hasMessage, hasAttachments bool) {
+func (h *Hub) emitAckEvent(ctx context.Context, ask *service.Ask, reason string, delivered, hasMessage, hasAttachments bool) {
 	h.ask.reg.AddEvent(ctx, "ack", map[string]any{
 		"from":            string(ask.ToPeerName),
 		"to":              string(ask.FromPeerName),

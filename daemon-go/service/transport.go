@@ -3,7 +3,7 @@
 // imports proto (wire contract) and peer (lifecycle registry); routing is keyed
 // on proto.PeerID throughout, so a DisplayName can never be passed where a
 // routing target is required.
-package hub
+package service
 
 import (
 	"context"

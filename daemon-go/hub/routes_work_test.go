@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 
 	_ "modernc.org/sqlite"
@@ -162,9 +163,9 @@ type fakeSpawner struct {
 func (f *fakeSpawner) ResolveCommand(b proto.AgentType, profile *string) (string, error) {
 	return "echo launch", nil
 }
-func (f *fakeSpawner) Spawn(cfg SpawnConfig) (SpawnResult, error) {
+func (f *fakeSpawner) Spawn(cfg service.SpawnConfig) (service.SpawnResult, error) {
 	f.calls++
-	return SpawnResult{DisplayName: f.display, TmuxSession: f.session, PaneID: f.pane}, nil
+	return service.SpawnResult{DisplayName: f.display, TmuxSession: f.session, PaneID: f.pane}, nil
 }
 
 // fakeAskOpener records the dispatch ask and returns a fixed correlation id.
@@ -283,8 +284,8 @@ func TestJobRunnerDispatchSpawnsAndDelivers(t *testing.T) {
 	spawner := &fakeSpawner{pane: pane, display: "claude-1", session: "default:0"}
 	opener := &fakeAskOpener{}
 
-	control := NewSessionControl(reg, spawner, store)
-	runner := NewJobRunner(store, opener, control)
+	control := service.NewSessionControl(reg, spawner, store)
+	runner := service.NewJobRunner(store, opener, control)
 	runner.SetSenderPeerID("repow-jobs-svc")
 
 	// Create a per_fire job (no assigned peer, path+backend set).
@@ -361,7 +362,7 @@ func TestRunJobRejectsTerminalState(t *testing.T) {
 	if _, err := store.UpdateWorkState(ctx, work.WorkID, state.WorkUpdate{State: "completed"}); err != nil {
 		t.Fatalf("UpdateWorkState: %v", err)
 	}
-	runner := NewJobRunner(store, &fakeAskOpener{}, nil)
+	runner := service.NewJobRunner(store, &fakeAskOpener{}, nil)
 	out, err := runner.RunJob(ctx, work.WorkID, true, false)
 	if err != nil {
 		t.Fatalf("RunJob: %v", err)

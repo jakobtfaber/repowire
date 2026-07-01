@@ -32,6 +32,7 @@ import (
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/relay"
+	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -183,7 +184,7 @@ func (s regShim) UpdateMetadataByName(ctx context.Context, identifier string, me
 //
 // reg.WithReconciliation takes peer.AskTracker + peer.PeerDelivery interface
 // values, which are NARROWER, StashedAsk-projection variants of the concrete
-// *hub.AskTracker / *hub.PeerDelivery (the hub types return []*hub.Ask and a
+// *service.AskTracker / *service.PeerDelivery (the hub types return []*service.Ask and a
 // NotifyParams-shaped Notify; the peer seams want []peer.StashedAsk and a
 // positional Notify). These adapters bridge the two so the OFFLINE→live
 // stash-redelivery pass and stash-loss emission run against the real tracker.
@@ -193,15 +194,15 @@ func (s regShim) UpdateMetadataByName(ctx context.Context, identifier string, me
 // collapse away.
 // ----------------------------------------------------------------------------
 
-// reconcileAsks adapts *hub.AskTracker to peer.AskTracker.
-type reconcileAsks struct{ t *hub.AskTracker }
+// reconcileAsks adapts *service.AskTracker to peer.AskTracker.
+type reconcileAsks struct{ t *service.AskTracker }
 
 func (a reconcileAsks) TakePendingRepliesForAsker(asker proto.PeerID) []peer.StashedAsk {
 	return toStashed(a.t.TakePendingRepliesForAsker(asker))
 }
 
 func (a reconcileAsks) TakeOrphanPendingRepliesMatching(id peer.AskerIdentity, live map[proto.PeerID]struct{}) []peer.StashedAsk {
-	return toStashed(a.t.TakeOrphanPendingRepliesMatching(hub.AskerIdentity(id), live))
+	return toStashed(a.t.TakeOrphanPendingRepliesMatching(service.AskerIdentity(id), live))
 }
 
 func (a reconcileAsks) MarkPendingReplyDelivered(cid string, newFrom *proto.PeerID, reason string) bool {
@@ -226,7 +227,7 @@ func (a reconcileAsks) ForgetPeer(id proto.PeerID) int {
 
 // toStashed projects hub Asks to the read-only peer.StashedAsk shape the
 // reconciler consumes.
-func toStashed(asks []*hub.Ask) []peer.StashedAsk {
+func toStashed(asks []*service.Ask) []peer.StashedAsk {
 	if len(asks) == 0 {
 		return nil
 	}
@@ -250,12 +251,12 @@ func toStashed(asks []*hub.Ask) []peer.StashedAsk {
 	return out
 }
 
-// reconcileDelivery adapts *hub.PeerDelivery to peer.PeerDelivery (the
+// reconcileDelivery adapts *service.PeerDelivery to peer.PeerDelivery (the
 // positional Notify the reconciler calls to redeliver a stashed reply).
-type reconcileDelivery struct{ d *hub.PeerDelivery }
+type reconcileDelivery struct{ d *service.PeerDelivery }
 
 func (r reconcileDelivery) Notify(ctx context.Context, from, to proto.PeerID, text string, bypassCircle bool) error {
-	_, err := r.d.Notify(ctx, hub.NotifyParams{
+	_, err := r.d.Notify(ctx, service.NotifyParams{
 		FromPeer:     string(from),
 		ToPeer:       string(to),
 		Text:         text,
@@ -332,7 +333,7 @@ func main() {
 	// registry against it, then wrap registry+transport in the hub.
 	ctx := context.Background()
 	liveness := realLiveness{}
-	transport := hub.NewWebSocketTransport()
+	transport := service.NewWebSocketTransport()
 
 	reg, err := peer.NewRegistry(ctx, store, liveness, transport)
 	if err != nil {
@@ -352,8 +353,8 @@ func main() {
 	// PeerDelivery composes registry-access + transport-choice + ask/notify
 	// lifecycle + the durable queued-delivery fallback (store satisfies the
 	// queue seam). The router (WS-only) is the one the hub minted in step 5.
-	asks := hub.NewAskTracker(0) // 0 → default 24h TTL (config prune_max_age)
-	delivery := hub.NewPeerDelivery(shim, h.Router(), transport, asks, store)
+	asks := service.NewAskTracker(0) // 0 → default 24h TTL (config prune_max_age)
+	delivery := service.NewPeerDelivery(shim, h.Router(), transport, asks, store)
 
 	// (7) Reconciliation seams. Inject AskTracker + PeerDelivery (via the shape
 	// adapters) so the OFFLINE->live stash-redelivery pass and stash-loss
@@ -376,8 +377,8 @@ func main() {
 	// shares the SAME *SpawnService instance with the work/jobs runner so an
 	// executor acquired for a durable job records ownership the spawn routes can
 	// later consult.
-	tmuxCtl := hub.NewRealTmuxController()
-	ownership := hub.NewFileOwnership(selfMachine, tmuxCtl.ProbePane)
+	tmuxCtl := service.NewRealTmuxController()
+	ownership := service.NewFileOwnership(selfMachine, tmuxCtl.ProbePane)
 	// Per-backend launch commands come from -spawn-commands (JSON), which
 	// `repowire serve` populates from config.daemon.spawn.commands. An empty/invalid
 	// map keeps spawn disabled-by-default (SpawnService.Enabled()==false → 503);
@@ -388,7 +389,7 @@ func main() {
 			log.Fatalf("parse -spawn-commands JSON: %v", err)
 		}
 	}
-	spawnService := hub.NewSpawnService(tmuxCtl, ownership, spawnCommands, splitCSV(*spawnPathsFlag))
+	spawnService := service.NewSpawnService(tmuxCtl, ownership, spawnCommands, splitCSV(*spawnPathsFlag))
 
 	// (9) Work/jobs + scheduler. SessionControl is the executor-acquisition
 	// ladder (assigned → reuse → resume → spawn); JobRunner dispatches durable
@@ -400,9 +401,9 @@ func main() {
 	// also unset: the synthetic @jobs service peer isn't registered here, so
 	// dispatch asks carry an empty `from` (accessRegistry treats an unresolved
 	// sender as allowed, mirroring Python notify behavior).
-	sessionControl := hub.NewSessionControl(shim, spawnService, store)
-	jobRunner := hub.NewJobRunner(store, delivery, sessionControl)
-	scheduler := hub.NewScheduler(store, delivery)
+	sessionControl := service.NewSessionControl(shim, spawnService, store)
+	jobRunner := service.NewJobRunner(store, delivery, sessionControl)
+	scheduler := service.NewScheduler(store, delivery)
 
 	// (10) Relay/shares config. A nil-or-keyless RelayConfig leaves /shares as
 	// the documented degrade (503 POST/DELETE, empty-list GET) — i.e. the 503

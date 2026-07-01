@@ -1,4 +1,4 @@
-package hub
+package service
 
 // Scheduled check-in dispatcher. Port of repowire/daemon/scheduler.py.
 //

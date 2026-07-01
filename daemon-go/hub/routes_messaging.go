@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 )
 
 // ============================================================================
@@ -21,13 +22,13 @@ import (
 //
 //   * LazyRepair (maintenance piggy-backs on a real request, never a timer)
 //   * a created/resolved/terminal delivery-trace breadcrumb (notify only)
-//   * PeerDelivery (registry access-check + transport choice + queue fallback)
+//   * service.PeerDelivery (registry access-check + transport choice + queue fallback)
 //
 // Error mapping mirrors the Python route, as JSON bodies (never a bare 500):
 //   ambiguous peer       -> 409   unknown peer            -> 404
 //   forbidden (circle)   -> 403   no-live-transport (503) -> records no_connection
 //
-// Transport CHOICE (ACP-before-WS) and the seed gate live in PeerDelivery; this
+// Transport CHOICE (ACP-before-WS) and the seed gate live in service.PeerDelivery; this
 // layer is HTTP plumbing + truthful tracing.
 // ============================================================================
 
@@ -58,14 +59,14 @@ type deliveryTracer interface {
 // is the optional breadcrumb sink. Auth is supplied by the hub's requireAuth
 // wrapper at registration so there is one bearer-token implementation.
 type MessagingRoutes struct {
-	delivery *PeerDelivery
+	delivery *service.PeerDelivery
 	reg      lazyRepairer
 	traces   deliveryTracer
 }
 
 // NewMessagingRoutes wires the messaging route group. traces may be nil (tracing
 // disabled).
-func NewMessagingRoutes(delivery *PeerDelivery, reg lazyRepairer, traces deliveryTracer) *MessagingRoutes {
+func NewMessagingRoutes(delivery *service.PeerDelivery, reg lazyRepairer, traces deliveryTracer) *MessagingRoutes {
 	return &MessagingRoutes{delivery: delivery, reg: reg, traces: traces}
 }
 
@@ -144,7 +145,7 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 	deliveryID := "notif-delivery-" + uuid.NewString()[:8]
 	mr.trace(ctx, deliveryID, "notify", "created", "", deliveryID, "", "", map[string]any{"to_peer": req.ToPeer})
 
-	result, err := mr.delivery.Notify(ctx, NotifyParams{
+	result, err := mr.delivery.Notify(ctx, service.NotifyParams{
 		FromPeer:     req.FromPeer,
 		ToPeer:       req.ToPeer,
 		Text:         req.Text,
@@ -197,7 +198,7 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 // Python route returns. CheckAccess rejections are distinguished by message
 // prefix ("Unknown peer" / "Ambiguous peer name"), matching the Python
 // ValueError-string discrimination; a no-live-transport TransportError
-// (ErrNotConnected) becomes a 503 with a no_connection trace breadcrumb.
+// (service.ErrNotConnected) becomes a 503 with a no_connection trace breadcrumb.
 func (mr *MessagingRoutes) writeNotifyError(w http.ResponseWriter, ctx context.Context, req notifyRequest, deliveryID string, err error) {
 	msg := err.Error()
 	switch {
@@ -256,7 +257,7 @@ func (mr *MessagingRoutes) handleBroadcast(w http.ResponseWriter, r *http.Reques
 	ctx := r.Context()
 	mr.reg.LazyRepairAsync(context.Background())
 
-	// Best-effort per-recipient: PeerDelivery.Broadcast never aborts the fanout
+	// Best-effort per-recipient: service.PeerDelivery.Broadcast never aborts the fanout
 	// on a single failure, splits ACP recipients off the WS fanout (when the ACP
 	// route is live), and defers pending_first_turn WS peers behind the seed gate.
 	sent, failed := mr.delivery.Broadcast(ctx, req.FromPeer, req.Text, req.Exclude, req.BypassCircle)
@@ -318,15 +319,26 @@ func (mr *MessagingRoutes) recordOutcome(ctx context.Context, traceID, kind, pee
 }
 
 // isTransportUnavailable reports whether err is the no-live-transport rejection
-// (ErrNotConnected from the WS transport, or a Notify that re-raised it because
-// the queue was disabled). A *DeliveryInjectionError is NOT transport-
+// (service.ErrNotConnected from the WS transport, or a Notify that re-raised it because
+// the queue was disabled). A *service.DeliveryInjectionError is NOT transport-
 // unavailable — the socket is alive, the pane rejected the injection — but
 // notify never raises that (only ask does), so it correctly falls through.
 func isTransportUnavailable(err error) bool {
-	if _, ok := AsDeliveryInjection(err); ok {
+	if _, ok := service.AsDeliveryInjection(err); ok {
 		return false
 	}
-	return errors.Is(err, ErrNotConnected)
+	return errors.Is(err, service.ErrNotConnected)
+}
+
+// strPtr is duplicated from service/session_control.go (which owns the
+// canonical definition, shared with job_runner.go) because this route file is
+// on the hub side of the hub/service split — not worth an exported seam for
+// three lines.
+func strPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func nameStrPtr(n proto.DisplayName) *string {

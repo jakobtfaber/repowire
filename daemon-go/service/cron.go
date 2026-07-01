@@ -1,4 +1,4 @@
-package hub
+package service
 
 // Small dependency-free five-field cron parser for repowire schedules. Port of
 // repowire/daemon/schedule_cron.py. Kept in the hub package because the schedules

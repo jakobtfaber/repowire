@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -102,7 +103,7 @@ func (s *fakeDrainStore) DrainDeliveries(ctx context.Context, peerID string, max
 
 // newSessionTestHub builds a hub with the session route group wired over fakes
 // plus the httptest server serving its mux.
-func newSessionTestHub(t *testing.T, reg sessionRegistry, tracker *QueryTracker, store queuedDrainStore) *httptest.Server {
+func newSessionTestHub(t *testing.T, reg sessionRegistry, tracker *service.QueryTracker, store queuedDrainStore) *httptest.Server {
 	t.Helper()
 	h := &Hub{authToken: ""}
 	h.WithSessionRoutes(reg, tracker, store)
@@ -181,7 +182,7 @@ func TestResponseResolvesOldestQuery(t *testing.T) {
 	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
 	reg := newSessionFakeRegistry(beta)
 	reg.byPane["%7"] = beta
-	tracker := NewQueryTracker()
+	tracker := service.NewQueryTracker()
 	cid := tracker.RegisterQuery("alpha", beta.PeerID, "beta", "ping?")
 	future := tracker.Future(cid)
 
@@ -207,7 +208,7 @@ func TestResponseNoPendingQueryIs200(t *testing.T) {
 	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
 	reg := newSessionFakeRegistry(beta)
 	reg.byPane["%7"] = beta
-	srv := newSessionTestHub(t, reg, NewQueryTracker(), nil)
+	srv := newSessionTestHub(t, reg, service.NewQueryTracker(), nil)
 
 	resp := postJSON(t, srv.URL+"/response", ResponseDelivery{PaneID: "%7", Text: "nothing pending"})
 	defer resp.Body.Close()

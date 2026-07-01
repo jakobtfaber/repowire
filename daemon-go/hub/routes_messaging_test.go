@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 )
 
 // noopRepairer satisfies lazyRepairer; LazyRepairAsync is a maintenance
@@ -29,13 +30,13 @@ func (c *captureTracer) RecordTrace(_ context.Context, _, _, stage, _, _, _, _ s
 }
 
 // newMessagingTestRig builds a MessagingRoutes over a real PeerDelivery wired to
-// the shared fakes (fakeRegistry/fakeTransport/fakeQueue from delivery_test.go),
+// the shared fakes (fakeRegistry/fakeTransport/fakeQueue in hub_test.go),
 // plus an httptest server. auth is disabled (empty token) via an identity
 // wrapper so handler behavior is what is under test.
 func newMessagingTestRig(t *testing.T, reg *fakeRegistry, ft *fakeTransport) (*httptest.Server, *captureTracer) {
 	t.Helper()
 	router := newRouterWithFake(ft)
-	delivery := NewPeerDelivery(reg, router, ft, nil, &fakeQueue{})
+	delivery := service.NewPeerDelivery(reg, router, ft, nil, &fakeQueue{})
 	tr := &captureTracer{}
 	mr := NewMessagingRoutes(delivery, noopRepairer{}, tr)
 
@@ -142,12 +143,12 @@ func TestNotifyHandlerNoLiveTransport(t *testing.T) {
 	target := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
 	reg := &fakeRegistry{peers: []*proto.Peer{target}}
 	ft := &fakeTransport{
-		connected: map[proto.PeerID]bool{}, // not connected → ErrNotConnected on ack
-		ackErr:    ErrNotConnected,
+		connected: map[proto.PeerID]bool{}, // not connected → service.ErrNotConnected on ack
+		ackErr:    service.ErrNotConnected,
 	}
 	router := newRouterWithFake(ft)
 	// store=nil → queued-delivery disabled → no-live-transport fails loud.
-	delivery := NewPeerDelivery(reg, router, ft, nil, nil)
+	delivery := service.NewPeerDelivery(reg, router, ft, nil, nil)
 	tr := &captureTracer{}
 	mr := NewMessagingRoutes(delivery, noopRepairer{}, tr)
 	mux := http.NewServeMux()

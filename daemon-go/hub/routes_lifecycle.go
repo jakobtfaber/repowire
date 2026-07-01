@@ -34,6 +34,7 @@ import (
 
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 )
 
 // nameFieldMax caps the name/pane fields on every lifecycle request, matching
@@ -104,7 +105,7 @@ func NewLifecycleHandler(
 	if clearRuntime == nil {
 		// Default to the real pane-runtime cleanup so pane death drops the stale
 		// meta.json that would otherwise re-prove a reused pane. main need not wire it.
-		clearRuntime = ClearPaneRuntimeState
+		clearRuntime = service.ClearPaneRuntimeState
 	}
 	return &LifecycleHandler{
 		reg:                   reg,

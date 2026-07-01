@@ -24,6 +24,7 @@ import (
 
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 )
 
 // spawnRegistry is the narrow registry seam the spawn routes need. It mirrors the
@@ -45,9 +46,9 @@ type spawnRegistry interface {
 // spawnDeps bundles the spawn route dependencies, wired onto the Hub via
 // WithSpawn. nil → the spawn endpoints are not registered.
 type spawnDeps struct {
-	svc         *SpawnService
+	svc         *service.SpawnService
 	reg         spawnRegistry
-	asks        *AskTracker
+	asks        *service.AskTracker
 	selfMachine string
 }
 
@@ -55,7 +56,7 @@ type spawnDeps struct {
 // reg is the resolve/allocate/unregister seam; asks supplies the quiesce barrier
 // for restart/switch; selfMachine is the daemon hostname for the same-host gate.
 // Returns the hub for chaining; call before Routes.
-func (h *Hub) WithSpawn(svc *SpawnService, reg spawnRegistry, asks *AskTracker, selfMachine string) *Hub {
+func (h *Hub) WithSpawn(svc *service.SpawnService, reg spawnRegistry, asks *service.AskTracker, selfMachine string) *Hub {
 	h.spawn = &spawnDeps{svc: svc, reg: reg, asks: asks, selfMachine: selfMachine}
 	return h
 }
@@ -201,7 +202,7 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		h.writeSpawnError(w, err)
 		return
 	}
-	result, err := svc.Spawn(SpawnConfig{
+	result, err := svc.Spawn(service.SpawnConfig{
 		Path:    req.Path,
 		Circle:  req.Circle,
 		Backend: backend,
@@ -223,7 +224,7 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	// Non-self-registering backends are daemon-pre-registered for CLI polling.
 	if result.PaneID != "" && !selfRegistersOnSpawn(backend) {
-		resolvedPath := NormPath(req.Path)
+		resolvedPath := service.NormPath(req.Path)
 		warning := backendStr(backend) + " hooks do not currently fire reliably; Repowire pre-registered this peer for CLI polling."
 		metadata := map[string]any{
 			"repowire_cli_fallback": true,
@@ -257,7 +258,7 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		// Re-record ownership now that we know the assigned peer_id (so the durable
 		// proof carries the strong disambiguator).
 		pid := string(peerID)
-		svc.Ownership().Record(OwnershipRecord{
+		svc.Ownership().Record(service.OwnershipRecord{
 			PaneID:      paneID,
 			Path:        resolvedPath,
 			Backend:     string(backend),
@@ -297,10 +298,10 @@ func (h *Hub) resolveLegacyCommand(command string) (proto.AgentType, bool) {
 	return "", false
 }
 
-// writeSpawnError surfaces a *SpawnError as its carried HTTP status + detail; any
+// writeSpawnError surfaces a *service.SpawnError as its carried HTTP status + detail; any
 // other error is a 500.
 func (h *Hub) writeSpawnError(w http.ResponseWriter, err error) {
-	if se, ok := AsSpawnError(err); ok {
+	if se, ok := service.AsSpawnError(err); ok {
 		writeJSONError(w, se.Status, se.Detail)
 		return
 	}
@@ -364,7 +365,7 @@ func (h *Hub) handleKillPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.spawn.svc.Ownership().Forget(proof.paneID)
-	ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
+	service.ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
 	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
 	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
 	t := true
@@ -493,7 +494,7 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Quiesce barrier: blocks new asks in either direction + verifies none are
-	// open. ErrQuiesceHasOpen → 409 in_flight_asks; ErrQuiesced (concurrent
+	// open. service.ErrQuiesceHasOpen → 409 in_flight_asks; service.ErrQuiesced (concurrent
 	// restart) → 409 restart_in_progress.
 	if h.spawn.asks != nil {
 		if qerr := h.spawn.asks.BeginQuiesce(ctx, peerCopy.PeerID); qerr != nil {
@@ -514,11 +515,11 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.spawn.svc.Ownership().Forget(proof.paneID)
-		ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove the reused pane
+		service.ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove the reused pane
 		_, _ = h.spawn.reg.MarkOffline(ctx, peerCopy.PeerID, false)
 	}
 
-	result, serr := svc.Spawn(SpawnConfig{
+	result, serr := svc.Spawn(service.SpawnConfig{
 		Path:    resolvedPath,
 		Circle:  spawnCircle,
 		Backend: peerCopy.Backend,
@@ -620,7 +621,7 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 	command, cerr := svc.ResolveCommand(req.NewBackend, nil)
 	if cerr != nil {
 		// Decorate command_unavailable with new_backend (parity with Python).
-		if se, ok := AsSpawnError(cerr); ok {
+		if se, ok := service.AsSpawnError(cerr); ok {
 			if m, ok := se.Detail.(map[string]any); ok && m["error"] == "command_unavailable" {
 				m["new_backend"] = string(req.NewBackend)
 			}
@@ -659,7 +660,7 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
 	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
 
-	result, serr := svc.Spawn(SpawnConfig{
+	result, serr := svc.Spawn(service.SpawnConfig{
 		Path:    resolvedPath,
 		Circle:  spawnCircle,
 		Backend: req.NewBackend,
@@ -747,7 +748,7 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 		svc(h).Ownership().ValidateForPeer(peerCopy).OK
 	if !paneVerified {
 		if ev := svc(h).Tmux().ProbePane(*peerCopy.PaneID); ev != nil &&
-			peerCopy.Path != "" && NormPath(ev.CurrentPath) == NormPath(peerCopy.Path) {
+			peerCopy.Path != "" && service.NormPath(ev.CurrentPath) == service.NormPath(peerCopy.Path) {
 			paneVerified = true
 		}
 	}
@@ -787,7 +788,7 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 }
 
 // svc is a tiny accessor to keep the rehook handler readable.
-func svc(h *Hub) *SpawnService { return h.spawn.svc }
+func svc(h *Hub) *service.SpawnService { return h.spawn.svc }
 
 // ---------------------------------------------------------------------------
 // Shared resolution + destructive-proof helpers.
@@ -919,7 +920,7 @@ func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 	// owning peer_id into ws-hook-<pane>.meta.json; a match proves this peer really
 	// occupies the live pane (not merely shares its path). Parity with
 	// spawn.py destructive proof mode 3. Path match alone is still NOT proof.
-	if meta := ReadPaneRuntimeMetadata(*p.PaneID); meta != nil {
+	if meta := service.ReadPaneRuntimeMetadata(*p.PaneID); meta != nil {
 		if mpid, _ := meta["peer_id"].(string); mpid != "" {
 			if mpid == string(p.PeerID) {
 				return destructiveProof{ok: true, paneID: *p.PaneID, tmuxSession: ev.TmuxSession,
@@ -960,7 +961,7 @@ func (h *Hub) paneControlErrorDetail(p *proto.Peer, proof destructiveProof) map[
 // failure surfaces in_flight_asks; a concurrent-quiesce failure uses the supplied
 // inProgress error/hint. Releases nothing (the caller never acquired the barrier).
 func (h *Hub) writeQuiesceError(w http.ResponseWriter, qerr error, ctx context.Context, id proto.PeerID, inProgressErr, inProgressHint string) {
-	if qerr == ErrQuiesceHasOpen {
+	if qerr == service.ErrQuiesceHasOpen {
 		open, _ := h.spawn.asks.PendingForPeer(ctx, id, -1, "both")
 		cids := make([]string, 0, len(open))
 		for _, a := range open {

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 )
 
 // askFakeRegistry satisfies BOTH accessRegistry (for PeerDelivery) and
@@ -40,10 +41,10 @@ func (r *askFakeRegistry) GetPeerByName(name string, circle *string) (*proto.Pee
 // newAskTestHub builds a hub with the ask-lifecycle deps wired over fakes, plus
 // the httptest server serving its mux. The transport's ackFrame drives the WS
 // delivery result.
-func newAskTestHub(t *testing.T, reg *askFakeRegistry, f *fakeTransport) (*httptest.Server, *AskTracker) {
+func newAskTestHub(t *testing.T, reg *askFakeRegistry, f *fakeTransport) (*httptest.Server, *service.AskTracker) {
 	t.Helper()
-	asks := NewAskTracker(0)
-	delivery := NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil)
+	asks := service.NewAskTracker(0)
+	delivery := service.NewPeerDelivery(reg, newRouterWithFake(f), f, asks, nil)
 	h := &Hub{authToken: ""}
 	h.WithAskLifecycle(asks, delivery, reg)
 
@@ -125,7 +126,7 @@ func TestPostAckBareClosesIdempotently(t *testing.T) {
 	f := &fakeTransport{ackFrame: map[string]any{"status": "injected"}, ackDelay: 0}
 	srv, asks := newAskTestHub(t, reg, f)
 
-	cid, err := asks.Register(context.Background(), RegisterAskParams{
+	cid, err := asks.Register(context.Background(), service.RegisterAskParams{
 		FromPeerID: "repow-default-aaaa", FromPeerName: "alpha",
 		ToPeerID: target.PeerID, ToPeerName: target.DisplayName, Text: "q",
 	})
@@ -204,7 +205,7 @@ func TestAskWaitRejectsNonAsker(t *testing.T) {
 	f := &fakeTransport{}
 	srv, asks := newAskTestHub(t, reg, f)
 
-	cid, _ := asks.Register(context.Background(), RegisterAskParams{
+	cid, _ := asks.Register(context.Background(), service.RegisterAskParams{
 		FromPeerID: "repow-default-aaaa", FromPeerName: "alpha",
 		ToPeerID: target.PeerID, ToPeerName: target.DisplayName, Text: "q",
 	})

@@ -1,4 +1,4 @@
-package hub
+package service
 
 // work_wiring.go holds the compile-time assertions that the concrete types main
 // injects satisfy the narrow seams this area declares. If a sibling area changes

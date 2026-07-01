@@ -6,8 +6,8 @@ package hub
 // dispatches the {work_id} subpaths off the "/work/" and "/jobs/" subtree
 // handlers. create_work merges the execution request, resolves assigned_peer_id
 // via ResolvePeerStrict (404/409), routes cron → calendar else work_store, then
-// JobRunner.Wake(). Terminal update_state/cancel release the executor via
-// SessionControl. Wire shapes match the Python responses verbatim — clients read
+// service.JobRunner.Wake(). Terminal update_state/cancel release the executor via
+// service.SessionControl. Wire shapes match the Python responses verbatim — clients read
 // these keys.
 
 import (
@@ -15,9 +15,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -34,15 +36,15 @@ var _ workRoutesRegistry = (*peer.Registry)(nil)
 // workRoutes bundles the work-route deps, wired onto the Hub via WithWork.
 type workRoutes struct {
 	store   *state.Store
-	runner  *JobRunner
-	control *SessionControl
+	runner  *service.JobRunner
+	control *service.SessionControl
 	reg     workRoutesRegistry
 }
 
 // WithWork attaches the work/jobs route group. runner drives dispatch + Wake;
 // control releases executors on terminal transitions; reg canonicalizes assigned
 // peers. nil store → the routes 503. Returns the hub for chaining; call before Routes.
-func (h *Hub) WithWork(runner *JobRunner, store *state.Store) *Hub {
+func (h *Hub) WithWork(runner *service.JobRunner, store *state.Store) *Hub {
 	h.work = &workRoutes{store: store, runner: runner}
 	if runner != nil {
 		h.work.control = runner.Control()
@@ -171,12 +173,12 @@ func (h *Hub) handleCreateWork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Cron != nil {
-		norm, err := ValidateCron(*req.Cron)
+		norm, err := service.ValidateCron(*req.Cron)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		next, err := NextFireAfter(norm, nowUTCRunner())
+		next, err := service.NextFireAfter(norm, time.Now().UTC())
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -824,4 +826,41 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// mapAtAny, anySlice, cloneAny, and strOrEmpty are duplicated from
+// service/session_control.go (which owns the canonical definitions) because
+// this route file is on the hub side of the hub/service split — not worth an
+// exported seam for four generic map helpers.
+
+func mapAtAny(m map[string]any, key string) map[string]any {
+	if m == nil {
+		return map[string]any{}
+	}
+	if v, ok := m[key].(map[string]any); ok {
+		return v
+	}
+	return map[string]any{}
+}
+
+func anySlice(v any) []any {
+	if a, ok := v.([]any); ok {
+		return a
+	}
+	return nil
+}
+
+func cloneAny(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func strOrEmpty(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }

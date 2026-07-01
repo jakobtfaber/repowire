@@ -9,7 +9,7 @@ package hub
 // Wire shapes match the Python daemon field-for-field (CLI/MCP/bot clients
 // depend on them). Create requires exactly one of fire_at|cron (400 otherwise):
 // fire_at is parsed as ISO-8601 (naive → UTC); the cron path computes the next
-// fire externally (NextFireAfter) then hands the resolved time to the store. Bad
+// fire externally (service.NextFireAfter) then hands the resolved time to the store. Bad
 // cron / unknown kind → 400. After any mutation the scheduler is woken (the
 // notify_changed analogue) so its deadline-driven loop recomputes — never a poll.
 
@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -138,12 +139,12 @@ func (sr *ScheduleRoutes) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if req.Cron != nil {
 		// Validate + compute the first fire externally, mirroring create_cron →
 		// next_fire_after. Store the normalized cron so reschedule reparses cleanly.
-		norm, err := ValidateCron(*req.Cron)
+		norm, err := service.ValidateCron(*req.Cron)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		next, err := NextFireAfter(norm, time.Now().UTC())
+		next, err := service.NextFireAfter(norm, time.Now().UTC())
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

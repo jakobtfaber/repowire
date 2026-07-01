@@ -1,4 +1,4 @@
-package hub
+package service
 
 // job_runner.go — durable autonomous job dispatch. Port of
 // repowire/daemon/job_runner.py:JobRunner. NOT a polling timer: a single

@@ -1,4 +1,4 @@
-package hub
+package service
 
 // pane_ownership.go is the destructive-action proof layer for spawn/kill/restart,
 // ported from repowire/spawn_ownership.py (durable JSON proof + in-memory

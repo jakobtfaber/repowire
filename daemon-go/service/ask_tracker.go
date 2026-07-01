@@ -1,4 +1,4 @@
-package hub
+package service
 
 // AskTracker is the in-memory source of truth for open ask threads, ported from
 // repowire/daemon/ask_tracker.py. It is in-memory only (vanishes on restart like

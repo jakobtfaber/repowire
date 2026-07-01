@@ -1,4 +1,4 @@
-package hub
+package service
 
 // session_control.go — executor acquisition for durable jobs. Port of
 // repowire/daemon/session_control.py:SessionControlService. The acquisition

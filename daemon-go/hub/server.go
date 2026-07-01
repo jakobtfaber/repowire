@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/repowire/repowire/daemon-go/peer"
+	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -18,21 +19,21 @@ const schemaVersion = 12
 // transport offline cascades query cancellation.
 type Hub struct {
 	reg       *peer.Registry
-	transport *WebSocketTransport
-	tracker   *QueryTracker
-	router    *MessageRouter
+	transport *service.WebSocketTransport
+	tracker   *service.QueryTracker
+	router    *service.MessageRouter
 	authToken string
 
 	// Read-path deps for the HTTP route groups. Optional and nil-safe: the
 	// peer-read handlers degrade gracefully (no inbound-health probe) when these
 	// are unset, mirroring Python's getattr(state, ..., None) pattern. Wired via
-	// WithReadDeps from main once the AskTracker / state.Store exist.
-	asks  *AskTracker
+	// WithReadDeps from main once the service.AskTracker / state.Store exist.
+	asks  *service.AskTracker
 	store *state.Store
 
 	// messaging is the optional /notify + /broadcast route group, wired via
-	// WithMessaging when the daemon has built a PeerDelivery. nil → those
-	// endpoints are not registered (the spike daemon has no PeerDelivery yet).
+	// WithMessaging when the daemon has built a service.PeerDelivery. nil → those
+	// endpoints are not registered (the spike daemon has no service.PeerDelivery yet).
 	messaging *MessagingRoutes
 
 	// lifecycle is the optional tmux-lifecycle hook route group (pane/session/
@@ -40,7 +41,7 @@ type Hub struct {
 	// endpoints are not registered. Built in main with the tmux PaneLister.
 	lifecycle *LifecycleHandler
 
-	// ask holds the ask-lifecycle route dependencies (AskTracker + PeerDelivery
+	// ask holds the ask-lifecycle route dependencies (service.AskTracker + service.PeerDelivery
 	// + the narrow registry seam), wired via WithAskLifecycle. The
 	// /ask·/ack·/answer·/query·/asks/* handlers 503 while unwired.
 	ask *askLifecycleDeps
@@ -77,7 +78,7 @@ type Hub struct {
 	work *workRoutes
 
 	// spawn holds the spawn-kill-restart route dependencies (SpawnService + the
-	// narrow spawnRegistry seam + AskTracker quiesce barrier), wired via WithSpawn.
+	// narrow spawnRegistry seam + service.AskTracker quiesce barrier), wired via WithSpawn.
 	// nil → the /spawn·/kill-peer·/peers/{name}/{restart,switch-backend,rehook}
 	// handlers 503. Built in main with the real TmuxController + PaneOwnership.
 	spawn *spawnDeps
@@ -116,19 +117,19 @@ func (h *Hub) WithLifecycle(lh *LifecycleHandler) *Hub {
 }
 
 // WithMessaging attaches the messaging (notify/broadcast) route group built over
-// the supplied PeerDelivery and optional delivery-trace store. The registry is
+// the supplied service.PeerDelivery and optional delivery-trace store. The registry is
 // the LazyRepair seam; auth reuses the hub's requireAuth wrapper. Returns the
 // hub for chaining; call before Routes.
-func (h *Hub) WithMessaging(delivery *PeerDelivery, traces deliveryTracer) *Hub {
+func (h *Hub) WithMessaging(delivery *service.PeerDelivery, traces deliveryTracer) *Hub {
 	h.messaging = NewMessagingRoutes(delivery, h.reg, traces)
 	return h
 }
 
-// WithReadDeps injects the AskTracker and state.Store the HTTP read routes use
+// WithReadDeps injects the service.AskTracker and state.Store the HTTP read routes use
 // to derive per-peer inbound health (pending-ask counts, last injection
 // success/failure). Returns the hub for chaining. nil-safe: handlers skip the
 // corresponding health fields when a dep is absent.
-func (h *Hub) WithReadDeps(asks *AskTracker, store *state.Store) *Hub {
+func (h *Hub) WithReadDeps(asks *service.AskTracker, store *state.Store) *Hub {
 	h.asks = asks
 	h.store = store
 	return h
@@ -140,7 +141,7 @@ func (h *Hub) WithReadDeps(asks *AskTracker, store *state.Store) *Hub {
 // the tracker's shape. Use newHubWithTransport when the registry was built with
 // the same transport as its liveness seam (the real wiring order in main).
 func NewHub(reg *peer.Registry, authToken string) *Hub {
-	return NewHubWithTransport(reg, NewWebSocketTransport(), authToken)
+	return NewHubWithTransport(reg, service.NewWebSocketTransport(), authToken)
 }
 
 // NewHubWithTransport wraps a registry around a pre-built transport so callers
@@ -148,13 +149,13 @@ func NewHub(reg *peer.Registry, authToken string) *Hub {
 // registry needs a peer.Transport at construction, and the hub needs that
 // registry — building the transport up front breaks the cycle). This is the
 // real wiring order in main.
-func NewHubWithTransport(reg *peer.Registry, transport *WebSocketTransport, authToken string) *Hub {
-	tracker := NewQueryTracker()
+func NewHubWithTransport(reg *peer.Registry, transport *service.WebSocketTransport, authToken string) *Hub {
+	tracker := service.NewQueryTracker()
 	h := &Hub{
 		reg:       reg,
 		transport: transport,
 		tracker:   tracker,
-		router:    NewMessageRouter(transport, tracker, reg),
+		router:    service.NewMessageRouter(transport, tracker, reg),
 		authToken: authToken,
 	}
 	reg.OnOffline = tracker.CancelQueriesToPeer
@@ -163,15 +164,15 @@ func NewHubWithTransport(reg *peer.Registry, transport *WebSocketTransport, auth
 
 // Transport exposes the live transport so the registry can be constructed with
 // it (peer.Transport) before the hub wraps it. Used by main wiring.
-func (h *Hub) Transport() *WebSocketTransport { return h.transport }
+func (h *Hub) Transport() *service.WebSocketTransport { return h.transport }
 
 // Router exposes the message router for HTTP routes built outside this package.
-func (h *Hub) Router() *MessageRouter { return h.router }
+func (h *Hub) Router() *service.MessageRouter { return h.router }
 
 // Tracker exposes the in-memory query tracker so main can wire it into the
 // session-routes group (the /response Stop-hook resolver shares the SAME
 // tracker the message router blocks on).
-func (h *Hub) Tracker() *QueryTracker { return h.tracker }
+func (h *Hub) Tracker() *service.QueryTracker { return h.tracker }
 
 // Routes registers the hub's HTTP handlers on the mux.
 func (h *Hub) Routes(mux *http.ServeMux) {

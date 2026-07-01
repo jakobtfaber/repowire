@@ -1,4 +1,4 @@
-package hub
+package service
 
 // spawn_service.go owns tmux exec + ownership recording for the spawn area,
 // ported from repowire.spawn.spawn_peer + repowire.daemon.spawn_service.SpawnService

@@ -3,8 +3,10 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,8 @@ import (
 
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 // --- minimal fakes for a real Registry ---
@@ -38,7 +42,7 @@ func newTestHub(t *testing.T) *Hub {
 	// Build the transport first so the registry's liveness seam is the same
 	// transport the hub serves on (ghost eviction sees the live sockets), then
 	// wrap that registry+transport in the hub.
-	transport := NewWebSocketTransport()
+	transport := service.NewWebSocketTransport()
 	reg, err := peer.NewRegistry(context.Background(), memStore{}, deadLive{}, transport)
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
@@ -130,7 +134,7 @@ func TestRouterRoutesByPeerID(t *testing.T) {
 // handler holding an old socket must not evict a newer connection stored under
 // the same peer_id.
 func TestDisconnectIdentityChecked(t *testing.T) {
-	tr := NewWebSocketTransport()
+	tr := service.NewWebSocketTransport()
 	id := proto.PeerID("repow-default-aaaa1111")
 
 	// Two distinct sentinel *websocket.Conn values; we never read/write them, only
@@ -140,8 +144,8 @@ func TestDisconnectIdentityChecked(t *testing.T) {
 	newWS, closeNew := dummyConn(t)
 	defer closeNew()
 
-	tr.Connect(context.Background(), &ConnectionInfo{SessionID: id, WS: oldWS})
-	tr.Connect(context.Background(), &ConnectionInfo{SessionID: id, WS: newWS})
+	tr.Connect(context.Background(), &service.ConnectionInfo{SessionID: id, WS: oldWS})
+	tr.Connect(context.Background(), &service.ConnectionInfo{SessionID: id, WS: newWS})
 
 	// The stale handler (oldWS) tears down: must NOT evict newWS.
 	if tr.Disconnect(context.Background(), id, oldWS) {
@@ -190,8 +194,13 @@ func dummyConn(t *testing.T) (*websocket.Conn, func()) {
 	}
 }
 
+// deliveryAckTimeout duplicates service/transport.go's unexported constant of
+// the same name (the real 750ms best-effort delivery-ack window) — not worth
+// exporting a service-internal timing constant just for this test file to read.
+const deliveryAckTimeout = 750 * time.Millisecond
+
 // TestSendAskRealSocketAckWithin750ms exercises the GENUINE delivery-ack window
-// end-to-end: the router sends an ask over a real WebSocketTransport, the peer
+// end-to-end: the router sends an ask over a real service.WebSocketTransport, the peer
 // reads the frame and replies with a delivery_ack inside the 750ms window, and
 // the hub's dispatch resolves it so SendAsk returns the receipt. This proves the
 // real SendAndWaitDeliveryAck path, not just the fake's branching.
@@ -309,3 +318,171 @@ func waitConnected(t *testing.T, h *Hub, id proto.PeerID) {
 	}
 	t.Fatalf("peer %s never connected", id)
 }
+
+// ----------------------------------------------------------------------------
+// Shared fakes for the ask-lifecycle / messaging route tests (routes_ask_
+// lifecycle_test.go, routes_messaging_test.go). Duplicated from service/
+// delivery_test.go's and service/router_test.go's fakes of the same name — the
+// two packages no longer share one straddling fixture now that hub and
+// service are split; a fake passed as an interface value doesn't need to name
+// the (unexported, service-side) interface it satisfies structurally.
+// ----------------------------------------------------------------------------
+
+// fakeRegistry satisfies the accessRegistry shape service.NewPeerDelivery
+// needs. CheckAccess resolves from/to out of the peers map by display_name or
+// peer_id; an unknown target returns checkErr.
+type fakeRegistry struct {
+	mu         sync.Mutex
+	peers      []*proto.Peer
+	checkErr   error // forced CheckAccess error (unknown/ambiguous/forbidden)
+	events     []recordedEvent
+	offlined   []proto.PeerID
+	offlineErr error
+}
+
+type recordedEvent struct {
+	typ     string
+	payload map[string]any
+}
+
+func (r *fakeRegistry) lookup(name string) *proto.Peer {
+	for _, p := range r.peers {
+		if string(p.DisplayName) == name || string(p.PeerID) == name {
+			return p
+		}
+	}
+	return nil
+}
+
+func (r *fakeRegistry) CheckAccess(ctx context.Context, fromPeer, toPeer string, bypassCircle bool, circle *string) (*proto.Peer, *proto.Peer, error) {
+	if r.checkErr != nil {
+		return nil, nil, r.checkErr
+	}
+	target := r.lookup(toPeer)
+	if target == nil {
+		return nil, nil, errors.New("Unknown peer: " + toPeer)
+	}
+	return r.lookup(fromPeer), target, nil
+}
+
+func (r *fakeRegistry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {
+	if p := r.lookup(string(id)); p != nil {
+		return p, true
+	}
+	return nil, false
+}
+
+func (r *fakeRegistry) GetAllPeers() []*proto.Peer { return r.peers }
+
+func (r *fakeRegistry) AddEvent(ctx context.Context, typ string, payload map[string]any) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, recordedEvent{typ: typ, payload: payload})
+	return "evt-" + typ
+}
+
+func (r *fakeRegistry) MarkOffline(ctx context.Context, id proto.PeerID, terminal bool) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.offlined = append(r.offlined, id)
+	return 0, r.offlineErr
+}
+
+// fakeTransport is a hand-driven service.Transport fake so route tests can
+// control the delivery_ack timing/shape without standing up a real socket. It
+// records the last frame and the target it was sent to.
+type fakeTransport struct {
+	sessions  []proto.PeerID
+	paneIDs   map[proto.PeerID]string
+	connected map[proto.PeerID]bool
+
+	// ack governs SendAndWaitDeliveryAck: if ackDelay > timeout the call returns
+	// (nil,nil) (the best-effort timeout path); otherwise it returns ackFrame.
+	ackFrame map[string]any
+	ackDelay time.Duration
+	ackErr   error
+
+	sendErr error
+
+	mu          sync.Mutex
+	lastTarget  proto.PeerID
+	lastFrame   any
+	sentTargets []proto.PeerID
+}
+
+func (f *fakeTransport) Send(ctx context.Context, id proto.PeerID, v any) error {
+	f.mu.Lock()
+	f.lastTarget = id
+	f.lastFrame = v
+	f.sentTargets = append(f.sentTargets, id)
+	f.mu.Unlock()
+	return f.sendErr
+}
+
+func (f *fakeTransport) SendAndWaitDeliveryAck(ctx context.Context, id proto.PeerID, v any, timeout time.Duration) (map[string]any, error) {
+	f.mu.Lock()
+	f.lastTarget = id
+	f.lastFrame = v
+	f.mu.Unlock()
+	if f.ackErr != nil {
+		return nil, f.ackErr
+	}
+	if f.ackDelay >= timeout {
+		return nil, nil
+	}
+	return f.ackFrame, nil
+}
+
+func (f *fakeTransport) IsConnected(id proto.PeerID) bool { return f.connected[id] }
+
+func (f *fakeTransport) GetAllSessions() []proto.PeerID { return f.sessions }
+
+func (f *fakeTransport) ConnectionPaneID(id proto.PeerID) (string, bool) {
+	p, ok := f.paneIDs[id]
+	return p, ok
+}
+
+func (f *fakeTransport) Ping(ctx context.Context, id proto.PeerID, timeout time.Duration) (map[string]any, error) {
+	return nil, nil
+}
+
+func (f *fakeTransport) ACPRoute(target *proto.Peer) (*service.ACPRouteDecision, bool) {
+	return nil, false
+}
+
+func newRouterWithFake(f *fakeTransport) *service.MessageRouter {
+	// reg is unused by the send paths under test; nil is fine for unit coverage.
+	return service.NewMessageRouter(f, service.NewQueryTracker(), nil)
+}
+
+// fakeQueue satisfies the queuedDeliveryStore shape service.NewPeerDelivery
+// needs. enqueueNil forces the "queue disabled" (cap/ttl <= 0) return so the
+// fail-loud path is exercised.
+type fakeQueue struct {
+	enqueued   []state.QueuedDelivery
+	enqueueNil bool
+	enqueueErr error
+}
+
+func (q *fakeQueue) EnqueueDelivery(ctx context.Context, d state.QueuedDelivery, ttlSeconds float64, maxPerPeer int, now time.Time) (*state.QueuedDelivery, error) {
+	if q.enqueueErr != nil {
+		return nil, q.enqueueErr
+	}
+	if q.enqueueNil {
+		return nil, nil
+	}
+	out := d
+	out.DeliveryID = "qd-test"
+	q.enqueued = append(q.enqueued, out)
+	return &out, nil
+}
+
+// peerWith builds a minimal test peer. Shared across the route test files.
+func peerWith(id, name, circle string, status proto.PeerStatus) *proto.Peer {
+	return &proto.Peer{PeerID: proto.PeerID(id), DisplayName: proto.DisplayName(name), Circle: circle, Status: status, Role: proto.RoleAgent}
+}
+
+// strp is the shared string-pointer test helper. Duplicated from
+// service/ask_tracker_test.go — the two packages no longer share one
+// straddling helper now that hub and service are split.
+func strp(s string) *string { return &s }

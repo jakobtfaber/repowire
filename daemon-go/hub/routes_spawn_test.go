@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -74,34 +76,34 @@ func (r *fakeSpawnRegistry) UpdateTurnState(_ context.Context, id proto.PeerID, 
 
 // fakeTmux records kill calls and returns a scripted Spawn result / pane evidence.
 type fakeTmux struct {
-	spawnResult SpawnResult
+	spawnResult service.SpawnResult
 	spawnErr    error
 	killed      []string
 	killOK      bool
-	evidence    map[string]*TmuxPaneEvidence
+	evidence    map[string]*service.TmuxPaneEvidence
 }
 
-func (f *fakeTmux) Spawn(SpawnConfig) (SpawnResult, error) { return f.spawnResult, f.spawnErr }
+func (f *fakeTmux) Spawn(service.SpawnConfig) (service.SpawnResult, error) { return f.spawnResult, f.spawnErr }
 func (f *fakeTmux) KillPane(paneID string) bool {
 	f.killed = append(f.killed, paneID)
 	return f.killOK
 }
-func (f *fakeTmux) ProbePane(paneID string) *TmuxPaneEvidence { return f.evidence[paneID] }
+func (f *fakeTmux) ProbePane(paneID string) *service.TmuxPaneEvidence { return f.evidence[paneID] }
 
 // newSpawnTestHub wires the spawn deps over fakes + an httptest server. The
-// SpawnService uses an in-memory PaneOwnership (REPOWIRE_CONFIG_DIR sandboxed to a
+// service.SpawnService uses an in-memory PaneOwnership (REPOWIRE_CONFIG_DIR sandboxed to a
 // temp dir so the on-disk JSON never touches the real ~/.repowire).
-func newSpawnTestHub(t *testing.T, reg *fakeSpawnRegistry, tmux *fakeTmux) (*httptest.Server, *SpawnService) {
+func newSpawnTestHub(t *testing.T, reg *fakeSpawnRegistry, tmux *fakeTmux) (*httptest.Server, *service.SpawnService) {
 	t.Helper()
 	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
 	t.Setenv("REPOWIRE_CACHE_DIR", t.TempDir())
 
-	own := NewFileOwnership("test-host", tmux.ProbePane)
-	svc := NewSpawnService(tmux, own,
+	own := service.NewFileOwnership("test-host", tmux.ProbePane)
+	svc := service.NewSpawnService(tmux, own,
 		map[proto.AgentType]string{proto.AgentClaudeCode: "claude", proto.AgentCodex: "codex"},
 		[]string{t.TempDir()}, // an allowed root; spawn-enabled
 	)
-	asks := NewAskTracker(0)
+	asks := service.NewAskTracker(0)
 	h := &Hub{authToken: ""}
 	h.WithSpawn(svc, reg, asks, "test-host")
 
@@ -123,7 +125,7 @@ func postSpawnJSON(t *testing.T, srv *httptest.Server, path string, body any) *h
 	return resp
 }
 
-// strp is the shared test helper (ask_tracker_test.go).
+// strp is the shared test helper (hub_test.go).
 
 // ---------------------------------------------------------------------------
 // Primary path: POST /kill-peer destructive-proof truth table.
@@ -267,7 +269,7 @@ func TestSpawnConfigReportsEnabled(t *testing.T) {
 func TestSpawnClaudeCodeIsPendingHook(t *testing.T) {
 	reg := &fakeSpawnRegistry{}
 	pane := "%7"
-	tmux := &fakeTmux{spawnResult: SpawnResult{
+	tmux := &fakeTmux{spawnResult: service.SpawnResult{
 		DisplayName: "proj-claude-code", TmuxSession: "default:proj", PaneID: pane,
 	}}
 	srv, svc := newSpawnTestHub(t, reg, tmux)
@@ -311,15 +313,18 @@ func TestSpawnRejectsDoubleSelector(t *testing.T) {
 }
 
 // writeSpawnTestPaneMeta writes a ws-hook meta.json for a pane directly via the
-// exported WSHookMetaPath (this file does not share pane_runtime_test.go's
+// exported service.WSHookMetaPath (this file does not share pane_runtime_test.go's
 // writePaneMeta — that helper lives with the service-side pane-runtime tests).
 func writeSpawnTestPaneMeta(t *testing.T, paneID string, meta map[string]any) {
 	t.Helper()
-	if err := os.MkdirAll(paneLogsDir(), 0o755); err != nil {
+	metaPath := service.WSHookMetaPath(paneID)
+	// paneLogsDir is unexported in service; derive the directory from the
+	// exported meta path instead of needing a second seam.
+	if err := os.MkdirAll(filepath.Dir(metaPath), 0o755); err != nil {
 		t.Fatalf("mkdir pane logs: %v", err)
 	}
 	raw, _ := json.Marshal(meta)
-	if err := os.WriteFile(WSHookMetaPath(paneID), raw, 0o644); err != nil {
+	if err := os.WriteFile(metaPath, raw, 0o644); err != nil {
 		t.Fatalf("write meta: %v", err)
 	}
 }
@@ -332,12 +337,12 @@ func TestDestructivePaneProof_VerifiedByPaneMetadata(t *testing.T) {
 	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
 
 	pane := "%77"
-	tmux := &fakeTmux{killOK: true, evidence: map[string]*TmuxPaneEvidence{pane: {TmuxSession: "sess"}}}
-	own := NewFileOwnership("test-host", tmux.ProbePane)
-	svc := NewSpawnService(tmux, own,
+	tmux := &fakeTmux{killOK: true, evidence: map[string]*service.TmuxPaneEvidence{pane: {TmuxSession: "sess"}}}
+	own := service.NewFileOwnership("test-host", tmux.ProbePane)
+	svc := service.NewSpawnService(tmux, own,
 		map[proto.AgentType]string{proto.AgentClaudeCode: "claude"}, []string{t.TempDir()})
 	h := &Hub{}
-	h.WithSpawn(svc, nil, NewAskTracker(0), "test-host")
+	h.WithSpawn(svc, nil, service.NewAskTracker(0), "test-host")
 
 	id := proto.PeerID("repow-ops-abc123")
 	p := &proto.Peer{PeerID: id, PaneID: &pane}

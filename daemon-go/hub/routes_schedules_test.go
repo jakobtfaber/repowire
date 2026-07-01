@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -12,9 +13,11 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-// fakeScheduleStore is an in-memory schedulerStore + scheduleStore for the
-// route and firing-loop tests (no SQLite). It is concurrency-safe so the loop
-// goroutine and the test goroutine can both touch it.
+// fakeScheduleStore is an in-memory scheduleStore for the route tests (no
+// SQLite). It is concurrency-safe so route handlers touching it concurrently
+// are safe. service/scheduler_test.go keeps its own copy (plus the
+// schedulerStore-only methods) for the firing-loop tests — the two packages
+// no longer share one straddling fake now that hub and service are split.
 type fakeScheduleStore struct {
 	mu      sync.Mutex
 	byID    map[string]*state.Schedule
@@ -30,7 +33,10 @@ func (f *fakeScheduleStore) CreateSchedule(_ context.Context, fromPeer, toPeer, 
 		kind = "notify"
 	}
 	if kind != "ask" && kind != "notify" {
-		return nil, &CronExpressionError{msg: "kind must be one of [ask notify]; got " + kind}
+		// A plain error suffices here (matches only on message, never type-asserted
+		// by the route handler); service.CronExpressionError's msg field is
+		// unexported and unreachable from this package.
+		return nil, errors.New("kind must be one of [ask notify]; got " + kind)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -72,35 +78,6 @@ func (f *fakeScheduleStore) DeleteSchedule(_ context.Context, id string) (*state
 	}
 	delete(f.byID, id)
 	return s, nil
-}
-
-func (f *fakeScheduleStore) GetSchedule(_ context.Context, id string) (*state.Schedule, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.byID[id], nil
-}
-
-func (f *fakeScheduleStore) NextDueSchedule(_ context.Context) (*state.Schedule, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var best *state.Schedule
-	for _, s := range f.byID {
-		if best == nil || s.FireAt < best.FireAt {
-			best = s
-		}
-	}
-	return best, nil
-}
-
-func (f *fakeScheduleStore) RescheduleNext(_ context.Context, id string, next time.Time) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	s, ok := f.byID[id]
-	if !ok || s.Cron == nil {
-		return false, nil
-	}
-	s.FireAt = next.UTC().Format(time.RFC3339Nano)
-	return true, nil
 }
 
 func (f *fakeScheduleStore) count() int {

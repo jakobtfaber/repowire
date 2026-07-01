@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -60,7 +61,7 @@ type sessionRegistry interface {
 // getattr(state, "queued_delivery_store", None) is None early-return).
 type sessionDeps struct {
 	reg     sessionRegistry
-	tracker *QueryTracker
+	tracker *service.QueryTracker
 	store   queuedDrainStore
 }
 
@@ -73,7 +74,7 @@ type queuedDrainStore interface {
 // WithSessionRoutes wires the session route group onto the hub. The concrete
 // *peer.Registry satisfies sessionRegistry once the by-name updaters land; until
 // then a test/fake registry is passed. store may be nil. Returns the receiver.
-func (h *Hub) WithSessionRoutes(reg sessionRegistry, tracker *QueryTracker, store queuedDrainStore) *Hub {
+func (h *Hub) WithSessionRoutes(reg sessionRegistry, tracker *service.QueryTracker, store queuedDrainStore) *Hub {
 	h.session = &sessionDeps{reg: reg, tracker: tracker, store: store}
 	return h
 }

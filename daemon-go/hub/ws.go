@@ -16,6 +16,7 @@ import (
 
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -28,6 +29,11 @@ const maxNameLen = 64
 // flushWriteTimeout bounds each queued-delivery replay write on the connect
 // path: a wedged client must not park the connect handshake forever.
 const flushWriteTimeout = 10 * time.Second
+
+// defaultQueueMax duplicates service/delivery.go's defaultQueueMax (the queued-
+// delivery producer's per-peer cap): the connect-path flush lists at most this
+// many rows. Not worth an exported seam for one shared magic number.
+const defaultQueueMax = 50
 
 func isValidIdentifier(v string) bool {
 	return v != "" && len(v) <= maxNameLen && validNameRe.MatchString(v)
@@ -203,7 +209,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		connPane = p.PaneID
 	}
 
-	h.transport.Connect(ctx, &ConnectionInfo{
+	h.transport.Connect(ctx, &service.ConnectionInfo{
 		SessionID:   peerID,
 		WS:          conn,
 		PaneID:      connPane,
