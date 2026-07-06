@@ -593,6 +593,36 @@ func registerDashboardRoutes(mux *http.ServeMux, webOut string) {
 			http.NotFound(w, r)
 			return
 		}
-		http.FileServer(http.Dir(webOut)).ServeHTTP(w, r)
+		serveExport(w, r, webOut)
 	})
+}
+
+// serveExport serves the Next.js `output: export` tree, mirroring the hosted
+// nginx config (web-image/nginx.conf): `try_files $uri $uri.html
+// $uri/index.html =404` with `error_page 404 /404.html`. A bare
+// http.FileServer 404s (or 301s into a dead dir) on extensionless routes like
+// /docs/concepts, whose export file is docs/concepts.html — so resolve the
+// .html / index.html variants before falling back to the export's 404 page.
+func serveExport(w http.ResponseWriter, r *http.Request, webOut string) {
+	// Leading-slash Clean collapses any ".." so the join cannot escape webOut.
+	rel := filepath.Clean("/" + strings.TrimPrefix(r.URL.Path, "/"))
+	for _, cand := range []string{
+		filepath.Join(webOut, rel),
+		filepath.Join(webOut, rel+".html"),
+		filepath.Join(webOut, rel, "index.html"),
+	} {
+		if stat, err := os.Stat(cand); err == nil && !stat.IsDir() {
+			http.ServeFile(w, r, cand)
+			return
+		}
+	}
+	// try_files =404 → error_page 404 /404.html, served WITH a 404 status
+	// (http.ServeFile would force 200, so write the body ourselves).
+	if body, err := os.ReadFile(filepath.Join(webOut, "404.html")); err == nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write(body)
+		return
+	}
+	http.NotFound(w, r)
 }

@@ -15,6 +15,9 @@ func TestDashboardRoutesServeExport(t *testing.T) {
 	mustWrite(t, filepath.Join(webOut, "index.html"), "index")
 	mustWrite(t, filepath.Join(webOut, "favicon.ico"), "icon")
 	mustWrite(t, filepath.Join(webOut, "_next", "static", "app.js"), "next")
+	mustWrite(t, filepath.Join(webOut, "docs", "concepts.html"), "concepts-page")
+	mustWrite(t, filepath.Join(webOut, "settings", "index.html"), "settings-page")
+	mustWrite(t, filepath.Join(webOut, "404.html"), "not-found-page")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -27,6 +30,12 @@ func TestDashboardRoutesServeExport(t *testing.T) {
 	assertBody(t, mux, "/_next/static/app.js", http.StatusOK, "next")
 	assertBody(t, mux, "/favicon.ico", http.StatusOK, "icon")
 	assertBody(t, mux, "/health", http.StatusOK, "api")
+	// Next.js export routing: extensionless route → <route>.html, and
+	// <route>/ → <route>/index.html (mirrors nginx try_files).
+	assertBody(t, mux, "/docs/concepts", http.StatusOK, "concepts-page")
+	assertBody(t, mux, "/settings", http.StatusOK, "settings-page")
+	// Unknown route → 404.html served WITH a 404 status.
+	assertBody(t, mux, "/nope", http.StatusNotFound, "not-found-page")
 }
 
 func TestDashboardRoutesMissingBuildFallback(t *testing.T) {
