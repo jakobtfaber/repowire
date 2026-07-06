@@ -394,6 +394,24 @@ def _is_pane_safe(pane_id: str) -> bool | None:
     return cmd.lower() not in shell_commands
 
 
+async def _inject_to_pane(pane_id: str, text: str) -> tuple[str, str | None]:
+    """Deliver text into a pane and return a (status, detail) receipt.
+
+    This is the tmux-injection mechanism behind the ask/notify frame handlers,
+    separated from the frame parsing/logging so the handlers read as
+    parse → format → deliver → ack. Returns ``("injected", None)`` on success,
+    ``("failed", <detail>)`` if send-keys reports failure or raises. Never
+    raises — the caller decides how loudly to surface a failed receipt.
+    """
+    try:
+        if await asyncio.to_thread(_tmux_send_keys, pane_id, text):
+            return "injected", None
+        return "failed", f"Failed to send keys to pane {pane_id}"
+    except Exception as e:
+        logger.exception("tmux injection raised (pane=%s)", pane_id)
+        return "failed", str(e)
+
+
 async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
     """Handle incoming WebSocket message.
 
@@ -539,59 +557,38 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         # daemons may omit it — keep the legacy frame in that case.
         to_label = f" → @{to_peer}" if to_peer else ""
         injected_text = f"@{from_peer}{to_label} [ask #{correlation_id}]: {text}"
-        try:
-            if await asyncio.to_thread(_tmux_send_keys, pane_id, injected_text):
-                logger.info(
-                    f"Injected ask from {from_peer}: {correlation_id[:8]}",
-                )
-                await _send_delivery_ack("injected")
-            else:
-                error_msg = f"Failed to send keys to pane {pane_id}"
-                logger.error(
-                    "Inbound ask dropped: tmux send-keys failed "
-                    "(pane=%s from=%s to=%s correlation_id=%s)",
-                    pane_id,
-                    from_peer,
-                    to_peer,
-                    correlation_id,
-                )
-                await _send_delivery_ack("failed", error_msg)
-        except Exception as e:
-            logger.error(f"Failed to inject ask: {e}")
-            await _send_delivery_ack("failed", str(e))
+        status, detail = await _inject_to_pane(pane_id, injected_text)
+        if status == "injected":
+            logger.info(f"Injected ask from {from_peer}: {correlation_id[:8]}")
+        else:
+            logger.error(
+                "Inbound ask dropped: tmux send-keys failed "
+                "(pane=%s from=%s to=%s correlation_id=%s)",
+                pane_id,
+                from_peer,
+                to_peer,
+                correlation_id,
+            )
+        await _send_delivery_ack(status, detail)
 
     elif msg_type == "notify":
         # Plain FYI, no lifecycle.
-        try:
-            from_peer = data.get("from_peer", "unknown")
-            to_peer = data.get("to_peer", "")
-            text = data.get("text", "") + _format_attachment_lines(data.get("attachments"))
-            to_label = f" → @{to_peer}" if to_peer else ""
-            if await asyncio.to_thread(
-                _tmux_send_keys, pane_id, f"@{from_peer}{to_label}: {text}",
-            ):
-                logger.info(f"Injected notification from {from_peer}")
-                await _send_delivery_ack("injected")
-            else:
-                error_msg = f"Failed to send keys to pane {pane_id}"
-                logger.error(
-                    "Inbound notification dropped: tmux send-keys failed "
-                    "(pane=%s from=%s to=%s)",
-                    pane_id,
-                    from_peer,
-                    to_peer,
-                )
-                await _send_delivery_ack("failed", error_msg)
-        except Exception as e:
-            logger.exception(
-                "Inbound notification dropped: injection error "
-                "(pane=%s from=%s to=%s): %s",
+        from_peer = data.get("from_peer", "unknown")
+        to_peer = data.get("to_peer", "")
+        text = data.get("text", "") + _format_attachment_lines(data.get("attachments"))
+        to_label = f" → @{to_peer}" if to_peer else ""
+        status, detail = await _inject_to_pane(pane_id, f"@{from_peer}{to_label}: {text}")
+        if status == "injected":
+            logger.info(f"Injected notification from {from_peer}")
+        else:
+            logger.error(
+                "Inbound notification dropped: tmux send-keys failed "
+                "(pane=%s from=%s to=%s)",
                 pane_id,
-                data.get("from_peer", "unknown"),
-                data.get("to_peer", ""),
-                e,
+                from_peer,
+                to_peer,
             )
-            await _send_delivery_ack("failed", str(e))
+        await _send_delivery_ack(status, detail)
 
     elif msg_type == "broadcast":
         try:
