@@ -464,6 +464,7 @@ func main() {
 	// (13) Register HTTP/ws handlers.
 	mux := http.NewServeMux()
 	h.Routes(mux)
+	registerDashboardRoutes(mux, findWebOutputDir())
 
 	srv := &http.Server{Addr: *addr, Handler: mux}
 
@@ -519,4 +520,79 @@ func main() {
 		log.Printf("close state db: %v", err)
 	}
 	log.Printf("hub stopped")
+}
+
+const dashboardFallback = "Dashboard not found. Please run 'repowire build-ui'."
+
+func findWebOutputDir() string {
+	var candidates []string
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(cwd, "web", "out"),
+			filepath.Join(cwd, "..", "web", "out"),
+		)
+	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(dir, "web", "out"),
+			filepath.Join(dir, "..", "web", "out"),
+			filepath.Join(dir, "..", "..", "web", "out"),
+		)
+	}
+	for _, path := range filepath.SplitList(os.Getenv("PYTHONPATH")) {
+		if path != "" {
+			candidates = append(candidates, filepath.Join(path, "web", "out"))
+		}
+	}
+	for _, dir := range candidates {
+		if stat, err := os.Stat(filepath.Join(dir, "dashboard.html")); err == nil && !stat.IsDir() {
+			return filepath.Clean(dir)
+		}
+	}
+	return ""
+}
+
+func registerDashboardRoutes(mux *http.ServeMux, webOut string) {
+	if webOut != "" {
+		nextStatic := filepath.Join(webOut, "_next")
+		if stat, err := os.Stat(nextStatic); err == nil && stat.IsDir() {
+			mux.Handle("/_next/", http.StripPrefix("/_next/", http.FileServer(http.Dir(nextStatic))))
+		}
+	}
+
+	serveDashboard := func(w http.ResponseWriter, r *http.Request) {
+		if webOut != "" {
+			dashboardPath := filepath.Join(webOut, "dashboard.html")
+			if stat, err := os.Stat(dashboardPath); err == nil && !stat.IsDir() {
+				http.ServeFile(w, r, dashboardPath)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(dashboardFallback))
+	}
+
+	mux.HandleFunc("/dashboard", serveDashboard)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			if webOut != "" {
+				for _, name := range []string{"dashboard.html", "index.html"} {
+					path := filepath.Join(webOut, name)
+					if stat, err := os.Stat(path); err == nil && !stat.IsDir() {
+						http.ServeFile(w, r, path)
+						return
+					}
+				}
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(dashboardFallback))
+			return
+		}
+		if webOut == "" {
+			http.NotFound(w, r)
+			return
+		}
+		http.FileServer(http.Dir(webOut)).ServeHTTP(w, r)
+	})
 }
