@@ -13,55 +13,10 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
-// realDDL mirrors the schema-v12 tables this package reads, copied verbatim from
-// repowire/daemon/state/database.py. It stamps user_version=12 so NewStore opens.
-const realDDL = `
-CREATE TABLE IF NOT EXISTS peer_session_mappings (
-    session_id TEXT PRIMARY KEY,
-    display_name TEXT NOT NULL,
-    circle TEXT NOT NULL,
-    backend TEXT NOT NULL,
-    path TEXT,
-    role TEXT NOT NULL,
-    updated_at TEXT,
-    description TEXT NOT NULL DEFAULT '',
-    model TEXT,
-    agent_pid INTEGER
-);
-CREATE TABLE IF NOT EXISTS retired_peers (
-    peer_id TEXT PRIMARY KEY,
-    retired_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS events (
-    event_id TEXT PRIMARY KEY,
-    type TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    peer_id TEXT,
-    peer_name TEXT,
-    session_id TEXT,
-    turn_id TEXT,
-    payload_json TEXT NOT NULL
-);
-PRAGMA user_version=12;
-`
-
 func newTempStore(t *testing.T) *Store {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "state.db")
-
-	// Create the db with the real DDL using a throwaway connection first.
-	seed, err := sql.Open("sqlite", "file:"+dbPath)
-	if err != nil {
-		t.Fatalf("open seed db: %v", err)
-	}
-	if _, err := seed.Exec(realDDL); err != nil {
-		t.Fatalf("apply DDL: %v", err)
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatalf("close seed db: %v", err)
-	}
-
-	s, err := NewStore(dbPath)
+	// NewStore now owns migrations, so a fresh path bootstraps the full schema.
+	s, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -69,20 +24,32 @@ func newTempStore(t *testing.T) *Store {
 	return s
 }
 
-func TestNewStoreRejectsWrongSchemaVersion(t *testing.T) {
+// TestNewStoreUpgradesFromZero verifies a legacy user_version=0 DB (with
+// unrelated pre-existing content) is migrated up to schemaVersion rather than
+// refused — the daemon now owns migrations end to end.
+func TestNewStoreUpgradesFromZero(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "old.db")
 	seed, err := sql.Open("sqlite", "file:"+dbPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	// user_version defaults to 0; do not stamp 12.
+	// user_version defaults to 0; leave unrelated content to prove it survives.
 	if _, err := seed.Exec(`CREATE TABLE x(a)`); err != nil {
 		t.Fatalf("exec: %v", err)
 	}
 	_ = seed.Close()
 
-	if _, err := NewStore(dbPath); err == nil {
-		t.Fatal("expected schema-version mismatch error, got nil")
+	s, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("expected upgrade-from-zero to succeed, got %v", err)
+	}
+	defer s.Close()
+	var version int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatalf("read user_version: %v", err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("user_version = %d, want %d", version, schemaVersion)
 	}
 }
 

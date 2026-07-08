@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,9 +43,19 @@ type Store struct {
 	db *sql.DB
 }
 
-// NewStore opens the existing daemon state db read-compatibly. It verifies the
-// schema version is exactly 12 and never migrates.
+// NewStore opens the daemon state db, creating and migrating it to
+// schemaVersion if needed. It owns migrations now (the Python daemon no longer
+// pre-migrates): a fresh path is bootstrapped; an existing DB at the current
+// version is a no-op; a future/unknown version is refused rather than
+// downgraded.
 func NewStore(dbPath string) (*Store, error) {
+	// Create the parent dir (0700) so a fresh ~/.repowire path just works, matching
+	// database.py's mkdir+chmod. Skip when dbPath has no dir component (":memory:").
+	if dir := filepath.Dir(dbPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("create state dir: %w", err)
+		}
+	}
 	dsn := fmt.Sprintf(
 		"file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)",
 		dbPath,
@@ -61,9 +73,17 @@ func NewStore(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("read user_version: %w", err)
 	}
-	if version != schemaVersion {
+	// A DB stamped newer than we understand is a downgrade hazard — refuse.
+	if version > schemaVersion {
 		_ = db.Close()
-		return nil, fmt.Errorf("state db schema version %d, expected %d (Python daemon owns migrations)", version, schemaVersion)
+		return nil, fmt.Errorf("state db schema version %d is newer than supported %d", version, schemaVersion)
+	}
+	// version 0 (fresh) or any older version: apply the idempotent bootstrap.
+	if version != schemaVersion {
+		if err := migrate(db); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate state db: %w", err)
+		}
 	}
 	return &Store{db: db}, nil
 }
