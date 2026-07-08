@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -29,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/hub"
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -296,35 +298,33 @@ func splitCSV(s string) []string {
 	return out
 }
 
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
 func main() {
+	// Load ~/.repowire/config.yaml FIRST so flag defaults reflect it. The Go hub
+	// now reads the same file the Python code writes (auth, spawn, relay, HTTP
+	// MCP), which is what lets `repowire serve` stop threading config as flags.
+	// Flags still override for ad-hoc runs and the transition period. env>file>
+	// default precedence is applied inside config.Load.
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+
 	dbPath := flag.String("db", defaultDBPath(), "path to the schema-v12 SQLite state DB ($REPOWIRE_STATE_DB)")
-	addr := flag.String("addr", "127.0.0.1:8377", "host:port to serve the hub on")
-	authToken := flag.String("auth-token", os.Getenv("REPOWIRE_AUTH_TOKEN"), "shared ws auth token ($REPOWIRE_AUTH_TOKEN); empty disables auth")
-	// ponytail: spawn allowlist + per-backend launch commands and relay config
-	// come from flags/env here. The Go config loader (~/.repowire/config.yaml →
-	// config/models.py: SpawnSettings.{commands,allowed_paths} + RelayConfig.
-	// {enabled,url,api_key}) is NOT yet ported, and go.mod carries no YAML dep
-	// (adding one just for assembly would be over-engineering). When the config
-	// package lands, source these from it and drop the flags. Empty allowlist OR
-	// empty commands → spawn disabled (SpawnService.Enabled()==false), which is
-	// the safe default; the spawn routes 503 rather than spawn into an
-	// unexpected directory.
-	spawnPathsFlag := flag.String("spawn-allowed-paths", os.Getenv("REPOWIRE_SPAWN_ALLOWED_PATHS"), "comma-separated spawn allowlist roots ($REPOWIRE_SPAWN_ALLOWED_PATHS); empty disables spawn")
-	spawnCommandsFlag := flag.String("spawn-commands", os.Getenv("REPOWIRE_SPAWN_COMMANDS"), "per-backend launch commands as JSON {\"claude-code\":\"...\"} ($REPOWIRE_SPAWN_COMMANDS); empty disables spawn")
-	relayURL := flag.String("relay-url", envOr("REPOWIRE_RELAY_URL", "wss://repowire.io"), "relay base url for the /shares proxy ($REPOWIRE_RELAY_URL)")
-	relayKey := flag.String("relay-api-key", os.Getenv("REPOWIRE_RELAY_API_KEY"), "relay api key ($REPOWIRE_RELAY_API_KEY); empty leaves /shares as a 503 stub")
+	addr := flag.String("addr", fmt.Sprintf("%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "host:port to serve the hub on")
+	authToken := flag.String("auth-token", cfg.Daemon.AuthToken, "shared ws auth token ($REPOWIRE_AUTH_TOKEN / config daemon.auth_token); empty disables auth")
+	// Spawn + relay defaults come from config.yaml (env-overridden in config.Load);
+	// the flags remain as explicit overrides. Empty allowlist OR empty commands →
+	// spawn disabled (SpawnService.Enabled()==false), the safe default: spawn
+	// routes 503 rather than spawn into an unexpected directory.
+	spawnPathsFlag := flag.String("spawn-allowed-paths", strings.Join(cfg.Daemon.Spawn.AllowedPaths, ","), "comma-separated spawn allowlist roots override ($REPOWIRE_SPAWN_ALLOWED_PATHS / config daemon.spawn.allowed_paths); empty disables spawn")
+	spawnCommandsFlag := flag.String("spawn-commands", cfg.Daemon.Spawn.CommandsJSON(), "per-backend launch commands as JSON override ($REPOWIRE_SPAWN_COMMANDS / config daemon.spawn.commands); empty disables spawn")
+	relayEnabled := flag.Bool("relay-enabled", cfg.Relay.Enabled, "enable relay client and /shares proxy (config relay.enabled)")
+	relayURL := flag.String("relay-url", cfg.Relay.URL, "relay base url for the /shares proxy ($REPOWIRE_RELAY_URL / config relay.url)")
+	relayKey := flag.String("relay-api-key", cfg.Relay.APIKey, "relay api key ($REPOWIRE_RELAY_API_KEY / config relay.api_key); empty leaves /shares as a 503 stub")
 	flag.Parse()
 
-	// (1) Open the state store. NewStore refuses any schema != 12 — the Python
-	// daemon owns migrations, so we fail loud rather than corrupt an unexpected
-	// shape.
+	// (1) Open the state store. NewStore owns the schema-v12 bootstrap/migration
+	// now, so a fresh Go daemon no longer needs Python to pre-create the DB.
 	store, err := state.NewStore(*dbPath)
 	if err != nil {
 		log.Fatalf("open state db %q: %v", *dbPath, err)
@@ -412,7 +412,7 @@ func main() {
 	// the documented degrade (503 POST/DELETE, empty-list GET) — i.e. the 503
 	// stub when the relay isn't configured.
 	relayCfg := &hub.RelayConfig{
-		Enabled: *relayKey != "",
+		Enabled: *relayEnabled && *relayKey != "",
 		URL:     *relayURL,
 		APIKey:  *relayKey,
 	}
