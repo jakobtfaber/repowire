@@ -48,7 +48,6 @@ SERVER (`relay/server.py`, GKE), Telegram/Slack bots, channel/ACP MCP transport,
 the `hooks/` ws-hook supervisor, legacy `sessions.json` import. (The relay
 CLIENT is ported — see `relay/`.)
 
-Not yet ported in the hub: full config (yaml) loading (db/addr/auth wired via
-flags+env; spawn allowlist/relay read minimally), the ACP subprocess transport
-(dormant stub), `/ask-many` blocking variants, packaging the binary into the
-wheel so `uv tool install` ships it (resolver falls back to Python until then).
+Not yet ported in the hub: the ACP subprocess transport (dormant stub) and
+packaging the binary into the wheel so `uv tool install` ships it without a
+local build.

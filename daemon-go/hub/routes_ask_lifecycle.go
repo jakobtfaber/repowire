@@ -63,6 +63,7 @@ type askRoutesRegistry interface {
 // onto the Hub via WithAskLifecycle; nil-safe (handlers 503 when unwired).
 type askLifecycleDeps struct {
 	asks     *service.AskTracker
+	askMany  *service.AskManyTracker
 	delivery *service.PeerDelivery
 	reg      askRoutesRegistry
 }
@@ -71,7 +72,7 @@ type askLifecycleDeps struct {
 // concrete *peer.Registry satisfies askRoutesRegistry once the registry port
 // lands; until then a test/fake registry is passed. Returns the receiver.
 func (h *Hub) WithAskLifecycle(asks *service.AskTracker, delivery *service.PeerDelivery, reg askRoutesRegistry) *Hub {
-	h.ask = &askLifecycleDeps{asks: asks, delivery: delivery, reg: reg}
+	h.ask = &askLifecycleDeps{asks: asks, askMany: service.NewAskManyTracker(asks), delivery: delivery, reg: reg}
 	return h
 }
 
@@ -92,6 +93,8 @@ func (h *Hub) registerAskLifecycleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/ack", h.requireAuth(h.handleAck))
 	mux.HandleFunc("/answer", h.requireAuth(h.handleAnswer))
 	mux.HandleFunc("/query", h.requireAuth(h.handleQuery))
+	mux.HandleFunc("/ask-many", h.requireAuth(h.handleAskMany))
+	mux.HandleFunc("/ask-many/", h.requireAuth(h.handleAskManyResult))
 	mux.HandleFunc("/asks/pending", h.requireAuth(h.handlePendingAsks))
 	// /asks/{correlation_id}/{picked_up|mark_reminded|wait}
 	mux.HandleFunc("/asks/", h.requireAuth(h.handleAskSubpath))
@@ -163,7 +166,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 
 // askReady reports whether the ask-lifecycle deps are wired; 503 otherwise.
 func (h *Hub) askReady(w http.ResponseWriter) bool {
-	if h.ask == nil || h.ask.asks == nil || h.ask.delivery == nil || h.ask.reg == nil {
+	if h.ask == nil || h.ask.asks == nil || h.ask.askMany == nil || h.ask.delivery == nil || h.ask.reg == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "ask lifecycle not configured")
 		return false
 	}
@@ -714,6 +717,152 @@ func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, QueryResponse{Text: strPtr(text)})
 	}
+}
+
+// ----------------------------------------------------------------------------
+// POST /ask-many + GET /ask-many/{parent_id}
+// ----------------------------------------------------------------------------
+
+type AskManyRequest struct {
+	FromPeer       string   `json:"from_peer"`
+	ToPeers        []string `json:"to_peers"`
+	Text           string   `json:"text"`
+	Circle         *string  `json:"circle,omitempty"`
+	BypassCircle   bool     `json:"bypass_circle,omitempty"`
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
+}
+
+type AskManyChildResponse struct {
+	Peer          string  `json:"peer"`
+	CorrelationID *string `json:"correlation_id"`
+	Delivered     bool    `json:"delivered"`
+	Error         *string `json:"error"`
+}
+
+type AskManyResponse struct {
+	ParentID string                 `json:"parent_id"`
+	Children []AskManyChildResponse `json:"children"`
+}
+
+func (h *Hub) handleAskMany(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if !h.askReady(w) {
+		return
+	}
+	var req AskManyRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.ToPeers) == 0 {
+		writeJSONError(w, http.StatusUnprocessableEntity, "to_peers must not be empty")
+		return
+	}
+	if len(req.ToPeers) > service.MaxAskManyPeers {
+		writeJSONError(w, http.StatusUnprocessableEntity,
+			fmt.Sprintf("to_peers exceeds the %d-peer limit", service.MaxAskManyPeers))
+		return
+	}
+
+	ctx := r.Context()
+	parent := h.ask.askMany.Create(nil, req.FromPeer, req.Text, req.TimeoutSeconds)
+	out := AskManyResponse{ParentID: parent.ParentID}
+	seenNames := map[string]struct{}{}
+	seenPeerIDs := map[proto.PeerID]struct{}{}
+
+	for _, toPeer := range req.ToPeers {
+		if _, ok := seenNames[toPeer]; ok {
+			continue
+		}
+		seenNames[toPeer] = struct{}{}
+
+		target, terr := h.ask.reg.GetPeerByName(toPeer, req.Circle)
+		if terr != nil || target == nil {
+			msg := "peer not found: " + toPeer
+			if terr != nil {
+				msg = terr.Error()
+			}
+			h.ask.askMany.AddChild(parent.ParentID, service.AskManyChild{PeerName: toPeer, DeliveryError: &msg})
+			out.Children = append(out.Children, AskManyChildResponse{Peer: toPeer, Error: &msg})
+			continue
+		}
+		if _, ok := seenPeerIDs[target.PeerID]; ok {
+			continue
+		}
+		seenPeerIDs[target.PeerID] = struct{}{}
+
+		fromID := proto.PeerID(req.FromPeer)
+		fromName := proto.DisplayName(req.FromPeer)
+		if from, ferr := h.ask.reg.GetPeerByName(req.FromPeer, &target.Circle); ferr == nil && from != nil {
+			fromID = from.PeerID
+			fromName = from.DisplayName
+		}
+		cid, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
+			FromPeerID:   fromID,
+			FromPeerName: fromName,
+			ToPeerID:     target.PeerID,
+			ToPeerName:   target.DisplayName,
+			Text:         req.Text,
+			ParentID:     &parent.ParentID,
+		})
+		if err != nil {
+			msg := err.Error()
+			h.ask.askMany.AddChild(parent.ParentID, service.AskManyChild{
+				PeerName: string(target.DisplayName), PeerID: strPtr(string(target.PeerID)), DeliveryError: &msg,
+			})
+			out.Children = append(out.Children, AskManyChildResponse{Peer: string(target.DisplayName), Error: &msg})
+			continue
+		}
+
+		delivered := true
+		var errText *string
+		if _, err := h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
+			FromPeer:      string(fromID),
+			ToPeer:        string(target.PeerID),
+			Text:          req.Text,
+			CorrelationID: cid,
+			BypassCircle:  req.BypassCircle,
+			Circle:        req.Circle,
+		}); err != nil {
+			_, _ = h.ask.asks.Close(ctx, cid, "send_failed")
+			msg := err.Error()
+			errText = &msg
+			delivered = false
+		}
+		h.ask.askMany.AddChild(parent.ParentID, service.AskManyChild{
+			PeerName:      string(target.DisplayName),
+			CorrelationID: &cid,
+			PeerID:        strPtr(string(target.PeerID)),
+			DeliveryError: errText,
+		})
+		out.Children = append(out.Children, AskManyChildResponse{
+			Peer: string(target.DisplayName), CorrelationID: &cid, Delivered: delivered, Error: errText,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Hub) handleAskManyResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if !h.askReady(w) {
+		return
+	}
+	parentID := strings.TrimPrefix(r.URL.Path, "/ask-many/")
+	if parentID == "" || strings.Contains(parentID, "/") {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	out, ok := h.ask.askMany.Status(parentID, time.Time{})
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "ask-many "+parentID+" not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ----------------------------------------------------------------------------

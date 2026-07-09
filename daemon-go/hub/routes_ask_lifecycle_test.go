@@ -216,3 +216,78 @@ func TestAskWaitRejectsNonAsker(t *testing.T) {
 		t.Fatalf("non-asker wait expected 403, got %d", resp.StatusCode)
 	}
 }
+
+func TestAskManyFansOutAndAggregates(t *testing.T) {
+	alpha := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	gamma := peerWith("repow-default-cccc", "gamma", "default", proto.StatusOnline)
+	reg := newAskFakeRegistry(alpha, beta, gamma)
+	f := &fakeTransport{ackFrame: map[string]any{"status": "injected"}}
+	srv, _ := newAskTestHub(t, reg, f)
+
+	resp := postJSON(t, srv.URL+"/ask-many", AskManyRequest{
+		FromPeer: "alpha",
+		ToPeers:  []string{"beta", "missing", "gamma", "beta"},
+		Text:     "status?",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ask-many expected 200, got %d", resp.StatusCode)
+	}
+	var opened AskManyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&opened); err != nil {
+		t.Fatalf("decode open: %v", err)
+	}
+	if len(opened.Children) != 3 {
+		t.Fatalf("expected beta, missing, gamma children with beta deduped, got %+v", opened.Children)
+	}
+	if opened.Children[0].CorrelationID == nil {
+		t.Fatalf("beta child should have a cid: %+v", opened.Children[0])
+	}
+	if opened.Children[1].Error == nil {
+		t.Fatalf("missing child should carry an error: %+v", opened.Children[1])
+	}
+
+	reply := "done"
+	ack := postJSON(t, srv.URL+"/ack", AckRequest{
+		CorrelationID: *opened.Children[0].CorrelationID,
+		Message:       &reply,
+	})
+	ack.Body.Close()
+	if ack.StatusCode != http.StatusOK {
+		t.Fatalf("ack child expected 200, got %d", ack.StatusCode)
+	}
+
+	res, err := http.Get(srv.URL + "/ask-many/" + opened.ParentID)
+	if err != nil {
+		t.Fatalf("GET aggregate: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("aggregate expected 200, got %d", res.StatusCode)
+	}
+	var agg map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&agg); err != nil {
+		t.Fatalf("decode aggregate: %v", err)
+	}
+	if agg["state"] != "pending" {
+		t.Fatalf("state = %v, want pending", agg["state"])
+	}
+	rollup := agg["rollup"].(map[string]any)
+	if rollup["total"].(float64) != 3 || rollup["replied"].(float64) != 1 ||
+		rollup["pending"].(float64) != 1 || rollup["failed"].(float64) != 1 {
+		t.Fatalf("unexpected rollup: %#v", rollup)
+	}
+}
+
+func TestAskManyRejectsEmptyPeerList(t *testing.T) {
+	reg := newAskFakeRegistry()
+	f := &fakeTransport{}
+	srv, _ := newAskTestHub(t, reg, f)
+
+	resp := postJSON(t, srv.URL+"/ask-many", AskManyRequest{FromPeer: "alpha", Text: "q"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("empty ask-many should be 422, got %d", resp.StatusCode)
+	}
+}
