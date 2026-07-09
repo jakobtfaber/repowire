@@ -398,13 +398,11 @@ func main() {
 	// ladder (assigned → reuse → resume → spawn); JobRunner dispatches durable
 	// jobs through PeerDelivery.OpenScheduledAsk (reply_delivery=pull). The
 	// Scheduler fires one-shot/recurring check-ins off a deadline-driven sleep.
-	// ponytail: SessionControl.WithResume is not attached — the resume-safety
-	// resolver is its own area and not yet ported, so every spawn-strategy
-	// acquisition starts fresh (the safe default). JobRunner.SetSenderPeerID is
-	// also unset: the synthetic @jobs service peer isn't registered here, so
-	// dispatch asks carry an empty `from` (accessRegistry treats an unresolved
-	// sender as allowed, mirroring Python notify behavior).
-	sessionControl := service.NewSessionControl(shim, spawnService, store)
+	// JobRunner.SetSenderPeerID is also unset: the synthetic @jobs service peer
+	// isn't registered here, so dispatch asks carry an empty `from`
+	// (accessRegistry treats an unresolved sender as allowed, mirroring Python
+	// notify behavior).
+	sessionControl := service.NewSessionControl(shim, spawnService, store).WithResume(service.NewLocalResumeResolver())
 	jobRunner := service.NewJobRunner(store, delivery, sessionControl)
 	scheduler := service.NewScheduler(store, delivery)
 
@@ -444,8 +442,8 @@ func main() {
 		WithMCP(cfg.Daemon.MCPHTTP, delivery).
 		// forgetSpawnedPane drops a dead pane from the spawn-ownership store so
 		// destructivePaneProof can't authorize kill/restart against a reused pane id.
-		// clearPaneRuntimeState stays nil — the Go hub does not own hook-side pane
-		// runtime files (ponytail: wire when those land).
+		// clearPaneRuntimeState is nil here because NewLifecycleHandler defaults
+		// it to service.ClearPaneRuntimeState.
 		WithLifecycle(hub.NewLifecycleHandler(reg, transport, tmuxPaneLister{}, spawnService.Ownership().Forget, nil))
 	// Reviews defaults its JSON store at Routes() time if unset; leave it.
 

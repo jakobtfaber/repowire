@@ -257,21 +257,30 @@ def _metadata_matches_current_process(pane_meta: dict) -> bool:
     a daemon by-pane result pointing at a previous tenant's display_name.
 
     The durable proof is the agent process that owns this MCP process, not the
-    path. SessionStart writes its observed agent_pid into pane metadata; the
-    MCP server accepts it only when it matches this process' parent.
+    path. SessionStart/ws-hook metadata has had two shapes: top-level
+    ``agent_pid`` for the owning runtime, and newer birth-certificate
+    ``agent_pid`` when the top-level value is the runtime parent. Accept either
+    when it matches this MCP process' parent.
     """
     meta_backend = pane_meta.get("backend")
-    meta_agent_pid = pane_meta.get("agent_pid")
-    if not meta_backend or meta_agent_pid is None:
+    if not meta_backend:
         return False
     try:
         AgentType(str(meta_backend))
     except ValueError:
         return False
-    try:
-        return int(meta_agent_pid) == os.getppid()
-    except (TypeError, ValueError):
-        return False
+    current_parent = os.getppid()
+    candidate_pids = [pane_meta.get("agent_pid")]
+    birth_cert = pane_meta.get("birth_certificate")
+    if isinstance(birth_cert, dict):
+        candidate_pids.append(birth_cert.get("agent_pid"))
+    for pid in candidate_pids:
+        try:
+            if int(pid) == current_parent:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _peer_result_matches_current_process(peer: dict, pane_meta: dict) -> bool:

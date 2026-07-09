@@ -43,6 +43,20 @@ def _matching_meta(extra: dict | None = None) -> dict:
     return base
 
 
+def _birth_cert_meta(extra: dict | None = None) -> dict:
+    """Build metadata where the current agent pid lives in birth_certificate."""
+    base = _matching_meta({
+        "agent_pid": 11111,
+        "birth_certificate": {
+            "agent_pid": 12345,
+            "peer_id": "p-2",
+        },
+    })
+    if extra:
+        base.update(extra)
+    return base
+
+
 def _matching_peer(extra: dict | None = None) -> dict:
     """Build a daemon peer dict whose peer_id matches _matching_meta()."""
     base = {
@@ -828,6 +842,52 @@ async def test_ensure_registered_re_resolves_when_cached_peer_conflicts_with_pan
 
     assert ("POST", "/peers/stale-id/touch") not in call_log
     assert any(path.startswith("/peers/by-pane/") for _, path in call_log)
+    assert mcp_server._cached_peer_id == "fresh-id"
+    assert mcp_server._cached_peer_name == "fresh-name"
+    assert mcp_server._registered is True
+
+
+@pytest.mark.asyncio
+async def test_cached_peer_conflict_accepts_birth_certificate_agent_pid():
+    """Codex pane metadata can put the owning runtime pid in birth_certificate.
+
+    The top-level agent_pid may be the runtime parent, so requiring it to match
+    os.getppid() lets stale cached MCP identity survive and update an offline
+    twin instead of the live WebSocket peer.
+    """
+    mcp_server._cached_peer_id = "stale-id"
+    mcp_server._cached_peer_name = "stale-name"
+    mcp_server._registered = True
+
+    call_log: list[tuple[str, str]] = []
+
+    async def daemon_router(method, path, body=None, params=None):
+        del body, params
+        call_log.append((method, path))
+        if method == "POST" and path == "/peers/identity/validate":
+            return {"peer": _matching_peer({"display_name": "fresh-name", "peer_id": "fresh-id"})}
+        if method == "GET" and path.startswith("/peers/by-pane/"):
+            return _matching_peer({"display_name": "fresh-name", "peer_id": "fresh-id"})
+        if method == "POST" and path.endswith("/touch"):
+            assert "fresh-id" in path
+            return {"ok": True}
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+    with patch.object(mcp_server, "get_tmux_info", return_value={
+            "pane_id": "%99",
+            "session_name": None,
+         }), \
+         patch.object(mcp_server, "get_pane_id", return_value="%99"), \
+         patch.object(mcp_server.os, "getppid", return_value=12345), \
+         patch.object(mcp_server, "read_pane_runtime_metadata", return_value=_birth_cert_meta({
+             "display_name": "fresh-name",
+             "peer_id": "fresh-id",
+         })), \
+         patch.object(mcp_server, "daemon_request", new=AsyncMock(side_effect=daemon_router)):
+        await mcp_server._ensure_registered()
+
+    assert ("POST", "/peers/stale-id/touch") not in call_log
+    assert ("POST", "/peers/identity/validate") in call_log
     assert mcp_server._cached_peer_id == "fresh-id"
     assert mcp_server._cached_peer_name == "fresh-name"
     assert mcp_server._registered is True

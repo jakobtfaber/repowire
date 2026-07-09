@@ -8,6 +8,7 @@ import (
 
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -239,9 +240,6 @@ func (h *Hub) persistBinding(
 		"runtime_session_id":  derefOrNil(runtimeSessionID),
 		"observed_by_peer_id": pid,
 	}
-	// ponytail: resume_capability is left empty until agent_backends is ported to
-	// Go (resume_capability_for_registration). The observation + cert are the
-	// load-bearing parts; resume enrichment is a later, additive pass.
 	if _, err := h.store.UpsertObservation(ctx, state.Observation{
 		PeerID:           &pid,
 		Backend:          string(backend),
@@ -249,6 +247,7 @@ func (h *Hub) persistBinding(
 		RuntimeSessionID: runtimeSessionID,
 		RuntimeSourceURI: metadataSourceURI(req.Metadata),
 		Provenance:       provenance,
+		ResumeCapability: service.ResumeCapabilityForRegistration(backend, derefString(runtimeSessionID)),
 		Status:           state.BindingActive,
 		Metadata:         bindingMetadata(req.Metadata),
 	}); err != nil {
@@ -490,6 +489,13 @@ func certEnvelope(c *state.RuntimeIdentityCertificate) map[string]any {
 func derefOrNil(s *string) any {
 	if s == nil {
 		return nil
+	}
+	return *s
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
 	}
 	return *s
 }

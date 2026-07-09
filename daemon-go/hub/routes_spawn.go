@@ -441,24 +441,12 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 		spawnCircle = "default"
 	}
 
-	// Resume pre-validation is the strict-kill gate: the daemon must build a
-	// validated backend-native resume command BEFORE killing the pane. The
-	// resume_safety seam is NOT yet ported to daemon-go.
-	//
-	// ponytail: until resume_safety lands, restart resolves the configured backend
-	// command (which IS available — the peer is already running this backend) and
-	// records resume_mode="fresh" with a warning, instead of fabricating a
-	// transcript-resume command we cannot validate. This keeps the kill+respawn
-	// truthful (it restarts the runtime in-place) without claiming a resumed
-	// transcript. Upgrade path: port daemon/resume_safety.py + session_bindings
-	// newest-match (_restart_resume_target) and swap this block for resume_target().
-	resumeCommand, cerr := svc.ResolveCommand(peerCopy.Backend, nil)
-	if cerr != nil {
-		h.writeSpawnError(w, cerr)
+	resumeCommand, _, rerr := h.restartResumeCommand(ctx, peerCopy, resolvedPath)
+	if rerr != nil {
+		writeJSONError(w, http.StatusConflict, rerr)
 		return
 	}
-	resumeMode := "fresh"
-	resumeWarning := "Backend transcript resume is not yet available in the Go hub; the runtime is restarted fresh in its working directory."
+	resumeMode := "resumed"
 
 	proof := h.destructivePaneProof(peerCopy)
 	canSkipKill := peerCopy.Status == proto.StatusOffline &&
@@ -475,20 +463,18 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 
 	if req.DryRun {
 		ts := tmuxSession
-		rw := resumeWarning
 		writeJSON(w, http.StatusOK, RestartPeerResponse{
-			OK:            true,
-			Status:        "restart_available",
-			Restarted:     false,
-			PeerID:        string(peerCopy.PeerID),
-			DisplayName:   string(peerCopy.DisplayName),
-			Backend:       peerCopy.Backend,
-			Path:          resolvedPath,
-			Circle:        spawnCircle,
-			TmuxSession:   &ts,
-			Command:       &resumeCommand,
-			ResumeMode:    resumeMode,
-			ResumeWarning: &rw,
+			OK:          true,
+			Status:      "restart_available",
+			Restarted:   false,
+			PeerID:      string(peerCopy.PeerID),
+			DisplayName: string(peerCopy.DisplayName),
+			Backend:     peerCopy.Backend,
+			Path:        resolvedPath,
+			Circle:      spawnCircle,
+			TmuxSession: &ts,
+			Command:     &resumeCommand,
+			ResumeMode:  resumeMode,
 		})
 		return
 	}
@@ -534,22 +520,75 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ts := result.TmuxSession
-	rw := resumeWarning
 	cmd := resumeCommand
 	writeJSON(w, http.StatusOK, RestartPeerResponse{
-		OK:            true,
-		Status:        "restarted",
-		Restarted:     true,
-		PeerID:        string(peerCopy.PeerID),
-		DisplayName:   string(peerCopy.DisplayName),
-		Backend:       peerCopy.Backend,
-		Path:          resolvedPath,
-		Circle:        spawnCircle,
-		TmuxSession:   &ts,
-		Command:       &cmd,
-		ResumeMode:    resumeMode,
-		ResumeWarning: &rw,
+		OK:                true,
+		Status:            "restarted",
+		Restarted:         true,
+		PeerID:            string(peerCopy.PeerID),
+		DisplayName:       string(peerCopy.DisplayName),
+		Backend:           peerCopy.Backend,
+		Path:              resolvedPath,
+		Circle:            spawnCircle,
+		TmuxSession:       &ts,
+		Command:           &cmd,
+		ResumeMode:        resumeMode,
+		ResumeWarning:     nil,
+		UnsupportedReason: nil,
 	})
+}
+
+func (h *Hub) restartResumeCommand(ctx context.Context, peer *proto.Peer, resolvedPath string) (string, map[string]any, map[string]any) {
+	base, err := h.spawn.svc.ResolveCommand(peer.Backend, nil)
+	if err != nil {
+		return "", nil, map[string]any{"error": "command_unavailable", "hint": err.Error()}
+	}
+	runtimeID, repowireSessionID, capability := h.restartResumeTarget(ctx, peer, resolvedPath)
+	if runtimeID == "" {
+		return "", nil, restartResumeUnavailable(peer, "missing_id")
+	}
+	plan, ok := service.NewLocalResumeResolver().Resolve(peer.Backend, resolvedPath, runtimeID, repowireSessionID, capability)
+	if !ok {
+		return "", nil, restartResumeUnavailable(peer, "resume_unavailable")
+	}
+	command, err := service.ResumeCommand(base, peer.Backend, plan)
+	if err != nil {
+		return "", nil, map[string]any{"error": "resume_unavailable", "hint": err.Error(), "peer_id": string(peer.PeerID)}
+	}
+	return command, plan, nil
+}
+
+func (h *Hub) restartResumeTarget(ctx context.Context, peer *proto.Peer, resolvedPath string) (runtimeID string, repowireSessionID *string, capability map[string]any) {
+	capability = map[string]any{}
+	if h.store != nil {
+		bindings, err := h.store.ListBindingsByPeer(ctx, string(peer.PeerID))
+		if err == nil {
+			for _, b := range bindings {
+				if b.RuntimeSessionID == nil || *b.RuntimeSessionID == "" || b.Backend != string(peer.Backend) {
+					continue
+				}
+				if service.NormPath(b.ProjectPath) != service.NormPath(resolvedPath) {
+					continue
+				}
+				return *b.RuntimeSessionID, &b.RepowireSessionID, b.ResumeCapability
+			}
+		}
+	}
+	if id := runtimeSessionIDFromMetadata(peer.Metadata); id != nil {
+		return *id, nil, capability
+	}
+	return "", nil, capability
+}
+
+func restartResumeUnavailable(peer *proto.Peer, reason string) map[string]any {
+	return map[string]any{
+		"error":              "resume_unavailable",
+		"hint":               "Restart is strict kill+resume: Repowire will not kill this peer unless it can first build a validated backend-native resume command.",
+		"peer_id":            string(peer.PeerID),
+		"display_name":       string(peer.DisplayName),
+		"backend":            string(peer.Backend),
+		"unsupported_reason": reason,
+	}
 }
 
 // ---------------------------------------------------------------------------

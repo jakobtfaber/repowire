@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"time"
 
@@ -152,12 +153,30 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	path := cf.Path
+	if path != nil && *path != "" {
+		normalized, err := filepath.Abs(*path)
+		if err != nil {
+			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Invalid path"})
+			_ = conn.Close(4003, "Invalid path")
+			return
+		}
+		normalized = filepath.Clean(normalized)
+		if normalized == string(os.PathSeparator) {
+			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Invalid path: root directory not allowed"})
+			_ = conn.Close(4003, "Invalid path")
+			log.Printf("ws: registration rejected: invalid path %s", *path)
+			return
+		}
+		path = &normalized
+	}
+
 	machine, _ := os.Hostname()
 	params := peer.AllocateParams{
 		Circle:        circle,
 		Backend:       backend,
 		Model:         cf.Model,
-		Path:          cf.Path,
+		Path:          path,
 		PaneID:        cf.PaneID,
 		TmuxSession:   cf.TmuxSession,
 		Machine:       machine,

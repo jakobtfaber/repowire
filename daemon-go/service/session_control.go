@@ -185,17 +185,19 @@ func (c *SessionControl) AcquireExecutorForWork(ctx context.Context, work *state
 
 	warmup := "Repowire spawned this session for a durable job. " +
 		"Please register with the mesh; the job request will arrive as an ask."
-	// Resolve the profile-specific launch line; empty Command lets Spawn default.
-	// ponytail: resume_plan → resume launch line (agent_backends.build_resume_command)
-	// is not ported yet, so a backend_resume acquisition spawns FRESH with the base
-	// command — the resume_plan is still recorded on the attempt/binding for audit.
-	// Upgrade path: when agent_backends lands, build the resume Command here from
-	// resumePlan["runtime_session_id"] and pass it instead of the profile command.
 	command, cerr := c.spawn.ResolveCommand(backend, optStr(target, "profile"))
 	if cerr != nil {
 		errObj := map[string]any{"reason": "spawn_failed", "message": cerr.Error()}
 		c.failOp(ctx, op.OperationID, strategy, errObj)
 		return nil, &ExecutorAcquisitionUnavailableError{Reason: "spawn_failed", OperationID: op.OperationID, Status: "failed", Phase: "spawn", Err: errObj}
+	}
+	if resumePlan != nil {
+		command, cerr = ResumeCommand(command, backend, resumePlan)
+		if cerr != nil {
+			errObj := map[string]any{"reason": "resume_command_unavailable", "message": cerr.Error()}
+			c.failOp(ctx, op.OperationID, strategy, errObj)
+			return nil, &ExecutorAcquisitionUnavailableError{Reason: "resume_command_unavailable", OperationID: op.OperationID, Status: "failed", Phase: "spawn", Err: errObj}
+		}
 	}
 	out, err := c.spawn.Spawn(SpawnConfig{
 		Path:    path,
@@ -464,7 +466,7 @@ func (c *SessionControl) resumePlanFor(work *state.TrackedWork, path string, bac
 }
 
 func (c *SessionControl) recordRuntimeBinding(ctx context.Context, work *state.TrackedWork, peer *proto.Peer, source, operationID, processScope, continuity string) map[string]any {
-	binding := runtimeBindingForPeer(peer, work)
+	binding := runtimeBindingForPeer(ctx, c.store, peer, work)
 	binding["source"] = source
 	binding["recorded_at"] = opReleaseNow()
 	if work.SourceID != nil {
@@ -560,15 +562,11 @@ func releaseHandleForPeer(peer *proto.Peer, processScope, operationID, strategy 
 	}
 }
 
-// runtimeBindingForPeer builds the runtime binding snapshot. The session-binding
-// enrichment (repowire_session_id / resume_capability) is left to a future port
-// of the session-binding store lookup; the core peer snapshot is faithful.
-//
-// ponytail: session_bindings enrichment (get_by_runtime_session / list_by_peer)
-// is omitted — the binding still carries peer identity, backend, path, tmux, and
-// any runtime_session_id from metadata, which is what resume + reuse read. Wire
-// the binding-store lookup in when that store is ported.
-func runtimeBindingForPeer(peer *proto.Peer, work *state.TrackedWork) map[string]any {
+// runtimeBindingForPeer builds the runtime binding snapshot, enriched from
+// session_bindings when the SQLite store already knows this runtime.
+func runtimeBindingForPeer(ctx context.Context, store *state.Store, peer *proto.Peer, work *state.TrackedWork) map[string]any {
+	runtimeSessionID := runtimeSessionIDForPeer(peer)
+	sessionBinding := sessionBindingForPeer(ctx, store, peer, runtimeSessionID)
 	binding := map[string]any{
 		"peer_id":      string(peer.PeerID),
 		"display_name": string(peer.DisplayName),
@@ -581,13 +579,42 @@ func runtimeBindingForPeer(peer *proto.Peer, work *state.TrackedWork) map[string
 	if work != nil {
 		binding["work_id"] = work.WorkID
 	}
-	if rsid := runtimeSessionIDForPeer(peer); rsid != "" {
-		binding["runtime_session_id"] = rsid
+	if runtimeSessionID != "" {
+		binding["runtime_session_id"] = runtimeSessionID
 	}
 	if len(peer.Metadata) > 0 {
 		binding["metadata"] = peer.Metadata
 	}
+	if sessionBinding != nil {
+		binding["repowire_session_id"] = sessionBinding.RepowireSessionID
+		if sessionBinding.RuntimeSessionID != nil && *sessionBinding.RuntimeSessionID != "" {
+			binding["runtime_session_id"] = *sessionBinding.RuntimeSessionID
+		}
+		binding["runtime_source_uri"] = strPtrOrNil(sessionBinding.RuntimeSourceURI)
+		binding["source_cursor"] = sessionBinding.SourceCursor
+		binding["resume_capability"] = sessionBinding.ResumeCapability
+		binding["binding_status"] = string(sessionBinding.Status)
+	}
 	return binding
+}
+
+func sessionBindingForPeer(ctx context.Context, store *state.Store, peer *proto.Peer, runtimeSessionID string) *state.SessionBinding {
+	if store == nil {
+		return nil
+	}
+	backend := string(peer.Backend)
+	projectPath := peer.Path
+	if runtimeSessionID != "" {
+		b, err := store.GetByRuntimeSession(ctx, runtimeSessionID, &backend, &projectPath)
+		if err == nil && b != nil {
+			return b
+		}
+	}
+	bindings, err := store.ListBindingsByPeer(ctx, string(peer.PeerID))
+	if err == nil && len(bindings) > 0 {
+		return bindings[0]
+	}
+	return nil
 }
 
 func runtimeSessionIDForPeer(peer *proto.Peer) string {

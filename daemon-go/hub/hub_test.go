@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -304,6 +305,48 @@ func dialAndConnect(t *testing.T, wsURL, name string) (*websocket.Conn, proto.Pe
 		t.Fatalf("read connected: %v", err)
 	}
 	return c, connected.SessionID
+}
+
+func TestHandleWSNormalizesPath(t *testing.T) {
+	h := newTestHub(t)
+	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
+	defer srv.Close()
+	wsURL := "ws" + srv.URL[len("http"):]
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.CloseNow()
+
+	rawPath := "."
+	if err := wsjson.Write(ctx, c, proto.ConnectFrame{
+		Type:        proto.FrameConnect,
+		DisplayName: "path-test",
+		Circle:      "default",
+		Backend:     proto.AgentClaudeCode,
+		Role:        proto.RoleAgent,
+		Path:        &rawPath,
+	}); err != nil {
+		t.Fatalf("write connect: %v", err)
+	}
+	var connected proto.ConnectedFrame
+	if err := wsjson.Read(ctx, c, &connected); err != nil {
+		t.Fatalf("read connected: %v", err)
+	}
+	p, ok := h.reg.GetPeer(connected.SessionID)
+	if !ok {
+		t.Fatalf("peer %s not registered", connected.SessionID)
+	}
+	want, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatalf("abs cwd: %v", err)
+	}
+	if p.Path != filepath.Clean(want) {
+		t.Fatalf("path = %q, want %q", p.Path, filepath.Clean(want))
+	}
 }
 
 // waitConnected blocks until the transport registers the peer's socket.

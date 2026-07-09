@@ -29,6 +29,10 @@ const deliveryAckTimeout = 750 * time.Millisecond
 // pingTimeout mirrors the Python transport's default pong wait.
 const pingTimeout = 5 * time.Second
 
+// writeTimeout bounds each WebSocket write. The delivery ack timeout only starts
+// after a write returns, so a wedged half-open socket needs its own deadline.
+const writeTimeout = 10 * time.Second
+
 // ConnectionInfo is the live socket record for one connected peer. SessionID IS
 // the peer_id (the daemon-assigned identity), so it is typed proto.PeerID.
 type ConnectionInfo struct {
@@ -107,7 +111,9 @@ func (t *WebSocketTransport) Send(ctx context.Context, id proto.PeerID, v any) e
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotConnected, id)
 	}
-	return wsjson.Write(ctx, info.WS, v)
+	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	return wsjson.Write(writeCtx, info.WS, v)
 }
 
 // SendAndWaitDeliveryAck sends a frame carrying a delivery_id and waits up to

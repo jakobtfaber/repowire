@@ -2,12 +2,15 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 // postJSON is a small helper: marshal body, POST it to the mux, return the
@@ -143,6 +146,49 @@ func TestSetCircleMovesPeer(t *testing.T) {
 	p, ok := h.reg.GetPeer(proto.PeerID(resp.PeerID))
 	if !ok || p.Circle != "beta" {
 		t.Fatalf("peer must have moved to circle beta, got %+v ok=%v", p, ok)
+	}
+}
+
+func TestRegisterPeerPersistsResumeCapability(t *testing.T) {
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	h := newTestHub(t)
+	h.store = store
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	path := t.TempDir()
+	runtimeID := "runtime-123"
+	rec := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
+		Name:    "codex-1",
+		Path:    &path,
+		Backend: proto.AgentCodex,
+		Circle:  strptr("default"),
+		Metadata: map[string]any{
+			"runtime_session_id": runtimeID,
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /peers: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	backend := string(proto.AgentCodex)
+	binding, err := store.GetByRuntimeSession(context.Background(), runtimeID, &backend, &path)
+	if err != nil {
+		t.Fatalf("GetByRuntimeSession: %v", err)
+	}
+	if binding == nil {
+		t.Fatal("expected session binding for registered peer")
+	}
+	if binding.ResumeCapability["strategy"] != "codex_resume" {
+		t.Fatalf("resume_capability = %v, want codex_resume strategy", binding.ResumeCapability)
+	}
+	if binding.ResumeCapability["supported"] != true {
+		t.Fatalf("resume_capability.supported = %v, want true", binding.ResumeCapability["supported"])
 	}
 }
 

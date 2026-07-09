@@ -91,7 +91,7 @@ type LifecycleHandler struct {
 
 // NewLifecycleHandler builds the handler. transport severs sockets; panes probes
 // live tmux for the session-closed evidence gate. forgetSpawnedPane and
-// clearPaneRuntimeState may be nil (treated as no-ops — see the ponytail note).
+// clearPaneRuntimeState may be nil; nil defaults to service.ClearPaneRuntimeState.
 func NewLifecycleHandler(
 	reg *peer.Registry,
 	transport LifecycleTransport,
