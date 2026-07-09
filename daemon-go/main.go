@@ -438,6 +438,10 @@ func main() {
 		WithWorkRegistry(reg).
 		WithSchedules(store, scheduler).
 		WithShares(relayCfg).
+		// HTTP MCP (/mcp) — config-gated (cfg.Daemon.MCPHTTP.Enabled); reuses the
+		// same delivery service the notify/broadcast routes use. No-op route when
+		// disabled, so /mcp falls through to the dashboard catch-all as before.
+		WithMCP(cfg.Daemon.MCPHTTP, delivery).
 		// forgetSpawnedPane drops a dead pane from the spawn-ownership store so
 		// destructivePaneProof can't authorize kill/restart against a reused pane id.
 		// clearPaneRuntimeState stays nil — the Go hub does not own hook-side pane

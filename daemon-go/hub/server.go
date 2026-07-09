@@ -91,6 +91,12 @@ type Hub struct {
 	// nil → the /spawn·/kill-peer·/peers/{name}/{restart,switch-backend,rehook}
 	// handlers 503. Built in main with the real TmuxController + PaneOwnership.
 	spawn *spawnDeps
+
+	// mcp holds the POST /mcp (MCP-over-HTTP JSON-RPC) route dependencies —
+	// config.MCPHTTPConfig + the service.PeerDelivery notify_peer/broadcast
+	// dispatch to — wired via WithMCP. nil, or cfg.Enabled=false, → /mcp is not
+	// registered. See routes_mcp.go.
+	mcp *mcpDeps
 }
 
 // WithReviews wires an explicit review-queue store onto the hub (e.g. a test
@@ -211,6 +217,7 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	if h.spawn != nil {
 		h.registerSpawnRoutes(mux)
 	}
+	h.registerMCPRoutes(mux)
 	// reviews/shares/attachments are independent leaf endpoints, always
 	// registered. Reviews lazily defaults its store; shares/attachments degrade
 	// gracefully when their (relay) dependency is unset.

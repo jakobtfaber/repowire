@@ -1,0 +1,298 @@
+package hub
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/repowire/repowire/daemon-go/config"
+	"github.com/repowire/repowire/daemon-go/peer"
+	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
+)
+
+// mcpRegShim adapts *peer.Registry to service's accessRegistry seam (the same
+// shape main.go's regShim bridges — AddEvent just needs a ctx-taking
+// signature). Local to this test file; not exported.
+type mcpRegShim struct{ *peer.Registry }
+
+func (s mcpRegShim) AddEvent(_ context.Context, typ string, payload map[string]any) string {
+	return s.Registry.AddEvent(typ, payload)
+}
+
+// newMCPTestHub builds a Hub over a real registry (like newTestHub) plus a real
+// service.PeerDelivery wired over it, then attaches WithMCP. cfg lets each test
+// dial in the auth policy under test.
+func newMCPTestHub(t *testing.T, cfg config.MCPHTTPConfig) (*Hub, *peer.Registry) {
+	t.Helper()
+	h := newTestHub(t)
+	shim := mcpRegShim{h.regForTest()}
+	delivery := service.NewPeerDelivery(shim, h.Router(), h.Transport(), service.NewAskTracker(0), nil)
+	h.WithMCP(cfg, delivery)
+	return h, h.regForTest()
+}
+
+// mcpRPC POSTs a single JSON-RPC request to /mcp with the headers the SDK's
+// streamable-HTTP transport requires (Content-Type: application/json, Accept
+// naming both JSON and event-stream), and decodes the JSON-RPC envelope into
+// out (out's "result" field, typically). Stateless+JSONResponse mode (see
+// WithMCP) means each call is self-contained — no Mcp-Session-Id handshake
+// needed.
+func mcpRPC(t *testing.T, url string, body map[string]any, headers map[string]string) (status int, envelope map[string]json.RawMessage) {
+	t.Helper()
+	buf, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	// Only a 200 application/json body is a JSON-RPC envelope worth decoding.
+	// The SDK returns non-JSON for the error shapes callers assert on by status:
+	// an unknown method → 400 text ("JSON RPC not handled: ..."), an unregistered
+	// /mcp → 404 HTML (dashboard catch-all), a rejected auth → 401. Decoding those
+	// would spuriously fail; return status-only instead.
+	ct := resp.Header.Get("Content-Type")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(ct, "application/json") || len(bytes.TrimSpace(respBody)) == 0 {
+		return resp.StatusCode, nil
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		t.Fatalf("decode envelope: %v (body=%q)", err, respBody)
+	}
+	return resp.StatusCode, envelope
+}
+
+func decodeResult(t *testing.T, envelope map[string]json.RawMessage, out any) {
+	t.Helper()
+	raw, ok := envelope["result"]
+	if !ok {
+		t.Fatalf("no result in envelope: %v", envelope)
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+}
+
+// TestMCPInitialize asserts the initialize result carries protocolVersion +
+// serverInfo, per the MCP handshake.
+func TestMCPInitialize(t *testing.T) {
+	h, _ := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: true, RequireAuth: false, AllowUnauthenticatedLocalhost: true})
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, envelope := mcpRPC(t, srv.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{},
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	var result struct {
+		ProtocolVersion string `json:"protocolVersion"`
+		ServerInfo      struct {
+			Name string `json:"name"`
+		} `json:"serverInfo"`
+	}
+	decodeResult(t, envelope, &result)
+	if result.ProtocolVersion == "" {
+		t.Errorf("protocolVersion missing")
+	}
+	if result.ServerInfo.Name != "repowire" {
+		t.Errorf("serverInfo.name = %q, want repowire", result.ServerInfo.Name)
+	}
+}
+
+// TestMCPToolsList asserts the 4 slice-1 tool names are advertised.
+func TestMCPToolsList(t *testing.T) {
+	h, _ := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: true, RequireAuth: false, AllowUnauthenticatedLocalhost: true})
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, envelope := mcpRPC(t, srv.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	var result struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	decodeResult(t, envelope, &result)
+
+	want := map[string]bool{"whoami": false, "list_peers": false, "notify_peer": false, "broadcast": false}
+	if len(result.Tools) != len(want) {
+		t.Fatalf("tools = %v, want %d entries", result.Tools, len(want))
+	}
+	for _, tl := range result.Tools {
+		if _, ok := want[tl.Name]; !ok {
+			t.Errorf("unexpected tool %q", tl.Name)
+		}
+		want[tl.Name] = true
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Errorf("missing tool %q", name)
+		}
+	}
+}
+
+// mcpToolCallResult is the shared tools/call result decode shape.
+type mcpToolCallResult struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+	IsError bool `json:"isError"`
+}
+
+// TestMCPToolsCallListPeersEmpty exercises tools/call -> list_peers against an
+// empty registry: a content array with isError:false.
+func TestMCPToolsCallListPeersEmpty(t *testing.T) {
+	h, _ := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: true, RequireAuth: false, AllowUnauthenticatedLocalhost: true})
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, envelope := mcpRPC(t, srv.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+		"params": map[string]any{"name": "list_peers", "arguments": map[string]any{}},
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	var result mcpToolCallResult
+	decodeResult(t, envelope, &result)
+	if result.IsError {
+		t.Errorf("isError = true, want false: %+v", result.Content)
+	}
+	if len(result.Content) != 1 || result.Content[0].Type != "text" {
+		t.Fatalf("content = %+v, want one text block", result.Content)
+	}
+}
+
+// TestMCPToolsCallWhoamiIdentity asserts whoami reports the default mcp-http
+// identity with no header, and the real registered identity once a matching
+// peer is registered and the header is set.
+func TestMCPToolsCallWhoamiIdentity(t *testing.T) {
+	h, reg := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: true, RequireAuth: false, AllowUnauthenticatedLocalhost: true})
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	callWhoami := func(headers map[string]string) mcpToolCallResult {
+		_, envelope := mcpRPC(t, srv.URL+"/mcp", map[string]any{
+			"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+			"params": map[string]any{"name": "whoami", "arguments": map[string]any{}},
+		}, headers)
+		var result mcpToolCallResult
+		decodeResult(t, envelope, &result)
+		if len(result.Content) != 1 {
+			t.Fatalf("content = %+v, want 1 block", result.Content)
+		}
+		return result
+	}
+
+	if result := callWhoami(nil); !strings.Contains(result.Content[0].Text, "mcp-http") {
+		t.Errorf("whoami with no identity header = %q, want it to mention mcp-http", result.Content[0].Text)
+	}
+
+	path := "/work/alpha"
+	id, name, err := reg.AllocateAndRegister(context.Background(), peer.AllocateParams{
+		Circle:   "default",
+		Backend:  proto.AgentClaudeCode,
+		Role:     proto.RoleAgent,
+		Path:     &path,
+		Metadata: map[string]any{"in_process": true},
+	})
+	if err != nil {
+		t.Fatalf("AllocateAndRegister: %v", err)
+	}
+	result := callWhoami(map[string]string{"X-Repowire-Peer": string(name)})
+	if result.IsError {
+		t.Errorf("whoami with valid identity: isError = true, text=%q", result.Content[0].Text)
+	}
+	if !strings.Contains(result.Content[0].Text, string(id)) {
+		t.Errorf("whoami text = %q, want it to contain peer_id %q", result.Content[0].Text, id)
+	}
+}
+
+// TestMCPUnknownMethod asserts an unrecognized method is rejected. The SDK's
+// streamable-HTTP transport answers an unsupported top-level method with HTTP
+// 400 + a plain-text body ("JSON RPC not handled: ..."), not a JSON-RPC error
+// envelope — so assert on the status.
+func TestMCPUnknownMethod(t *testing.T) {
+	h, _ := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: true, RequireAuth: false, AllowUnauthenticatedLocalhost: true})
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, _ := mcpRPC(t, srv.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0", "id": 5, "method": "bogus/method",
+	}, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (unknown method rejected)", status)
+	}
+}
+
+// TestMCPRequireAuthMissingBearer asserts a RequireAuth=true daemon 401s a
+// request with no bearer token.
+func TestMCPRequireAuthMissingBearer(t *testing.T) {
+	h := newTestHub(t)
+	h.authToken = "secret-token"
+	shim := mcpRegShim{h.regForTest()}
+	delivery := service.NewPeerDelivery(shim, h.Router(), h.Transport(), service.NewAskTracker(0), nil)
+	h.WithMCP(config.MCPHTTPConfig{Enabled: true, RequireAuth: true}, delivery)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, _ := mcpRPC(t, srv.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0", "id": 6, "method": "ping",
+	}, nil)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", status)
+	}
+}
+
+// TestMCPDisabledNotRegistered asserts Enabled:false leaves /mcp unregistered
+// (404, not routed into the SDK handler at all).
+func TestMCPDisabledNotRegistered(t *testing.T) {
+	h, _ := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: false})
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, _ := mcpRPC(t, srv.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0", "id": 7, "method": "ping",
+	}, nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (route not registered)", status)
+	}
+}
