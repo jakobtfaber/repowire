@@ -38,15 +38,15 @@ type RuntimeIdentityCertificate struct {
 // It mirrors RuntimeIdentityCertificate.as_envelope() in the Python store: the
 // fields a peer sends back to prove it is the same runtime.
 type CertEnvelope struct {
-	Nonce            string
-	PeerID           string
-	DisplayName      string
-	Backend          string
-	ProjectPath      string
-	RuntimeSessionID *string
-	PaneID           *string
-	AgentPID         *int
-	ParentPID        *int
+	Nonce            string  `json:"nonce"`
+	PeerID           string  `json:"peer_id"`
+	DisplayName      string  `json:"display_name"`
+	Backend          string  `json:"backend"`
+	ProjectPath      string  `json:"project_path"`
+	RuntimeSessionID *string `json:"runtime_session_id"`
+	PaneID           *string `json:"pane_id"`
+	AgentPID         *int    `json:"agent_pid"`
+	ParentPID        *int    `json:"parent_pid"`
 }
 
 // newNonce returns 32 random bytes URL-safe base64-encoded without padding,
@@ -237,6 +237,22 @@ func (s *Store) ValidateBirthCertificate(
 		return nil, nil
 	}
 	return cert, nil
+}
+
+// ValidateMCPIdentityProof checks the unguessable nonce carried by the local
+// stdio MCP shim. Full runtime evidence was validated when the shim resolved
+// the certificate; the HTTP hop only needs to bind that current certificate to
+// the claimed peer and reject expired or invented claims.
+func (s *Store) ValidateMCPIdentityProof(ctx context.Context, nonce, peerID string) bool {
+	if nonce == "" || peerID == "" {
+		return false
+	}
+	cert, err := s.getCertByNonce(ctx, nonce)
+	if err != nil || cert == nil || cert.PeerID != peerID {
+		return false
+	}
+	expires, err := parseTS(cert.ExpiresAt)
+	return err == nil && expires.After(time.Now().UTC())
 }
 
 func (s *Store) getCertByNonce(ctx context.Context, nonce string) (*RuntimeIdentityCertificate, error) {

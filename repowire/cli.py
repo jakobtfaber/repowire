@@ -1761,7 +1761,9 @@ def orchestrator_persona_path(name: str | None) -> None:
     if path is None:
         console.print(f"[red]✗[/] No SOUL.md found for persona {target!r}")
         return
-    console.print(f"{path} [dim]({source})[/]")
+    # Paths are machine-readable output; Rich wrapping can split a filename on
+    # narrow terminals (for example ``SOUL.\nmd``).
+    click.echo(f"{path} ({source})")
 
 
 _MEMORY_SCOPE_CHOICES = [

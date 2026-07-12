@@ -204,8 +204,7 @@ https://repowire.io/dashboard
 ## Core Commands
 
 ```bash
-repowire setup                         # install hooks/MCP/plugin/service for detected agents
-repowire setup --http-mcp              # opt in to localhost Streamable HTTP MCP at /mcp
+repowire setup                         # install runtime transports/service + localhost MCP identity shim
 repowire setup --update-checks         # let status/doctor report available updates
 repowire update                        # explicit package upgrade + hook reinstall + daemon restart
 repowire status                        # show installed components and daemon status
@@ -237,7 +236,7 @@ daemon:
   port: 8377
   auth_token: "rw_local_..."
   mcp_http:
-    enabled: false
+    enabled: true
     bind: "localhost-only"
     require_auth: true
     allow_dangerous_tools: false
@@ -267,7 +266,7 @@ Security defaults:
 - Local daemon binds to `127.0.0.1`.
 - Relay is opt-in and uses outbound WebSocket.
 - WebSocket and local HTTP auth are available through `daemon.auth_token`.
-- Experimental HTTP MCP is opt-in, localhost-only, bearer-authenticated by default, and not exposed through the hosted relay.
+- MCP tools are implemented by the Go daemon at a localhost-only, bearer-authenticated `/mcp`; agent runtimes reach it through a thin stdio identity shim, and the hosted relay rejects it.
 - Spawn requires explicit command and path allowlists.
 - Experimental channel/ACP transport is opt-in.
 
@@ -280,7 +279,11 @@ uv sync --extra dev
 uv tool install . --force-reinstall
 ```
 
-Hooks and MCP servers run the installed `repowire` executable, not your checkout. After changing daemon, hook, or MCP code locally, reinstall the tool and restart the daemon service so the live mesh uses the new code:
+Hooks and the MCP identity shim run the installed `repowire` Go executable, not
+an arbitrary binary in your checkout. Editable/source installs rebuild changed
+Go sources into the Repowire cache on the next invocation; platform wheels ship
+the native binary. Restart the daemon service after a local change so the live
+mesh uses it:
 
 ```bash
 uv tool install . --force-reinstall

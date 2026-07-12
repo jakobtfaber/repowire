@@ -6,8 +6,8 @@
 - repowire/_bin/repowire-hub-go: the Go daemon hub binary. CI cross-compiles it
   per target into that path before `uv build`; when present it is force-included
   and the wheel is marked platform-specific (tag from $REPOWIRE_WHEEL_TAG, else
-  inferred from the build host). Absent in pure dev/sdist builds, which stay
-  py3-none-any and fall back to the Python daemon at runtime.
+  inferred from the build host). Source/editable installs build the Go command
+  into the user cache on first invocation.
 """
 
 from __future__ import annotations

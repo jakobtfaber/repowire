@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -13,9 +14,9 @@ import (
 // peer lookups (by pane, by string identifier) that the HTTP routes/delivery
 // layer call. The buffer mirrors the Python daemon.event_log.EventLog: a bounded
 // (last 500) deque of wire dicts shaped {"id","type","timestamp",...data},
-// gap-recoverable via events_since. Persistence stays in the Store (AppendEvent);
-// this buffer is the live read surface only — it deliberately does NOT write to
-// disk, because the Store is already the durable journal.
+// gap-recoverable via events_since. appendEvent writes each new event to the
+// Store and mirrors it here; startup hydrates this live read window from the
+// durable journal without writing the rows again.
 
 // eventsBufferCapacity bounds the in-memory window. Matches the Python EventLog
 // max_events default (last 500).
@@ -119,6 +120,9 @@ func (b *eventBuffer) appendStructured(e Event) {
 		ev["session_id"] = string(e.SessionID)
 	}
 	for k, v := range e.Payload {
+		if k == "id" || k == "type" || k == "timestamp" {
+			continue
+		}
 		ev[k] = v
 	}
 	b.push(ev)
@@ -130,20 +134,32 @@ func (b *eventBuffer) appendStructured(e Event) {
 // and query/response routes) pass already-wire-shaped data maps.
 func (r *Registry) AddEvent(eventType string, data map[string]any) string {
 	id := uuid.NewString()
-	ev := map[string]any{
-		"id":        id,
-		"type":      eventType,
-		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+	event := Event{
+		EventID: id, Type: eventType, Timestamp: time.Now().UTC(), Payload: data,
 	}
-	for k, v := range data {
-		// id/type/timestamp from data must never shadow the canonical envelope.
-		if k == "id" || k == "type" || k == "timestamp" {
-			continue
-		}
-		ev[k] = v
+	if value, _ := data["peer_id"].(string); value != "" {
+		event.PeerID = proto.PeerID(value)
 	}
-	r.eventLog().push(ev)
+	if value, _ := data["peer_name"].(string); value != "" {
+		event.PeerName = proto.DisplayName(value)
+	} else if value, _ := data["peer"].(string); value != "" {
+		event.PeerName = proto.DisplayName(value)
+	}
+	if value, _ := data["session_id"].(string); value != "" {
+		event.SessionID = proto.PeerID(value)
+	} else if value, _ := data["repowire_session_id"].(string); value != "" {
+		event.SessionID = proto.PeerID(value)
+	}
+	r.appendEvent(context.Background(), event)
 	return id
+}
+
+// HydrateEvents seeds the in-memory dashboard window from SQLite without
+// writing the rows again or waking subscribers during daemon startup.
+func (r *Registry) HydrateEvents(events []map[string]any) {
+	for _, event := range events {
+		r.eventLog().push(event)
+	}
 }
 
 // SubscribeEvents registers an SSE subscriber: returns a buffered wake channel
@@ -202,10 +218,11 @@ func (r *Registry) EventsSince(eventID string) []map[string]any {
 // GetAllPeers returns every registered peer (live snapshot). Mirrors
 // PeerRegistry.get_all_peers.
 func (r *Registry) GetAllPeers() []*proto.Peer {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	out := make([]*proto.Peer, 0, len(r.peers))
 	for _, ps := range r.peers {
+		r.applyDescriptionTTLLocked(ps.peer)
 		out = append(out, clonePeer(ps.peer))
 	}
 	return out

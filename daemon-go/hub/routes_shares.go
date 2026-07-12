@@ -12,11 +12,8 @@ package hub
 // configured the endpoints degrade exactly as Python does: 503 for POST/DELETE,
 // empty list for GET.
 //
-// ponytail: RelayConfig is a hub-local struct, not the ported config.Config.
-// Reason: the Go config loader (~/.repowire/config.yaml → config/models.py
-// parity) is not yet ported. When it lands, drop this struct and have
-// WithShares take the resolved relay sub-config (enabled + url + api_key). The
-// wire behaviour here is final; only the source of the two values changes.
+// RelayConfig is intentionally the narrow resolved view the route needs; main
+// fills it from the Go config loader.
 
 import (
 	"bytes"

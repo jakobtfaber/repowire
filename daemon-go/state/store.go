@@ -1,6 +1,6 @@
-// Package state implements peer.Store against the EXISTING schema-v12 SQLite
-// db owned by the Python daemon. It never creates or migrates tables; it reads
-// and writes the schema as defined in repowire/daemon/state/database.py.
+// Package state implements peer.Store over Repowire's schema-v12 SQLite state.
+// The Go daemon owns fresh bootstrap and migrations while retaining data
+// compatibility with stores created by earlier Python releases.
 package state
 
 import (
@@ -22,8 +22,8 @@ import (
 // Compile-time assertion: Store satisfies the peer.Store contract.
 var _ peer.Store = (*Store)(nil)
 
-// schemaVersion is the user_version the Python daemon stamps. We refuse to open
-// anything else rather than silently corrupting an unexpected schema.
+// schemaVersion is the current user_version. Migrations advance older stores;
+// newer stores fail loud rather than risking corruption.
 const schemaVersion = 12
 
 // tsLayout is the exact format the Python daemon writes (strftime %Y-%m-%dT%H:%M:%fZ).
@@ -85,7 +85,14 @@ func NewStore(dbPath string) (*Store, error) {
 			return nil, fmt.Errorf("migrate state db: %w", err)
 		}
 	}
-	return &Store{db: db}, nil
+	store := &Store{db: db}
+	if dbPath != ":memory:" {
+		if err := store.importLegacy(context.Background(), filepath.Dir(dbPath)); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("import legacy state: %w", err)
+		}
+	}
+	return store, nil
 }
 
 // Close closes the underlying connection pool.
@@ -305,10 +312,14 @@ func (s *Store) AppendEvent(ctx context.Context, e peer.Event) error {
 	if e.SessionID != "" {
 		sessionID = string(e.SessionID)
 	}
+	var turnID any
+	if value, ok := e.Payload["turn_id"].(string); ok && value != "" {
+		turnID = value
+	}
 
 	const q = `INSERT OR REPLACE INTO events
 		(event_id, type, timestamp, peer_id, peer_name, session_id, turn_id, payload_json)
-		VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err := s.db.ExecContext(ctx, q,
 		eventID,
 		e.Type,
@@ -316,10 +327,57 @@ func (s *Store) AppendEvent(ctx context.Context, e peer.Event) error {
 		peerID,
 		peerName,
 		sessionID,
+		turnID,
 		string(payload),
 	)
 	if err != nil {
 		return fmt.Errorf("append event %s: %w", eventID, err)
 	}
 	return nil
+}
+
+// LoadRecentEvents returns the newest bounded event window in chronological
+// order, reconstructing the canonical envelope around the stored payload.
+func (s *Store) LoadRecentEvents(ctx context.Context, limit int) ([]map[string]any, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT event_id, type, timestamp, peer_id,
+		peer_name, session_id, turn_id, payload_json FROM events
+		ORDER BY timestamp DESC, rowid DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("load recent events: %w", err)
+	}
+	defer rows.Close()
+	var reversed []map[string]any
+	for rows.Next() {
+		var id, typ, timestamp, payload string
+		var peerID, peerName, sessionID, turnID sql.NullString
+		if err := rows.Scan(&id, &typ, &timestamp, &peerID, &peerName, &sessionID, &turnID, &payload); err != nil {
+			return nil, err
+		}
+		event := map[string]any{}
+		_ = json.Unmarshal([]byte(payload), &event)
+		event["id"], event["type"], event["timestamp"] = id, typ, timestamp
+		if peerID.Valid {
+			event["peer_id"] = peerID.String
+		}
+		if peerName.Valid {
+			event["peer_name"] = peerName.String
+		}
+		if sessionID.Valid {
+			event["session_id"] = sessionID.String
+		}
+		if turnID.Valid {
+			event["turn_id"] = turnID.String
+		}
+		reversed = append(reversed, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+		reversed[left], reversed[right] = reversed[right], reversed[left]
+	}
+	return reversed, nil
 }

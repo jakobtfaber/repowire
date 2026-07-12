@@ -18,21 +18,38 @@ const (
 )
 
 type Config struct {
-	Daemon DaemonConfig `yaml:"daemon"`
-	Relay  RelayConfig  `yaml:"relay"`
+	Daemon      DaemonConfig      `yaml:"daemon"`
+	Relay       RelayConfig       `yaml:"relay"`
+	Experiments ExperimentsConfig `yaml:"experiments"`
 }
 
 type DaemonConfig struct {
-	Host      string        `yaml:"host"`
-	Port      int           `yaml:"port"`
-	AuthToken string        `yaml:"auth_token"`
-	Spawn     SpawnConfig   `yaml:"spawn"`
-	MCPHTTP   MCPHTTPConfig `yaml:"mcp_http"`
+	Host                    string                   `yaml:"host"`
+	Port                    int                      `yaml:"port"`
+	AuthToken               string                   `yaml:"auth_token"`
+	HeartbeatInterval       int                      `yaml:"heartbeat_interval"`
+	PruneMaxAgeHours        float64                  `yaml:"prune_max_age_hours"`
+	DescriptionTTLSeconds   float64                  `yaml:"description_ttl_seconds"`
+	PeerReapTTLSeconds      float64                  `yaml:"peer_reap_ttl_seconds"`
+	StaleBusyTimeoutSeconds float64                  `yaml:"stale_busy_timeout_seconds"`
+	DeliveryQueueTTLSeconds float64                  `yaml:"delivery_queue_ttl_seconds"`
+	DeliveryQueueMaxPerPeer int                      `yaml:"delivery_queue_max_per_peer"`
+	OrchestratorRecall      OrchestratorRecallConfig `yaml:"orchestrator_recall"`
+	Spawn                   SpawnConfig              `yaml:"spawn"`
+	MCPHTTP                 MCPHTTPConfig            `yaml:"mcp_http"`
 }
 
 type SpawnConfig struct {
-	Commands     map[string]string `yaml:"commands"`
-	AllowedPaths []string          `yaml:"allowed_paths"`
+	Commands     map[string]string                  `yaml:"commands"`
+	AllowedPaths []string                           `yaml:"allowed_paths"`
+	Profiles     map[string]map[string]SpawnProfile `yaml:"profiles"`
+	EnvPath      []string                           `yaml:"env_path"`
+	Env          map[string]string                  `yaml:"env"`
+}
+
+type SpawnProfile struct {
+	Args        []string `yaml:"args"`
+	Description string   `yaml:"description"`
 }
 
 type MCPHTTPConfig struct {
@@ -44,17 +61,39 @@ type MCPHTTPConfig struct {
 	AllowDangerousTools           bool   `yaml:"allow_dangerous_tools"`
 }
 
+type OrchestratorRecallConfig struct {
+	Enabled      bool `yaml:"enabled"`
+	MaxHits      int  `yaml:"max_hits"`
+	MaxChars     int  `yaml:"max_chars"`
+	MaxFileChars int  `yaml:"max_file_chars"`
+}
+
 type RelayConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	URL     string `yaml:"url"`
 	APIKey  string `yaml:"api_key"`
 }
 
+type ExperimentsConfig struct {
+	ACPBrokerClient    bool                     `yaml:"acp_broker_client"`
+	ChatTurnStreaming  bool                     `yaml:"chat_turn_streaming"`
+	RemoteToolApproval RemoteToolApprovalConfig `yaml:"remote_tool_approval"`
+}
+
+type RemoteToolApprovalConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	GatedTools     []string `yaml:"gated_tools"`
+	TimeoutSeconds float64  `yaml:"timeout_seconds"`
+}
+
 func Defaults() Config {
 	return Config{
 		Daemon: DaemonConfig{
-			Host: defaultHost,
-			Port: defaultPort,
+			Host: defaultHost, Port: defaultPort, HeartbeatInterval: 30,
+			PruneMaxAgeHours: 24, DescriptionTTLSeconds: 900,
+			PeerReapTTLSeconds: 600, StaleBusyTimeoutSeconds: 1800,
+			DeliveryQueueTTLSeconds: 86400, DeliveryQueueMaxPerPeer: 100,
+			OrchestratorRecall: OrchestratorRecallConfig{Enabled: true, MaxHits: 3, MaxChars: 900, MaxFileChars: 12000},
 			Spawn: SpawnConfig{
 				Commands: map[string]string{},
 			},
@@ -64,6 +103,10 @@ func Defaults() Config {
 			},
 		},
 		Relay: RelayConfig{URL: defaultRelayURL},
+		Experiments: ExperimentsConfig{RemoteToolApproval: RemoteToolApprovalConfig{
+			GatedTools:     []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"},
+			TimeoutSeconds: 45,
+		}},
 	}
 }
 
@@ -112,6 +155,25 @@ func applyEnv(cfg *Config) {
 	if v := firstEnv("REPOWIRE_DAEMON__AUTH_TOKEN", "REPOWIRE_AUTH_TOKEN"); v != "" {
 		cfg.Daemon.AuthToken = v
 	}
+	setIntEnv(&cfg.Daemon.HeartbeatInterval, "REPOWIRE_DAEMON__HEARTBEAT_INTERVAL")
+	setFloatEnv(&cfg.Daemon.PruneMaxAgeHours, "REPOWIRE_DAEMON__PRUNE_MAX_AGE_HOURS")
+	setFloatEnv(&cfg.Daemon.DescriptionTTLSeconds, "REPOWIRE_DAEMON__DESCRIPTION_TTL_SECONDS")
+	setFloatEnv(&cfg.Daemon.PeerReapTTLSeconds, "REPOWIRE_DAEMON__PEER_REAP_TTL_SECONDS")
+	setFloatEnv(&cfg.Daemon.StaleBusyTimeoutSeconds, "REPOWIRE_DAEMON__STALE_BUSY_TIMEOUT_SECONDS")
+	setFloatEnv(&cfg.Daemon.DeliveryQueueTTLSeconds, "REPOWIRE_DAEMON__DELIVERY_QUEUE_TTL_SECONDS")
+	setIntEnv(&cfg.Daemon.DeliveryQueueMaxPerPeer, "REPOWIRE_DAEMON__DELIVERY_QUEUE_MAX_PER_PEER")
+	setBoolEnv(&cfg.Daemon.MCPHTTP.Enabled, "REPOWIRE_DAEMON__MCP_HTTP__ENABLED")
+	if v := os.Getenv("REPOWIRE_DAEMON__MCP_HTTP__BIND"); v != "" {
+		cfg.Daemon.MCPHTTP.Bind = v
+	}
+	setBoolEnv(&cfg.Daemon.MCPHTTP.RequireAuth, "REPOWIRE_DAEMON__MCP_HTTP__REQUIRE_AUTH")
+	setBoolEnv(&cfg.Daemon.MCPHTTP.ExposeViaRelay, "REPOWIRE_DAEMON__MCP_HTTP__EXPOSE_VIA_RELAY")
+	setBoolEnv(&cfg.Daemon.MCPHTTP.AllowUnauthenticatedLocalhost, "REPOWIRE_DAEMON__MCP_HTTP__ALLOW_UNAUTHENTICATED_LOCALHOST")
+	setBoolEnv(&cfg.Daemon.MCPHTTP.AllowDangerousTools, "REPOWIRE_DAEMON__MCP_HTTP__ALLOW_DANGEROUS_TOOLS")
+	setBoolEnv(&cfg.Daemon.OrchestratorRecall.Enabled, "REPOWIRE_DAEMON__ORCHESTRATOR_RECALL__ENABLED")
+	setIntEnv(&cfg.Daemon.OrchestratorRecall.MaxHits, "REPOWIRE_DAEMON__ORCHESTRATOR_RECALL__MAX_HITS")
+	setIntEnv(&cfg.Daemon.OrchestratorRecall.MaxChars, "REPOWIRE_DAEMON__ORCHESTRATOR_RECALL__MAX_CHARS")
+	setIntEnv(&cfg.Daemon.OrchestratorRecall.MaxFileChars, "REPOWIRE_DAEMON__ORCHESTRATOR_RECALL__MAX_FILE_CHARS")
 	if v := os.Getenv("REPOWIRE_SPAWN_COMMANDS"); v != "" {
 		var commands map[string]string
 		if json.Unmarshal([]byte(v), &commands) == nil {
@@ -121,11 +183,25 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("REPOWIRE_SPAWN_ALLOWED_PATHS"); v != "" {
 		cfg.Daemon.Spawn.AllowedPaths = splitCSV(v)
 	}
-	if v := os.Getenv("REPOWIRE_RELAY_URL"); v != "" {
+	if v := firstEnv("REPOWIRE_RELAY_URL", "REPOWIRE_RELAY__URL"); v != "" {
 		cfg.Relay.URL = v
 	}
-	if v := os.Getenv("REPOWIRE_RELAY_API_KEY"); v != "" {
+	setBoolEnv(&cfg.Relay.Enabled, "REPOWIRE_RELAY__ENABLED")
+	if v := firstEnv("REPOWIRE_API_KEY", "REPOWIRE_RELAY__API_KEY", "REPOWIRE_RELAY_API_KEY"); v != "" {
 		cfg.Relay.APIKey = v
+		cfg.Relay.Enabled = true
+	}
+	setBoolEnv(&cfg.Experiments.ACPBrokerClient, "REPOWIRE_EXPERIMENTS__ACP_BROKER_CLIENT")
+	setBoolEnv(&cfg.Experiments.ChatTurnStreaming, "REPOWIRE_EXPERIMENTS__CHAT_TURN_STREAMING")
+	setBoolEnv(&cfg.Experiments.RemoteToolApproval.Enabled, "REPOWIRE_EXPERIMENTS__REMOTE_TOOL_APPROVAL__ENABLED")
+	setFloatEnv(&cfg.Experiments.RemoteToolApproval.TimeoutSeconds, "REPOWIRE_EXPERIMENTS__REMOTE_TOOL_APPROVAL__TIMEOUT_SECONDS")
+	if v := os.Getenv("REPOWIRE_EXPERIMENTS__REMOTE_TOOL_APPROVAL__GATED_TOOLS"); v != "" {
+		var tools []string
+		if json.Unmarshal([]byte(v), &tools) == nil {
+			cfg.Experiments.RemoteToolApproval.GatedTools = tools
+		} else {
+			cfg.Experiments.RemoteToolApproval.GatedTools = splitCSV(v)
+		}
 	}
 }
 
@@ -139,11 +215,23 @@ func normalize(cfg *Config) {
 	if cfg.Daemon.Spawn.Commands == nil {
 		cfg.Daemon.Spawn.Commands = map[string]string{}
 	}
+	if cfg.Daemon.Spawn.Profiles == nil {
+		cfg.Daemon.Spawn.Profiles = map[string]map[string]SpawnProfile{}
+	}
+	if cfg.Daemon.Spawn.Env == nil {
+		cfg.Daemon.Spawn.Env = map[string]string{}
+	}
 	if cfg.Daemon.MCPHTTP.Bind == "" {
 		cfg.Daemon.MCPHTTP.Bind = "localhost-only"
 	}
 	if cfg.Relay.URL == "" {
 		cfg.Relay.URL = defaultRelayURL
+	}
+	if len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {
+		cfg.Experiments.RemoteToolApproval.GatedTools = []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"}
+	}
+	if cfg.Experiments.RemoteToolApproval.TimeoutSeconds <= 0 {
+		cfg.Experiments.RemoteToolApproval.TimeoutSeconds = 45
 	}
 }
 
@@ -154,6 +242,29 @@ func firstEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func setIntEnv(target *int, key string) {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			*target = parsed
+		}
+	}
+}
+func setFloatEnv(target *float64, key string) {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+			*target = parsed
+		}
+	}
+}
+
+func setBoolEnv(target *bool, key string) {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			*target = parsed
+		}
+	}
 }
 
 func splitCSV(s string) []string {

@@ -324,6 +324,13 @@ func (c *Client) handleHTTPRequest(ctx context.Context, conn *websocket.Conn, ms
 	if path == "" {
 		path = "/"
 	}
+	// HTTP MCP is deliberately local-only. A tunneled request originates from
+	// the hosted relay even though the final local hop would appear loopback, so
+	// reject it here before it can reach the daemon's localhost auth check.
+	if path == "/mcp" || strings.HasPrefix(path, "/mcp/") {
+		c.sendHTTPResponse(ctx, conn, reqID, http.StatusNotFound, nil, []byte("not found"))
+		return
+	}
 	u := c.localBaseURL + path
 	if qs, _ := msg["query_string"].(string); qs != "" {
 		u += "?" + qs

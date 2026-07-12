@@ -103,6 +103,10 @@ func TestAppendAndReadEvent(t *testing.T) {
 	if payload != `{"reason":"reconnect"}` {
 		t.Errorf("payload_json = %q", payload)
 	}
+	events, err := s.LoadRecentEvents(ctx, 10)
+	if err != nil || len(events) != 1 || events[0]["id"] != eventID || events[0]["reason"] != "reconnect" {
+		t.Fatalf("LoadRecentEvents = %#v, %v", events, err)
+	}
 }
 
 func TestAppendEventEmptyPeerIDStoresNull(t *testing.T) {

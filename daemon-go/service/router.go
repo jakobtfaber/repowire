@@ -20,9 +20,8 @@ import (
 //
 // *WebSocketTransport (transport.go) implements this narrower interface plus the
 // full wire primitives. The router (and, one layer up, PeerDelivery) depend only
-// on Transport so they stay testable and so the ACP branch can be slotted in
-// later without touching the WS impl. ACPRoute is the ONLY ACP-aware method; in
-// this phase it is a stub that always reports "no ACP route".
+// on Transport so they stay testable. ACPRoute is the only ACP-aware method;
+// transport choice remains above the wire-level router.
 // ----------------------------------------------------------------------------
 
 // Transport is the narrow seam the router/delivery layer routes against. The
@@ -39,14 +38,20 @@ type Transport interface {
 
 var _ Transport = (*WebSocketTransport)(nil)
 
-// ACPRouteDecision is the opaque ACP routing decision.
-//
-// ponytail: STUB — carries only the target peer_id today. Upgrade path: the
-// experimental ACP transport fills in the broker spec (mirroring
-// acp.AcpRouteDecision.spec) so DeliverAsk/Notify can dispatch via the broker.
+// ACPRouteDecision is a validated ACP routing decision for one peer.
 type ACPRouteDecision struct {
-	PeerID proto.PeerID
-	// spec fields are deferred to the ACP experiment.
+	PeerID  proto.PeerID
+	Spec    ACPPeerSpec
+	manager *ACPManager
+}
+
+// Prompt schedules a persistent ACP session/prompt turn. Completion runs on a
+// broker goroutine; accepting the prompt is intentionally non-blocking.
+func (d *ACPRouteDecision) Prompt(text string, complete func(ACPPromptResult, error)) error {
+	if d == nil || d.manager == nil {
+		return errors.New("ACP route has no manager")
+	}
+	return d.manager.Prompt(d.Spec, text, complete)
 }
 
 // ----------------------------------------------------------------------------

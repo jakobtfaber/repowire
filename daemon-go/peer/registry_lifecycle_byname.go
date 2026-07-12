@@ -57,6 +57,12 @@ func (r *Registry) UnregisterPeer(ctx context.Context, identifier string, circle
 // a fail-loud error (→ 409); (false,0,nil) is "no such peer" (→ the route may
 // still treat a terminal offline of an unknown id as a no-op, mirroring Python).
 func (r *Registry) MarkOfflineByName(ctx context.Context, identifier string, terminal bool) (found bool, cancelled int, err error) {
+	return r.MarkOfflineByNameWithReason(ctx, identifier, terminal, "terminal_offline")
+}
+
+// MarkOfflineByNameWithReason preserves the explicit terminal cause for
+// durable-job failure and other terminal-offline observers.
+func (r *Registry) MarkOfflineByNameWithReason(ctx context.Context, identifier string, terminal bool, reason string) (found bool, cancelled int, err error) {
 	r.mu.RLock()
 	p, rerr := r.resolvePeerLocked(identifier, nil)
 	r.mu.RUnlock()
@@ -68,12 +74,12 @@ func (r *Registry) MarkOfflineByName(ctx context.Context, identifier string, ter
 		// orphan ws-hook cannot re-register through a persisted mapping. Only a
 		// peer_id-shaped identifier can be retired (display names aren't identity).
 		if terminal && looksLikePeerID(identifier) {
-			c, mErr := r.MarkOffline(ctx, proto.PeerID(identifier), true)
+			c, mErr := r.MarkOfflineWithReason(ctx, proto.PeerID(identifier), true, reason)
 			return false, c, mErr
 		}
 		return false, 0, nil
 	}
-	c, mErr := r.MarkOffline(ctx, p.PeerID, terminal)
+	c, mErr := r.MarkOfflineWithReason(ctx, p.PeerID, terminal, reason)
 	return true, c, mErr
 }
 
@@ -118,11 +124,6 @@ func (r *Registry) TouchLastSeen(ctx context.Context, identifier string, circle 
 // UpdateDescription sets a peer's task description in live state + durable mapping.
 // Returns (found, err); an ambiguous name is a fail-loud error (→ 409). Mirrors
 // PeerRegistry.update_description.
-//
-// ponytail: the description TTL sweep (_apply_description_ttl /
-// _description_set_at) is deferred — it belongs in lazy_repair alongside the
-// other ghost/stash sweeps, not on the write path. Upgrade path: stamp set-at
-// here and clear stale descriptions in LazyRepair when the config TTL lands.
 func (r *Registry) UpdateDescription(ctx context.Context, identifier, description string, circle *string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -135,6 +136,11 @@ func (r *Registry) UpdateDescription(ctx context.Context, identifier, descriptio
 	}
 	now := time.Now().UTC()
 	p.Description = description
+	if description == "" {
+		delete(r.descriptionSetAt, p.PeerID)
+	} else {
+		r.descriptionSetAt[p.PeerID] = now
+	}
 	p.LastSeen = &now
 	if m, ok := r.mappings[p.PeerID]; ok && m.Description != description {
 		m.Description = description

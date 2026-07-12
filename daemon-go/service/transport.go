@@ -58,6 +58,24 @@ type WebSocketTransport struct {
 	conns map[proto.PeerID]*ConnectionInfo
 	pongs map[proto.PeerID]chan map[string]any
 	acks  map[ackKey]chan map[string]any
+	acp   *ACPManager
+}
+
+// EnableACP turns on metadata.acp routing and owns the subprocess manager.
+func (t *WebSocketTransport) EnableACP(enabled bool) {
+	t.mu.Lock()
+	if enabled && t.acp == nil {
+		t.acp = NewACPManager()
+	}
+	var closing *ACPManager
+	if !enabled && t.acp != nil {
+		closing = t.acp
+		t.acp = nil
+	}
+	t.mu.Unlock()
+	if closing != nil {
+		closing.Close()
+	}
 }
 
 var _ peer.Transport = (*WebSocketTransport)(nil)
@@ -229,16 +247,48 @@ func (t *WebSocketTransport) ConnectionPaneID(id proto.PeerID) (string, bool) {
 	return *info.PaneID, true
 }
 
-// ACPRoute reports whether this target should route over ACP instead of WS.
-//
-// ponytail: STUB. Always returns (nil, false) so every target falls through to
-// the WS path. Upgrade path: when the ACP broker experiment lands, replace this
-// with an AcpRouter implementation that mirrors PeerTransportRouter.acp_route
-// (maybe_decide_acp_route gated on experiments.acp_broker_client) and returns a
-// non-nil *ACPRouteDecision for brokered peers. The router/delivery/reconcile
-// code already branches on the bool, so no signature churn is needed then.
+// ACPRoute routes only when the experiment is enabled and metadata.acp has a
+// usable command. Invalid blocks fall through to WebSocket delivery.
 func (t *WebSocketTransport) ACPRoute(target *proto.Peer) (*ACPRouteDecision, bool) {
-	return nil, false
+	t.mu.RLock()
+	manager := t.acp
+	t.mu.RUnlock()
+	if manager == nil || target == nil || target.Metadata == nil {
+		return nil, false
+	}
+	raw, ok := target.Metadata["acp"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	command, _ := raw["command"].(string)
+	if command == "" {
+		return nil, false
+	}
+	spec := ACPPeerSpec{PeerID: target.PeerID, Command: command, CWD: target.Path, Env: map[string]string{}}
+	if cwd, ok := raw["cwd"].(string); ok && cwd != "" {
+		spec.CWD = cwd
+	}
+	if values, ok := raw["args"].([]any); ok {
+		for _, value := range values {
+			if arg, ok := value.(string); ok {
+				spec.Args = append(spec.Args, arg)
+			}
+		}
+	} else if values, ok := raw["args"].([]string); ok {
+		spec.Args = append(spec.Args, values...)
+	}
+	if values, ok := raw["env"].(map[string]any); ok {
+		for key, value := range values {
+			if text, ok := value.(string); ok {
+				spec.Env[key] = text
+			}
+		}
+	} else if values, ok := raw["env"].(map[string]string); ok {
+		for key, value := range values {
+			spec.Env[key] = value
+		}
+	}
+	return &ACPRouteDecision{PeerID: target.PeerID, Spec: spec, manager: manager}, true
 }
 
 // IsConnected reports whether the peer has a live socket. Used by the registry's
@@ -266,14 +316,41 @@ func (t *WebSocketTransport) GetAllSessions() []proto.PeerID {
 func (t *WebSocketTransport) Close(id proto.PeerID) error {
 	t.mu.Lock()
 	info, ok := t.conns[id]
+	manager := t.acp
 	if ok {
 		delete(t.conns, id)
 	}
 	t.mu.Unlock()
 	if ok && info.WS != nil {
-		return info.WS.Close(websocket.StatusGoingAway, "peer retired")
+		err := info.WS.Close(websocket.StatusGoingAway, "peer retired")
+		if manager != nil {
+			manager.Drop(id)
+		}
+		return err
+	}
+	if manager != nil {
+		manager.Drop(id)
 	}
 	return nil
+}
+
+// CloseACP tears down every brokered subprocess during daemon shutdown.
+func (t *WebSocketTransport) CloseACP() {
+	t.mu.RLock()
+	manager := t.acp
+	t.mu.RUnlock()
+	if manager != nil {
+		manager.Close()
+	}
+}
+
+func (t *WebSocketTransport) SetACPPermissionHandler(handler ACPPermissionHandler) {
+	t.mu.RLock()
+	manager := t.acp
+	t.mu.RUnlock()
+	if manager != nil {
+		manager.SetPermissionHandler(handler)
+	}
 }
 
 // extractDeliveryID pulls the delivery_id out of an outbound frame regardless of

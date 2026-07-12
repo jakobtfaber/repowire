@@ -51,7 +51,7 @@ acp-probe = [
 ]
 
 [project.scripts]
-repowire = "repowire.cli:main"
+repowire = "repowire.go_launcher:main"
 
 [build-system]
 requires = ["hatchling"]

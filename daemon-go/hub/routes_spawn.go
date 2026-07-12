@@ -21,17 +21,16 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"time"
 
+	clienthooks "github.com/repowire/repowire/daemon-go/hooks"
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
 )
 
-// spawnRegistry is the narrow registry seam the spawn routes need. It mirrors the
-// brief's authoritative interface; *peer.Registry satisfies it once
-// ResolvePeerStrict lands (it already has LazyRepair / AllocateAndRegister /
-// GetPeer / UnregisterPeer / MarkOffline). Kept narrow for the same reason as
-// askRoutesRegistry: hermetic route tests + the registry port is still in flight.
+// spawnRegistry is the narrow registry seam the spawn routes need. The concrete
+// registry satisfies it; keeping the seam makes route tests hermetic.
 type spawnRegistry interface {
 	LazyRepair(ctx context.Context)
 	// ResolvePeerStrict returns 0/1/N candidates: empty → 404, one → resolved,
@@ -198,7 +197,8 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	svc := h.spawn.svc
 	// Resolve command BEFORE spawn so a 422/403 surfaces without a pane.
-	if _, err := svc.ResolveCommand(backend, req.Profile); err != nil {
+	command, err := svc.ResolveCommand(backend, req.Profile)
+	if err != nil {
 		h.writeSpawnError(w, err)
 		return
 	}
@@ -206,6 +206,7 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Path:    req.Path,
 		Circle:  req.Circle,
 		Backend: backend,
+		Command: command,
 		Message: req.Message,
 		Role:    req.Role,
 	})
@@ -743,14 +744,6 @@ type RehookPeerResponse struct {
 	Reason          string  `json:"reason"`
 }
 
-// handleRehookPeer ports the rehook dry-run/report + ownership-verification subset.
-// The actual ws-hook respawn (maybe_respawn / reconcile_spawn_ws_hook) is a
-// hook-supervisor concern; the Go hook supervisor is unported, so when apply=true
-// this returns acted=false with reason "hook_supervisor_unported".
-//
-// ponytail: the respawn machinery (hooks/ws_hook_supervisor.py) is not in
-// daemon-go. Follow-up: port maybe_respawn + reconcile_spawn_ws_hook (pid-file
-// liveness + flock-deduped respawn) and wire the apply path here.
 func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 	if !h.spawnReady(w) {
 		return
@@ -768,6 +761,14 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
+	wasConnected := h.transport.IsConnected(peerCopy.PeerID)
+	if wasConnected {
+		if _, err := h.transport.Ping(ctx, peerCopy.PeerID, 2*time.Second); err == nil {
+			ok := true
+			writeJSON(w, http.StatusOK, RehookPeerResponse{OK: true, Acted: false, PeerID: string(peerCopy.PeerID), DisplayName: string(peerCopy.DisplayName), PaneID: peerCopy.PaneID, WSWasConnected: true, PingOK: &ok, PaneVerified: true, Reason: "already_healthy"})
+			return
+		}
+	}
 
 	if !h.sameHostOK(w, peerCopy, "Peer rehook is same-host only.") {
 		return
@@ -782,7 +783,7 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 
 	// Ownership gate: prove the pane is real AND belongs to THIS peer. Accept
 	// durable spawn-ownership proof OR live tmux evidence whose current_path
-	// matches the peer's path. (Pane-metadata hook files are unported in Go.)
+	// matches the peer's path.
 	paneVerified := svc(h).Ownership().IsSpawned(*peerCopy.PaneID) ||
 		svc(h).Ownership().ValidateForPeer(peerCopy).OK
 	if !paneVerified {
@@ -813,16 +814,25 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// apply=true: the hook supervisor is unported, so we cannot respawn the
-	// ws-hook. Report honestly (acted=false) rather than claim a respawn.
+	agentPID := 0
+	if peerCopy.AgentPID != nil {
+		agentPID = *peerCopy.AgentPID
+	}
+	respawned, err := clienthooks.ReconcileWSHook(*peerCopy.PaneID, string(peerCopy.PeerID), string(peerCopy.DisplayName), string(peerCopy.Backend), peerCopy.Path, agentPID)
+	if err != nil {
+		writeJSONError(w, http.StatusConflict, map[string]any{"error": "rehook_failed", "hint": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, RehookPeerResponse{
-		OK:           true,
-		Acted:        false,
-		PeerID:       string(peerCopy.PeerID),
-		DisplayName:  string(peerCopy.DisplayName),
-		PaneID:       peerCopy.PaneID,
-		PaneVerified: true,
-		Reason:       "hook_supervisor_unported",
+		OK:              true,
+		Acted:           respawned,
+		PeerID:          string(peerCopy.PeerID),
+		DisplayName:     string(peerCopy.DisplayName),
+		PaneID:          peerCopy.PaneID,
+		WSWasConnected:  wasConnected,
+		PaneVerified:    true,
+		WSHookRespawned: respawned,
+		Reason:          "ws_hook_respawned",
 	})
 }
 

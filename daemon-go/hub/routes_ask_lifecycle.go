@@ -31,6 +31,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
 )
@@ -39,12 +41,8 @@ import (
 // It mirrors the PeerRegistry methods the Python asks.py / messages.py handlers
 // call (get_peer_by_pane, get_peer, get_peer-by-name, add_event).
 //
-// ponytail: a narrow seam because the REGISTRY port (which adds GetPeerByPane /
-// GetPeerByName / AddEvent to *peer.Registry) is still in flight — the same
-// reason service's accessRegistry (delivery.go) is narrow. *peer.Registry
-// satisfies this once those land; the handler bodies don't change. Kept
-// narrow also keeps the route handler test hermetic (no SQLite, no live
-// transport).
+// The concrete registry satisfies this seam. Keeping it narrow makes route
+// tests hermetic (no SQLite and no live transport).
 type askRoutesRegistry interface {
 	// GetPeerByPane resolves a tmux-pane-keyed transport (Claude Code / Codex /
 	// Gemini Stop hooks) to its peer. (nil,false) when no peer owns the pane.
@@ -92,12 +90,96 @@ func (h *Hub) registerAskLifecycleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/ask", h.requireAuth(h.handleAsk))
 	mux.HandleFunc("/ack", h.requireAuth(h.handleAck))
 	mux.HandleFunc("/answer", h.requireAuth(h.handleAnswer))
+	mux.HandleFunc("/questions/ask-blocking", h.requireAuth(h.handleAskBlockingQuestion))
 	mux.HandleFunc("/query", h.requireAuth(h.handleQuery))
 	mux.HandleFunc("/ask-many", h.requireAuth(h.handleAskMany))
 	mux.HandleFunc("/ask-many/", h.requireAuth(h.handleAskManyResult))
 	mux.HandleFunc("/asks/pending", h.requireAuth(h.handlePendingAsks))
 	// /asks/{correlation_id}/{picked_up|mark_reminded|wait}
 	mux.HandleFunc("/asks/", h.requireAuth(h.handleAskSubpath))
+}
+
+type askBlockingOption struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+type askBlockingRequest struct {
+	Prompt         string              `json:"prompt"`
+	Options        []askBlockingOption `json:"options"`
+	Scope          string              `json:"scope"`
+	TimeoutSeconds float64             `json:"timeout_seconds"`
+	CorrelationID  string              `json:"correlation_id"`
+	Origin         string              `json:"origin"`
+	FromPeer       string              `json:"from_peer"`
+	Metadata       map[string]any      `json:"metadata"`
+}
+
+func (h *Hub) handleAskBlockingQuestion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if !h.askReady(w) {
+		return
+	}
+	var req askBlockingRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Prompt == "" {
+		writeJSONError(w, http.StatusUnprocessableEntity, "prompt is required")
+		return
+	}
+	if req.Scope == "tool_permission" && len(req.Options) == 0 {
+		writeJSONError(w, http.StatusUnprocessableEntity, "tool_permission question requires at least one allow-capable option")
+		return
+	}
+	wait := req.TimeoutSeconds
+	if wait <= 0 {
+		wait = 45
+	}
+	if wait > 55 {
+		wait = 55
+	}
+	cid := req.CorrelationID
+	if cid == "" {
+		cid = "ask-" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
+	}
+	from := req.FromPeer
+	if from == "" {
+		from = "external"
+	}
+	options := make([]any, 0, len(req.Options))
+	for _, option := range req.Options {
+		options = append(options, map[string]any{"id": option.ID, "title": option.Title})
+	}
+	outcome := "timed_out"
+	if req.Scope == "tool_permission" {
+		outcome = "denied"
+	}
+	timeoutMessage := "blocking question timed out"
+	question := map[string]any{"kind": "choice", "prompt": req.Prompt, "options": options, "blocking": true, "timeout_seconds": wait, "default_answer": map[string]any{"outcome": outcome, "message": timeoutMessage}, "scope": req.Scope, "metadata": req.Metadata}
+	registered, err := h.ask.asks.Register(r.Context(), service.RegisterAskParams{FromPeerID: proto.PeerID(from), FromPeerName: proto.DisplayName(from), ToPeerID: proto.PeerID("__repowire_control__"), ToPeerName: proto.DisplayName("human"), Text: req.Prompt, CorrelationID: cid, Question: question})
+	if err != nil {
+		if errors.Is(err, service.ErrQuiesced) {
+			writeJSONError(w, http.StatusConflict, err.Error())
+		} else {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	event := map[string]any{"from": from, "to": "human", "from_peer_id": from, "to_peer_id": "__repowire_control__", "text": req.Prompt, "correlation_id": registered, "question": question}
+	if req.Origin != "" {
+		event["origin"] = req.Origin
+	}
+	h.ask.reg.AddEvent(r.Context(), "ask", event)
+	message := timeoutMessage
+	answer, err := h.ask.asks.WaitForAnswer(r.Context(), registered, time.Duration(wait*float64(time.Second)), &service.Answer{Outcome: outcome, Message: &message})
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"correlation_id": registered, "outcome": answer.Outcome, "option_id": answer.OptionID, "message": answer.Message})
 }
 
 // ----------------------------------------------------------------------------

@@ -109,6 +109,13 @@ type SpawnService struct {
 	own          PaneOwnership
 	commands     map[proto.AgentType]string
 	allowedPaths []string
+	profiles     map[proto.AgentType]map[string][]string
+	env          map[string]string
+}
+
+func (s *SpawnService) WithRuntimeConfig(profiles map[proto.AgentType]map[string][]string, env map[string]string) *SpawnService {
+	s.profiles, s.env = profiles, env
+	return s
 }
 
 // NewSpawnService constructs the service over an injected TmuxController and
@@ -159,8 +166,7 @@ func (s *SpawnService) ValidatePath(path string) (string, error) {
 }
 
 // ResolveCommand ports SpawnService.resolve_command: 422 command_unavailable when
-// no commands entry maps to the backend. A non-nil profile is 422
-// profile_unavailable (profiles unported — see the file ponytail note).
+// no commands entry maps to the backend. An unknown profile is 422.
 func (s *SpawnService) ResolveCommand(b proto.AgentType, profile *string) (string, error) {
 	command := s.commands[b]
 	if command == "" {
@@ -171,13 +177,18 @@ func (s *SpawnService) ResolveCommand(b proto.AgentType, profile *string) (strin
 		}}
 	}
 	if profile != nil && *profile != "" {
-		// ponytail: spawn profiles are not yet ported to the Go config layer.
-		return "", &SpawnError{Status: 422, Detail: map[string]any{
-			"error":   "profile_unavailable",
-			"hint":    fmt.Sprintf("No daemon.spawn.profiles.%s.%s entry in ~/.repowire/config.yaml.", string(b), *profile),
-			"backend": string(b),
-			"profile": *profile,
-		}}
+		args, ok := s.profiles[b][*profile]
+		if !ok {
+			return "", &SpawnError{Status: 422, Detail: map[string]any{
+				"error":   "profile_unavailable",
+				"hint":    fmt.Sprintf("No daemon.spawn.profiles.%s.%s entry in ~/.repowire/config.yaml.", string(b), *profile),
+				"backend": string(b),
+				"profile": *profile,
+			}}
+		}
+		for _, arg := range args {
+			command += " " + shellQuote(arg)
+		}
 	}
 	return command, nil
 }
@@ -207,6 +218,14 @@ func (s *SpawnService) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 	}
 	cfg.Path = resolvedPath
 	cfg.Command = command
+	if cfg.Env == nil {
+		cfg.Env = map[string]string{}
+	}
+	for key, value := range s.env {
+		if _, set := cfg.Env[key]; !set {
+			cfg.Env[key] = value
+		}
+	}
 
 	result, err := s.tmux.Spawn(cfg)
 	if err != nil {
@@ -426,10 +445,8 @@ func uniqueWindowName(session, base string) string {
 }
 
 // commandWithEnv ports _command_with_env: prefix the command with explicit env
-// assignments. ponytail: the >512-char launcher-script fallback is omitted; the
-// Go daemon does not yet capture a long login-shell PATH (spawn_env is unported),
-// so env overlays are short. Upgrade path: port _write_launcher when env capture
-// lands.
+// assignments. The daemon captures the login-shell PATH when no explicit PATH
+// is configured, so launchd-spawned agents see the same executables as a shell.
 func commandWithEnv(command string, env map[string]string) string {
 	if len(env) == 0 {
 		return command

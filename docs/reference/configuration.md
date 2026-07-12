@@ -15,7 +15,7 @@ daemon:
     max_chars: 900
     max_file_chars: 12000
   mcp_http:
-    enabled: false
+    enabled: true
     bind: "localhost-only"
     require_auth: true
     allow_unauthenticated_localhost: false
@@ -42,7 +42,9 @@ updates:
 
 ## Environment variables
 
-Any field can be overridden by an environment variable. Nested fields use a `REPOWIRE_` prefix and `__` as the section delimiter:
+Documented scalar daemon, relay, and experiment fields can be overridden
+by environment variables. Nested fields use a `REPOWIRE_` prefix and `__` as the
+section delimiter:
 
 ```bash
 REPOWIRE_DAEMON__PORT=9000
@@ -56,19 +58,26 @@ Resolution precedence, highest first: explicit constructor arguments, the flat r
 
 ## `daemon.auth_token`
 
-Optional local bearer token for daemon HTTP routes, WebSocket connections, hooks, and the opt-in HTTP MCP endpoint. `repowire setup --http-mcp` generates one automatically if missing. Treat it as a local password; rotate it by replacing the value and restarting the daemon service.
+Optional local bearer token for daemon HTTP routes, WebSocket connections,
+hooks, and HTTP MCP. `repowire setup` generates one automatically because the
+stdio MCP identity shim forwards to `/mcp`. Treat it as a local password;
+rotate it by replacing the value and restarting the daemon service.
 
 ## `daemon.mcp_http`
 
-Experimental Streamable HTTP MCP endpoint mounted at `http://127.0.0.1:8377/mcp`.
+Streamable HTTP MCP endpoint mounted at `http://127.0.0.1:8377/mcp`. The daemon
+owns all tool implementations here; `repowire mcp` is a per-agent stdio proxy.
 
-- `enabled`: opt in to mounting `/mcp`. Default: `false`.
-- `bind`: only `localhost-only` is supported. If `daemon.host` is not `127.0.0.1`, `::1`, or `localhost`, `/mcp` is not mounted.
+- `enabled`: mount `/mcp`. The model default is `false`; `repowire setup` enables it for normal installations.
+- `bind`: only `localhost-only` is supported. The handler rejects non-loopback callers even when the daemon itself listens on a wider interface.
 - `require_auth`: require `Authorization: Bearer <daemon.auth_token>`. Default: `true`.
 - `allow_unauthenticated_localhost`: development-only escape hatch that disables bearer auth when `require_auth` is also disabled. Do not use on shared machines.
 - `allow_dangerous_tools`: allow lifecycle/admin MCP tools over HTTP MCP. Default: `false`; spawn, kill, and schedule mutation stay disabled.
 
-HTTP MCP is never exposed through the hosted relay. The default stdio MCP server installed by `repowire setup` is unchanged and remains the stable path for agents.
+HTTP MCP is never exposed through the hosted relay. The stdio identity shim is
+the stable path for agents because it preserves peer identity; direct HTTP is
+for local steering clients that accept the `mcp-http` identity and restricted
+admin surface.
 
 ## `daemon.delivery_queue_*`
 

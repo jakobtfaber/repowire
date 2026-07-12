@@ -73,6 +73,9 @@ func TestLoadEnvOverridesYAML(t *testing.T) {
 	t.Setenv("REPOWIRE_AUTH_TOKEN", "env-token")
 	t.Setenv("REPOWIRE_SPAWN_COMMANDS", `{"codex":"codex"}`)
 	t.Setenv("REPOWIRE_SPAWN_ALLOWED_PATHS", "/a,/b")
+	t.Setenv("REPOWIRE_API_KEY", "relay-token")
+	t.Setenv("REPOWIRE_DAEMON__MCP_HTTP__ENABLED", "true")
+	t.Setenv("REPOWIRE_EXPERIMENTS__ACP_BROKER_CLIENT", "true")
 	if err := os.WriteFile(path, []byte(`
 daemon:
   port: 9999
@@ -98,5 +101,11 @@ daemon:
 	}
 	if len(cfg.Daemon.Spawn.AllowedPaths) != 2 || cfg.Daemon.Spawn.AllowedPaths[1] != "/b" {
 		t.Fatalf("allowed paths = %#v", cfg.Daemon.Spawn.AllowedPaths)
+	}
+	if !cfg.Relay.Enabled || cfg.Relay.APIKey != "relay-token" {
+		t.Fatalf("legacy relay key did not enable relay: %+v", cfg.Relay)
+	}
+	if !cfg.Daemon.MCPHTTP.Enabled || !cfg.Experiments.ACPBrokerClient {
+		t.Fatalf("nested boolean env overrides failed: %+v %+v", cfg.Daemon.MCPHTTP, cfg.Experiments)
 	}
 }

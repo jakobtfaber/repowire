@@ -1,53 +1,54 @@
 # daemon-go
 
-Go port of the repowire daemon hub. Same WebSocket/HTTP wire protocol as the
-Python daemon, reads the same `~/.repowire/state.db` (schema v12). Existing
-clients — hooks, MCP server, Telegram/Slack bots — connect unchanged; only the
-hub is Go.
+Repowire's production substrate: daemon, CLI, runtime hooks, HTTP MCP server,
+and the per-agent stdio identity shim. The Go daemon owns the schema-v12
+SQLite database, including bootstrap and migrations; Python is not required on
+the daemon, CLI, hook, or MCP request path once the binary is running.
 
-## Why
-
-Peer connect/disconnect bugs were logic-and-typing bugs. Go makes the worst
-class uncompilable: `PeerID` and `DisplayName` are distinct types, so a
-display-name lookup where a peer_id is required is a compile error, not a 2am
-misroute. Lifecycle is a typed FSM (`peer/fsm.go`) with an exhaustive
-transition function; an unhandled state/event pair fails loud.
+The hosted relay server, Telegram/Slack bot peers, dashboard, and experimental
+Claude channel server remain separate clients/deployments. They speak the same
+HTTP/WebSocket protocol to this daemon.
 
 ## Layout
 
-- `proto/` — wire types, `PeerID`/`DisplayName` (distinct), `PeerStatus` enum
-- `state/` — SQLite store over the existing schema (pure-Go `modernc.org/sqlite`)
-- `peer/` — `Registry`, lifecycle FSM, reconciliation (redeliver, demote, evict)
-- `hub/` — WS server, router/transport, delivery, ask-tracker, HTTP routes
-- `main.go` — wires `state.Store` → `peer.Registry` → `hub`
+- `cli/` — setup, service management, peer/job/schedule/session commands, and runtime installers
+- `hooks/` — runtime event normalization, ws-hook supervision, tmux injection, transcript extraction
+- `mcpstdio/` — newline JSON-RPC proxy that stamps the calling peer identity and forwards to `/mcp`
+- `hub/` — HTTP/WebSocket routes and the complete 31-tool MCP server
+- `service/` — delivery, asks, ACP, spawn/resume, jobs, schedules, and permissions
+- `peer/` — typed identity registry, lifecycle FSM, lazy reconciliation
+- `state/` — SQLite bootstrap, migrations, and durable stores
+- `relay/` — outbound hosted-relay client
+- `proto/` — wire types, including distinct `PeerID` and `DisplayName`
+- `main.go` — command dispatch and daemon wiring
 
-## Run
+## MCP transport
+
+All MCP tool logic lives at the daemon's localhost-only `/mcp` endpoint. Agent
+runtimes still launch `repowire mcp` over stdio, but that process is deliberately
+paper-thin: it inherits the runtime's session environment/cwd, resolves the
+canonical peer identity, stamps `X-Repowire-Peer`, and proxies JSON-RPC to
+`/mcp`. Removing stdio entirely would erase identity for same-path peers.
+
+Direct HTTP MCP clients may call `/mcp` with the local bearer token. Without the
+identity shim they act as `mcp-http`, and lifecycle/admin tools remain disabled
+unless explicitly allowed. `/mcp` is rejected by the hosted-relay tunnel.
+
+## Build and verify
 
 ```bash
-go build -o repowire-hub-go .
-./repowire-hub-go -addr 127.0.0.1:8377 -db ~/.repowire/state.db
+cd daemon-go
+go build -o repowire .
 go test ./...
+go test -race ./...
+go vet ./...
 ```
 
-`repowire serve` launches this binary by default. Override:
-- `REPOWIRE_DAEMON=python` — use the Python daemon instead
-- `REPOWIRE_HUB_BIN=/path` — explicit binary path (else PATH `repowire-hub-go`, then dev build here)
-- Relay is supported: the Go hub dials the relay itself (`relay/` package, `-relay-url`/`-relay-api-key`, threaded from config by `serve`). Only `REPOWIRE_DAEMON=python` or a missing binary falls back.
+Run the daemon in the foreground with `./repowire serve`. Normal installations
+use `repowire setup`, which configures the local HTTP MCP endpoint, installs the
+identity shim and hooks/plugins for detected runtimes, and installs the user
+service.
 
-## Verified
-
-13/13 live scenarios over HTTP+WS against a copy of a real state DB: register,
-list, ws connect, ask delivery + ack, notify, broadcast, ws disconnect →
-offline, and the session-closed evidence gate (spares peers with a live tmux
-pane, offlines only those without evidence).
-
-## Deferred (still Python, or not yet ported)
-
-Clients/separate deployments — intentionally NOT daemon code: the hosted relay
-SERVER (`relay/server.py`, GKE), Telegram/Slack bots, channel/ACP MCP transport,
-the `hooks/` ws-hook supervisor, legacy `sessions.json` import. (The relay
-CLIENT is ported — see `relay/`.)
-
-Not yet ported in the hub: the ACP subprocess transport (dormant stub) and
-packaging the binary into the wheel so `uv tool install` ships it without a
-local build.
+The wheel entry point is a small compatibility launcher for the bundled native
+binary. OpenCode, pi, and channel TypeScript assets are embedded into the binary
+so their installers also work from a standalone build.

@@ -96,7 +96,13 @@ type Hub struct {
 	// config.MCPHTTPConfig + the service.PeerDelivery notify_peer/broadcast
 	// dispatch to — wired via WithMCP. nil, or cfg.Enabled=false, → /mcp is not
 	// registered. See routes_mcp.go.
-	mcp *mcpDeps
+	mcp           *mcpDeps
+	jobCompletion *service.JobCompletion
+}
+
+func (h *Hub) WithJobCompletion(completion *service.JobCompletion) *Hub {
+	h.jobCompletion = completion
+	return h
 }
 
 // WithReviews wires an explicit review-queue store onto the hub (e.g. a test
@@ -195,6 +201,11 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/health", h.health)
 	h.registerPeerReadRoutes(mux)
 	h.registerPeerLifecycleRoutes(mux)
+	h.registerPaneRoutes(mux)
+	h.registerPeerMCPRoutes(mux)
+	h.registerHistoryRoutes(mux)
+	h.registerACPPermissionRoutes(mux)
+	h.registerShutdownRoute(mux)
 	h.registerOrchestratorRoutes(mux)
 	h.EventRoutes(mux)
 	h.EventsStreamRoutes(mux)
@@ -227,6 +238,8 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	h.registerReviewRoutes(mux)
 	h.registerShareRoutes(mux)
 	h.registerAttachmentRoutes(mux)
+	h.registerTraceRoutes(mux)
+	h.registerSessionControlRoutes(mux)
 }
 
 // requireAuth, writeJSON, writeError, and writeJSONError are package-shared HTTP

@@ -14,17 +14,15 @@ import (
 // (GetPeer(proto.PeerID), GetPeerByPane, GetAllPeers) live in registry.go /
 // events.go; this file deliberately does NOT redeclare them.
 
-// defaultHeartbeatInterval mirrors config.models DaemonConfig.heartbeat_interval
-// (30s). The tolerance is two intervals: one missed beat is normal jitter, two
-// means the wire is dead. Wired as a constant here until the Go daemon grows a
-// config seam; HeartbeatTolerance is the public accessor the routes call so they
-// don't reach into registry internals.
+// defaultHeartbeatInterval mirrors config.models DaemonConfig.heartbeat_interval.
 const defaultHeartbeatInterval = 30 * time.Second
 
 // HeartbeatTolerance is how stale a peer's last_seen may get before it counts as
 // dead: two heartbeat intervals. Mirrors PeerRegistry.heartbeat_tolerance.
 func (r *Registry) HeartbeatTolerance() time.Duration {
-	return defaultHeartbeatInterval * 2
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.heartbeatInterval * 2
 }
 
 // ResolvePeer resolves an addressing string (peer_id OR display_name), optionally
@@ -35,12 +33,13 @@ func (r *Registry) HeartbeatTolerance() time.Duration {
 // misroute). (nil,nil) means "no such peer" (→ HTTP 404). Mirrors
 // PeerRegistry._lookup_peer_unlocked.
 func (r *Registry) ResolvePeer(identifier string, circle *string) (*proto.Peer, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	// Clone at the PUBLIC boundary only: resolvePeerLocked returns a live pointer
 	// because identity-mutating wrappers (touch/description) resolve then mutate
 	// under one write lock. Off-lock route callers must get a snapshot instead.
 	p, err := r.resolvePeerLocked(identifier, circle)
+	r.applyDescriptionTTLLocked(p)
 	return clonePeer(p), err
 }
 
@@ -165,10 +164,10 @@ func (r *Registry) preferenceKey(p *proto.Peer) preferenceKey {
 // HeartbeatTolerance. When several match, the most-recently-seen wins. Mirrors
 // PeerRegistry.get_orchestrator.
 func (r *Registry) GetOrchestrator(circle string) (*proto.Peer, bool) {
+	tolerance := r.HeartbeatTolerance()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	now := time.Now().UTC()
-	tolerance := r.HeartbeatTolerance()
 	var best *proto.Peer
 	for _, ps := range r.peers {
 		p := ps.peer

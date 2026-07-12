@@ -27,10 +27,6 @@ jobs:
       - name: Set version from tag
         run: uv version ${GITHUB_REF#refs/tags/v}
 
-      # Source dist: no native binary -> pure, installs anywhere (Python daemon).
-      - name: Build sdist
-        run: uv build --sdist -o dist
-
       # One wheel per platform. Go cross-compiles with no cgo, so a single
       # ubuntu runner produces every target. The build hook force-includes
       # repowire/_bin/repowire-hub-go and stamps the platform tag.

@@ -39,14 +39,17 @@ func WSHookMetaPath(paneID string) string {
 }
 
 // ReadPaneRuntimeMetadata reads the ws-hook meta.json for a pane. Missing/invalid
-// → empty map (best-effort, exactly like the Python reader). The legacy cwd
-// fallback is not ported — only peer_id matters for the destructive proof.
+// → a legacy .cwd fallback, then empty map (best-effort).
 func ReadPaneRuntimeMetadata(paneID string) map[string]any {
 	if paneID == "" {
 		return map[string]any{}
 	}
 	raw, err := os.ReadFile(WSHookMetaPath(paneID))
 	if err != nil {
+		legacy, _ := os.ReadFile(filepath.Join(paneLogsDir(), "ws-hook-"+paneFileToken(paneID)+".cwd"))
+		if cwd := strings.TrimSpace(string(legacy)); cwd != "" {
+			return map[string]any{"cwd": cwd}
+		}
 		return map[string]any{}
 	}
 	var m map[string]any

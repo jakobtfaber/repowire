@@ -34,6 +34,7 @@ import (
 func (h *Hub) registerPeerLifecycleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /peer/register", h.requireAuth(h.handleRegisterPeer))
 	mux.HandleFunc("POST /peers", h.requireAuth(h.handleRegisterPeer))
+	mux.HandleFunc("POST /peers/identity/validate", h.requireAuth(h.handleValidateRuntimeIdentity))
 	mux.HandleFunc("POST /peer/unregister", h.requireAuth(h.handleUnregisterPeerBody))
 	mux.HandleFunc("DELETE /peers/{name}", h.requireAuth(h.handleDeletePeer))
 	mux.HandleFunc("POST /peers/{name}/offline", h.requireAuth(h.handleMarkOffline))
@@ -76,6 +77,21 @@ type RegisterResponse struct {
 	DisplayName      string         `json:"display_name"`
 	PaneAssigned     bool           `json:"pane_assigned"`
 	BirthCertificate map[string]any `json:"birth_certificate"`
+}
+
+type validateBirthCertificateRequest struct {
+	BirthCertificate state.CertEnvelope `json:"birth_certificate"`
+	Backend          proto.AgentType    `json:"backend"`
+	Path             *string            `json:"path"`
+	PaneID           *string            `json:"pane_id"`
+	AgentPID         *int               `json:"agent_pid"`
+}
+
+type validateBirthCertificateResponse struct {
+	OK          bool     `json:"ok"`
+	PeerID      string   `json:"peer_id"`
+	DisplayName string   `json:"display_name"`
+	Peer        PeerInfo `json:"peer"`
 }
 
 // UnregisterPeerRequest is the POST /peer/unregister body.
@@ -313,6 +329,59 @@ func (h *Hub) handleRegisterPeer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Hub) handleValidateRuntimeIdentity(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeError(w, http.StatusNotFound, "Runtime identity certificate store is unavailable")
+		return
+	}
+	var req validateBirthCertificateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.BirthCertificate.Nonce == "" {
+		writeError(w, http.StatusUnprocessableEntity, "birth_certificate is required")
+		return
+	}
+	cert, err := h.store.ValidateBirthCertificate(r.Context(), req.BirthCertificate, string(req.Backend), req.Path, req.PaneID, req.AgentPID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if cert == nil {
+		writeError(w, http.StatusConflict, "Runtime identity certificate is invalid or expired")
+		return
+	}
+	peerID := proto.PeerID(cert.PeerID)
+	p, ok := h.reg.GetPeer(peerID)
+	if !ok {
+		circle, role := "default", proto.RoleAgent
+		if value, ok := cert.Metadata["circle"].(string); ok && value != "" {
+			circle = value
+		}
+		if value, ok := cert.Metadata["role"].(string); ok && value != "" {
+			role = proto.PeerRole(value)
+		}
+		machine, _ := os.Hostname()
+		metadata := map[string]any{"birth_certificate_nonce": cert.Nonce}
+		if cert.RuntimeSessionID != nil {
+			metadata["hook_session_id"] = *cert.RuntimeSessionID
+		}
+		id, _, allocErr := h.reg.AllocateAndRegister(r.Context(), peer.AllocateParams{
+			Circle: circle, Backend: proto.AgentType(cert.Backend), Path: &cert.ProjectPath,
+			PaneID: cert.PaneID, Machine: machine, Role: role, ClaimedPeerID: &peerID,
+			Metadata: metadata, AgentPID: cert.AgentPID, ParentPID: cert.ParentPID,
+			CircleSource: "fallback",
+		})
+		if allocErr != nil {
+			writeError(w, http.StatusConflict, "Runtime identity certificate could not rehydrate peer: "+allocErr.Error())
+			return
+		}
+		p, ok = h.reg.GetPeer(id)
+	}
+	if !ok || p == nil {
+		writeError(w, http.StatusNotFound, "Peer not found after runtime identity validation")
+		return
+	}
+	writeJSON(w, http.StatusOK, validateBirthCertificateResponse{OK: true, PeerID: string(p.PeerID), DisplayName: string(p.DisplayName), Peer: peerToInfo(p)})
+}
+
 func (h *Hub) handleUnregisterPeerBody(w http.ResponseWriter, r *http.Request) {
 	var req UnregisterPeerRequest
 	if !decodeJSON(w, r, &req) {
@@ -345,7 +414,7 @@ func (h *Hub) handleMarkOffline(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
-	found, cancelled, err := h.reg.MarkOfflineByName(r.Context(), name, body.Terminal)
+	found, cancelled, err := h.reg.MarkOfflineByNameWithReason(r.Context(), name, body.Terminal, body.Reason)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return

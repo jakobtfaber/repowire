@@ -2,11 +2,16 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 )
 
 // ============================================================================
@@ -88,9 +93,102 @@ type OrchestratorStatusResponse struct {
 // pattern wildcards (r.PathValue).
 func (h *Hub) registerPeerReadRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /peers", h.requireAuth(h.listPeers))
-	mux.HandleFunc("GET /peers/by-pane/{pane_id}", h.requireAuth(h.getPeerByPane))
-	mux.HandleFunc("GET /peers/{identifier}", h.requireAuth(h.getPeer))
+	mux.HandleFunc("GET /peers/{rest...}", h.requireAuth(h.getPeerSubpath))
 	mux.HandleFunc("GET /circles/{name}/orchestrator", h.requireAuth(h.getCircleOrchestrator))
+}
+
+func (h *Hub) getPeerSubpath(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(r.PathValue("rest"), "/"), "/")
+	if len(parts) == 2 && parts[0] == "by-pane" {
+		r.SetPathValue("pane_id", parts[1])
+		h.getPeerByPane(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "doctor" {
+		r.SetPathValue("identifier", parts[0])
+		h.getPeerDoctor(w, r)
+		return
+	}
+	if len(parts) == 1 && parts[0] != "" {
+		r.SetPathValue("identifier", parts[0])
+		h.getPeer(w, r)
+		return
+	}
+	writeJSONError(w, http.StatusNotFound, "Peer route not found")
+}
+
+func (h *Hub) getPeerDoctor(w http.ResponseWriter, r *http.Request) {
+	h.reg.LazyRepair(r.Context())
+	circleValue := r.URL.Query().Get("circle")
+	var circle *string
+	if circleValue != "" {
+		circle = &circleValue
+	}
+	peer, err := h.reg.ResolvePeer(r.PathValue("identifier"), circle)
+	if err != nil {
+		writeJSONError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if peer == nil {
+		writeJSONError(w, http.StatusNotFound, "Peer not found: "+r.PathValue("identifier"))
+		return
+	}
+	host, _ := os.Hostname()
+	local := peer.Machine == host || ((peer.Machine == "" || peer.Machine == "unknown") && peer.PaneID != nil)
+	report := map[string]any{"peer_id": peer.PeerID, "display_name": peer.DisplayName, "status": peer.Status, "turn_state": peer.TurnState, "last_seen": peer.LastSeen, "machine": peer.Machine, "backend": peer.Backend, "circle": peer.Circle, "role": peer.Role, "pane_id": peer.PaneID, "is_local_machine": local, "ws_connected": h.transport.IsConnected(peer.PeerID), "contradictions": []map[string]string{}}
+	if pane, ok := h.transport.ConnectionPaneID(peer.PeerID); ok {
+		report["ws_pane_id"] = pane
+	}
+	contradictions := []map[string]string{}
+	if local && (peer.Status == proto.StatusOnline || peer.Status == proto.StatusBusy) && !h.transport.IsConnected(peer.PeerID) {
+		contradictions = append(contradictions, contradiction("ONLINE_BUT_NO_WS", "error", fmt.Sprintf("peer is %s but has no live WebSocket connection", peer.Status)))
+	}
+	if local && peer.PaneID != nil && *peer.PaneID != "" {
+		exists := false
+		if h.spawn != nil && h.spawn.svc != nil {
+			exists = h.spawn.svc.Tmux().ProbePane(*peer.PaneID) != nil
+		}
+		report["tmux_pane_exists"] = exists
+		if !exists {
+			contradictions = append(contradictions, contradiction("PANE_MISSING", "error", "registry pane "+*peer.PaneID+" is not present in tmux"))
+		}
+		meta := service.ReadPaneRuntimeMetadata(*peer.PaneID)
+		report["hook_meta_available"] = len(meta) > 0
+		report["hook_meta_peer_id"] = meta["peer_id"]
+		report["hook_meta_display_name"] = meta["display_name"]
+		if id, _ := meta["peer_id"].(string); id != "" && id != string(peer.PeerID) {
+			contradictions = append(contradictions, contradiction("HOOK_PEERID_MISMATCH", "error", "pane hook metadata peer_id "+id+" differs from registry peer_id "+string(peer.PeerID)))
+		}
+	}
+	if local && peer.AgentPID != nil {
+		alive := *peer.AgentPID > 0 && syscall.Kill(*peer.AgentPID, 0) == nil
+		report["agent_pid"] = peer.AgentPID
+		report["agent_pid_alive"] = alive
+		if !alive {
+			contradictions = append(contradictions, contradiction("AGENT_PID_DEAD", "error", fmt.Sprintf("agent pid %d is not a live process", *peer.AgentPID)))
+		}
+	}
+	if wsPane, ok := report["ws_pane_id"].(string); ok && peer.PaneID != nil && wsPane != *peer.PaneID {
+		contradictions = append(contradictions, contradiction("WS_PANE_MISMATCH", "warning", "websocket pane differs from registry pane"))
+	}
+	if h.asks != nil {
+		pending, _ := h.asks.PendingForPeer(r.Context(), peer.PeerID, 50, "inbound")
+		report["pending_inbound_count"] = len(pending)
+		if len(pending) > 0 {
+			oldest := pending[len(pending)-1]
+			age := time.Since(oldest.CreatedAt).Seconds()
+			report["oldest_pending_age_seconds"] = age
+			report["oldest_pending_cid"] = oldest.CorrelationID
+			if age > 1800 {
+				contradictions = append(contradictions, contradiction("STALE_PENDING_ASK", "warning", fmt.Sprintf("oldest pending inbound ask %s has been open ~%dm", oldest.CorrelationID, int(age/60))))
+			}
+		}
+	}
+	report["contradictions"] = contradictions
+	writeJSON(w, http.StatusOK, report)
+}
+func contradiction(code, severity, detail string) map[string]string {
+	return map[string]string{"code": code, "severity": severity, "detail": detail}
 }
 
 // listPeers handles GET /peers with optional status/path/backend/circle filters.

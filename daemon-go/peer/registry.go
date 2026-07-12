@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -125,8 +127,11 @@ type Registry struct {
 	redeliverMu     sync.Mutex
 	redeliverActive map[proto.PeerID]struct{}
 
-	retiredTTL time.Duration
-	reapTTL    time.Duration
+	retiredTTL        time.Duration
+	reapTTL           time.Duration
+	heartbeatInterval time.Duration
+	descriptionTTL    time.Duration
+	descriptionSetAt  map[proto.PeerID]time.Time
 
 	// rec holds the lifecycle-reconciliation seams + state (AskTracker,
 	// PaneProbe, PeerDelivery, strike counters, contradiction dedup). Injected
@@ -148,6 +153,12 @@ type Registry struct {
 	// stays query-agnostic. Called with the registry lock released.
 	OnOffline func(proto.PeerID)
 
+	// OnTerminalOffline observes conclusive executor death after transport
+	// teardown and query cancellation. The daemon wires this to durable-job
+	// completion so assigned work cannot remain delivered/running forever.
+	// Called with the registry lock released.
+	OnTerminalOffline func(proto.PeerID, string)
+
 	// closeMu/closed/wg track detached goroutines spawned via spawnTracked
 	// (redelivery, LazyRepairAsync) so Close can join them before the caller
 	// closes the underlying Store. See spawnTracked and Close.
@@ -166,15 +177,18 @@ const (
 // retirement records still inside the TTL window.
 func NewRegistry(ctx context.Context, store Store, live Liveness, transport Transport) (*Registry, error) {
 	r := &Registry{
-		peers:           make(map[proto.PeerID]*peerState),
-		mappings:        make(map[proto.PeerID]*proto.SessionMapping),
-		retired:         make(map[proto.PeerID]time.Time),
-		redeliverActive: make(map[proto.PeerID]struct{}),
-		store:           store,
-		live:            live,
-		transport:       transport,
-		retiredTTL:      defaultRetiredTTL,
-		reapTTL:         defaultReapTTL,
+		peers:             make(map[proto.PeerID]*peerState),
+		mappings:          make(map[proto.PeerID]*proto.SessionMapping),
+		retired:           make(map[proto.PeerID]time.Time),
+		redeliverActive:   make(map[proto.PeerID]struct{}),
+		store:             store,
+		live:              live,
+		transport:         transport,
+		retiredTTL:        defaultRetiredTTL,
+		reapTTL:           defaultReapTTL,
+		heartbeatInterval: defaultHeartbeatInterval,
+		descriptionTTL:    15 * time.Minute,
+		descriptionSetAt:  make(map[proto.PeerID]time.Time),
 	}
 
 	mappings, err := store.LoadMappings(ctx)
@@ -194,6 +208,37 @@ func NewRegistry(ctx context.Context, store Store, live Liveness, transport Tran
 		r.retired[id] = at
 	}
 	return r, nil
+}
+
+// ConfigureDurations applies the daemon's liveness/read-repair TTLs.
+func (r *Registry) ConfigureDurations(heartbeatInterval, reapTTL, descriptionTTL time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if heartbeatInterval > 0 {
+		r.heartbeatInterval = heartbeatInterval
+	}
+	r.reapTTL = reapTTL
+	r.descriptionTTL = descriptionTTL
+}
+
+func (r *Registry) applyDescriptionTTLLocked(peer *proto.Peer) {
+	if peer == nil || peer.Description == "" || r.descriptionTTL <= 0 {
+		return
+	}
+	setAt, ok := r.descriptionSetAt[peer.PeerID]
+	if !ok {
+		r.descriptionSetAt[peer.PeerID] = time.Now().UTC()
+		return
+	}
+	if time.Since(setAt) < r.descriptionTTL {
+		return
+	}
+	peer.Description = ""
+	delete(r.descriptionSetAt, peer.PeerID)
+	if mapping := r.mappings[peer.PeerID]; mapping != nil {
+		mapping.Description = ""
+		mapping.UpdatedAt = time.Now().UTC()
+	}
 }
 
 // AllocateAndRegister allocates (or reclaims) a peer identity and registers it
@@ -379,12 +424,23 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 					ErrPaneHijackRejected, pane, ps.peer.DisplayName, ps.peer.PeerID, *params.ParentPID, *ps.peer.AgentPID)
 			}
 		}
-		// (2) Sticky orchestrator: do not displace; register pane-less.
-		// ponytail: the Python same-identity sticky-reuse-and-return optimization
-		// (is_configured_orchestrator_path) is not ported — config-backed orchestrator
-		// paths aren't in Go yet. Pane-less registration preserves the safety property
-		// (the orchestrator keeps its pane); a same-id reconnect still reuses via (d).
+		// (2) Sticky orchestrator: reuse the configured orchestrator workspace
+		// identity; otherwise do not displace and register pane-less.
 		if h := r.isFreshOrchestratorPaneLocked(pane, now); h != nil {
+			claimPath := ""
+			if params.Path != nil {
+				claimPath = *params.Path
+			}
+			if h.peer.Backend == params.Backend && h.peer.Circle == params.Circle && isOrchestratorPath(h.peer.Path) && isOrchestratorPath(claimPath) {
+				h.peer.LastSeen = &now
+				if params.Model != nil {
+					h.peer.Model = params.Model
+				}
+				if params.TurnState != nil {
+					h.peer.TurnState = *params.TurnState
+				}
+				return h.peer.PeerID, h.peer.DisplayName, nil
+			}
 			log.Printf("repowire: sticky orchestrator %s (%s) holds pane %s; registering claimant pane-less",
 				h.peer.DisplayName, h.peer.PeerID, pane)
 			effectivePane = nil
@@ -477,6 +533,16 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: displayName, SessionID: id})
 	r.scheduleRedelivery(ctx, id)
 	return id, displayName, nil
+}
+
+func isOrchestratorPath(path string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	want, _ := filepath.Abs(filepath.Join(home, ".repowire", "orchestrator"))
+	got, _ := filepath.Abs(path)
+	return filepath.Clean(got) == filepath.Clean(want)
 }
 
 // scheduleRedelivery drains any stashed replies owed to a just-(re)registered
@@ -801,6 +867,12 @@ func (r *Registry) findReusableMappingLocked(name proto.DisplayName, circle stri
 // its transport, and records the retirement so an orphan ws-hook cannot
 // resurrect it. Returns the number of cancelled queries (via OnOffline).
 func (r *Registry) MarkOffline(ctx context.Context, id proto.PeerID, terminal bool) (int, error) {
+	return r.MarkOfflineWithReason(ctx, id, terminal, "terminal_offline")
+}
+
+// MarkOfflineWithReason is MarkOffline with a truthful terminal cause for
+// lifecycle observers. Non-terminal callers may pass an empty reason.
+func (r *Registry) MarkOfflineWithReason(ctx context.Context, id proto.PeerID, terminal bool, reason string) (int, error) {
 	r.mu.Lock()
 	ps, ok := r.peers[id]
 	if !ok {
@@ -845,6 +917,9 @@ func (r *Registry) MarkOffline(ctx context.Context, id proto.PeerID, terminal bo
 	cancelled := 0
 	if r.OnOffline != nil {
 		r.OnOffline(id)
+	}
+	if terminal && r.OnTerminalOffline != nil {
+		r.OnTerminalOffline(id, reason)
 	}
 	return cancelled, nil
 }
@@ -989,12 +1064,13 @@ func clonePeer(p *proto.Peer) *proto.Peer {
 // GetPeer returns a peer by PeerID. Routing-sensitive callers MUST hold a
 // PeerID; the compiler refuses a DisplayName here.
 func (r *Registry) GetPeer(id proto.PeerID) (*proto.Peer, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	ps, ok := r.peers[id]
 	if !ok {
 		return nil, false
 	}
+	r.applyDescriptionTTLLocked(ps.peer)
 	return clonePeer(ps.peer), true
 }
 
@@ -1006,10 +1082,11 @@ func (r *Registry) GetPeerByPane(pane string) (*proto.Peer, bool) {
 	if pane == "" {
 		return nil, false
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, ps := range r.peers {
 		if ps.peer.PaneID != nil && *ps.peer.PaneID == pane {
+			r.applyDescriptionTTLLocked(ps.peer)
 			return clonePeer(ps.peer), true
 		}
 	}

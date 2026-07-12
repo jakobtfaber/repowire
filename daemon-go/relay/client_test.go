@@ -99,6 +99,40 @@ func TestClient_HTTPRequestTunnel(t *testing.T) {
 	}
 }
 
+func TestClient_HTTPRequestTunnelBlocksMCP(t *testing.T) {
+	var localCalls atomic.Int32
+	local := fakeLocal(t, func(w http.ResponseWriter, _ *http.Request) {
+		localCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	})
+	got := make(chan map[string]any, 1)
+	relay, _ := startRelay(t, func(ctx context.Context, c *websocket.Conn) {
+		_ = wsjson.Write(ctx, c, map[string]any{
+			"type": "http_request", "request_id": "mcp-1", "method": "POST", "path": "/mcp",
+		})
+		var resp map[string]any
+		if wsjson.Read(ctx, c, &resp) == nil {
+			got <- resp
+		}
+	})
+	c := NewClient(wsURL(relay.URL), "rw_test", "d1", local.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+	select {
+	case resp := <-got:
+		if int(resp["status"].(float64)) != http.StatusNotFound {
+			t.Fatalf("status = %v, want 404", resp["status"])
+		}
+		if localCalls.Load() != 0 {
+			t.Fatal("blocked MCP request reached local daemon")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for blocked MCP response")
+	}
+}
+
 func TestClient_RelayQueryForwarded(t *testing.T) {
 	local := fakeLocal(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/query" || r.Method != http.MethodPost {

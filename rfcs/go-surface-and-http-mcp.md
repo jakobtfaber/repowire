@@ -1,8 +1,8 @@
 # Go the full surface + HTTP MCP
 
-Status: direction approved (2026-07-01). Phases tracked in beads:
-repowire-53c (phase 1) → repowire-76o (phase 2), repowire-sfh (HTTP MCP);
-repowire-jx8 (phase 4). Sequenced after `feat/daemon-go` lands.
+Status: implemented on `feat/daemon-go` (2026-07-10). Tracked in
+repowire-53c (daemon), repowire-76o (hooks), repowire-sfh (HTTP MCP), and
+repowire-jx8 (CLI/distribution).
 
 ## Why
 
@@ -24,40 +24,24 @@ push the rest of the surface the same way:
 What stays as-is: the channel server and web dashboard are TypeScript and
 remain so (transports are client-side; the daemon philosophy is unchanged).
 
-## Scope reality
+## Implemented result
 
-Remaining Python (~26k lines outside the daemon, plus a 42k-line pytest
-suite):
+The native binary now owns config loading, SQLite bootstrap/migrations, resume
+safety, the full daemon route surface, ACP subprocess routing and permission
+relay, hooks/ws-hook/chat streaming, runtime installers, service management,
+and the CLI. The wheel entry point execs the binary; it no longer selects a
+Python daemon fallback.
 
-| Surface | ~Lines | Notes |
-|---|---|---|
-| daemon remainder | ~10k | migrations, config loader, resume_safety, diagnostics — Go hub still depends on Python for the first two |
-| cli.py + top-level (client, spawn, doctor, agent_backends) | ~16k | mechanical (click → cobra), largest chunk |
-| hooks | ~4.3k | small surface, biggest felt win |
-| mcp/server.py | ~1.9k | superseded by HTTP MCP below |
-| relay server | ~1.4k | Go arguably better for the GKE service anyway |
-| telegram + slack bots | ~1.6k | straightforward |
+The dashboard and channel server remain TypeScript. The hosted relay server and
+Telegram/Slack peers remain separate Python deployments/clients; they are not
+part of the local substrate and connect to the Go daemon unchanged.
 
-The pytest suite is the hidden majority of the cost: the Go hub port survived
-seven review rounds *because* the Python suite was the oracle. Porting each
-surface means porting (or wiring the Go implementation into) its oracle first.
-`agent_backends.py` churns often — while it exists in both languages, every
-backend tweak lands twice; phase 1/2 should be quick successive, not parallel
-long-lived.
+## Completed phases
 
-## Phases
-
-1. **Daemon independence** (repowire-53c): config.yaml loader, state DB
-   migrations, resume_safety in Go. Deletes the Python fallback from
-   `repowire serve` entirely — the CLI stops pre-migrating and stops threading
-   config as flags.
-2. **Hooks** (repowire-76o): per-turn latency win. The ws-hook, session/stop/
-   prompt/notification handlers, adapters. Go binary already installed with
-   the wheel.
-3. **HTTP MCP** (repowire-sfh, parallel-izable with 2): see below. Retires
-   mcp/server.py instead of porting it.
-4. **CLI + single-binary distribution** (repowire-jx8): cobra CLI, wheels wrap
-   the binary during transition. Bots and relay server slot in anywhere.
+1. **Daemon independence:** Go loads config and owns state migrations/resume safety.
+2. **Hooks:** session/stop/prompt/notification/pre-tool hooks, ws-hook, chat streaming, and lifecycle hooks run in Go.
+3. **HTTP MCP:** all 31 tools live daemon-side at `/mcp`.
+4. **CLI/distribution:** the Go CLI and embedded runtime assets ship in platform wheels; the Python entry point is only a native-binary launcher.
 
 ## HTTP MCP: /mcp on the daemon + stdio identity shim
 
@@ -78,8 +62,8 @@ per-session token into static MCP config headers.
 
 **Resolution: keep a paper-thin stdio shim at the edge.** Spawned per-agent as
 today, so it inherits env+cwd; it stamps identity headers
-(`X-Repowire-Peer`, session id) and blindly proxies JSON-RPC to the daemon's
-`/mcp`. ~100 lines; can be the hub binary with an `--mcp-stdio` flag. The
+(`X-Repowire-Peer` plus the runtime birth-certificate proof) and blindly proxies
+JSON-RPC to the daemon's `/mcp`. It ships as `repowire mcp` in the same binary. The
 stdio hop survives *because it is the identity channel*, not for protocol
 reasons. All tools, registration, and binding logic live daemon-side, once.
 

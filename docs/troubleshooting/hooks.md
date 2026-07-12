@@ -11,10 +11,9 @@ repowire doctor
 
 If a runtime is detected but its hooks are marked missing, run `repowire setup` again. Re-running is idempotent and will rewrite the hook entries.
 
-`repowire doctor` also checks the server-global tmux lifecycle hooks Repowire uses
-for pane exits and session/window renames. If it reports missing, empty, or
-malformed tmux lifecycle hooks, re-run `repowire setup` or restart the daemon so
-Repowire reinstalls those hook slots.
+`repowire doctor` also checks that the daemon, `tmux`, and `git` are available.
+Re-run `repowire setup` to reinstall both runtime integrations and the
+server-global tmux lifecycle hooks used for pane exits and renames.
 
 ## Per-runtime diagnostics
 

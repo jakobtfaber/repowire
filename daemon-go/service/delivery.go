@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/state"
 )
@@ -17,14 +18,13 @@ import (
 // transport choice (ACP-before-WS) + ask/notify lifecycle + queued-delivery
 // fallback. Port of repowire/daemon/peer_delivery.py (PeerDeliveryService).
 //
-// The WS path is fully specified. The ACP branch is guarded by
-// Transport.ACPRoute, which is a stub that always reports "no ACP route" this
-// phase, so every target falls through to WS. When the ACP experiment lands the
-// branch already exists here (see the `decision, ok := ...ACPRoute(...)` sites).
+// The WS path and experiment-gated ACP subprocess path are both live. ACP is
+// selected only when Transport.ACPRoute validates a target's route metadata;
+// every other target falls through to WS.
 //
 // The router (*MessageRouter) speaks only WS; transport CHOICE lives here. The
 // AskTracker owns ask lifecycle; PeerDelivery delivers an already-registered ask
-// and, for the (stubbed) ACP completion path, stashes/redelivers replies.
+// and, for ACP completion, stashes/redelivers replies.
 // ============================================================================
 
 // defaultQueueTTLSeconds / defaultQueueMax mirror the Python QueuedDelivery
@@ -49,10 +49,8 @@ const (
 // unknown/ambiguous/forbidden is returned as a non-nil error). The rest mirror
 // the registry methods the Tier-1 routes use.
 //
-// ponytail: a narrow seam because the REGISTRY port (which adds CheckAccess /
-// GetAllPeers / AddEvent to *peer.Registry) is still in flight. *peer.Registry
-// satisfies this once it lands; swap NewPeerDelivery to take *peer.Registry then
-// — the bodies don't change. Kept narrow also keeps delivery tests hermetic.
+// A small adapter makes *peer.Registry satisfy this context-aware seam. Keeping
+// it narrow also keeps delivery tests hermetic.
 type accessRegistry interface {
 	// CheckAccess returns (from, to, err). from is nil for an unknown sender
 	// (Python notify behavior: unresolved senders proceed). A non-nil err is the
@@ -71,8 +69,8 @@ type queuedDeliveryStore interface {
 	EnqueueDelivery(ctx context.Context, d state.QueuedDelivery, ttlSeconds float64, maxPerPeer int, now time.Time) (*state.QueuedDelivery, error)
 }
 
-// PeerDelivery coordinates peer-to-peer delivery across the WS path (and, once
-// the experiment lands, the ACP path). Mirrors PeerDeliveryService.
+// PeerDelivery coordinates peer-to-peer delivery across WS and ACP. Mirrors
+// PeerDeliveryService.
 type PeerDelivery struct {
 	reg       accessRegistry
 	router    *MessageRouter
@@ -82,6 +80,7 @@ type PeerDelivery struct {
 
 	queueTTLSeconds float64
 	queueMax        int
+	recall          config.OrchestratorRecallConfig
 
 	// closeMu/closed/wg/closeCh track the deferBroadcastUntilSeedSettled
 	// goroutines so Close can join them without waiting out a 25s seed-gate
@@ -92,15 +91,16 @@ type PeerDelivery struct {
 	closeCh chan struct{}
 }
 
+func (d *PeerDelivery) WithOrchestratorRecall(settings config.OrchestratorRecallConfig) *PeerDelivery {
+	d.recall = settings
+	return d
+}
+
 // NewPeerDelivery wires the delivery service. store may be nil (queued-delivery
 // fallback disabled → no-live-transport is a fail-loud error). asks may be nil
 // (the scheduled-ask helper then errors).
 //
-// ponytail: reg is the narrow accessRegistry seam while the REGISTRY port is in
-// flight; the authoritative signature is (reg *peer.Registry, router
-// *MessageRouter, transport Transport, asks *AskTracker, store *state.Store).
-// *peer.Registry / *state.Store satisfy the seams structurally, so collapsing to
-// the concrete types later is a signature-only change.
+// reg and store use the narrow seams above so tests can provide in-memory fakes.
 func NewPeerDelivery(reg accessRegistry, router *MessageRouter, transport Transport, asks *AskTracker, store queuedDeliveryStore) *PeerDelivery {
 	return &PeerDelivery{
 		reg:             reg,
@@ -213,14 +213,16 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 	}
 
 	d.gateOnSeedSettled(ctx, target)
+	params.Text = addOrchestratorRecall(params.Text, string(fromName), peerIDString(fromID), target, d.recall)
 
-	// Transport choice: ACP-before-WS. STUB → ACPRoute always (nil,false), so
-	// every target falls through to the WS path below.
 	if decision, ok := d.transport.ACPRoute(target); ok && decision != nil {
-		// ponytail: ACP notify is fire-and-forget — the broker accepted the
-		// prompt task but the runtime receipt is discarded, so the reason is
-		// broker_accepted (NOT transport_delivered). The ACP transport fills
-		// this in; until then ACPRoute never returns ok and this branch is dead.
+		if err := decision.Prompt(params.Text, func(_ ACPPromptResult, err error) {
+			if err != nil {
+				log.Printf("delivery: ACP notify to %s failed: %v", target.PeerID, err)
+			}
+		}); err != nil {
+			return NotifyResult{}, err
+		}
 		return NotifyResult{
 			Status:        "sent",
 			DeliveryState: "delivered",
@@ -348,15 +350,30 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 	}
 
 	d.gateOnSeedSettled(ctx, target)
+	params.Text = addOrchestratorRecall(params.Text, string(fromName), stringValuePeer(from), target, d.recall)
 
 	if decision, ok := d.transport.ACPRoute(target); ok && decision != nil {
-		// ponytail: ACP ask delivery is a daemon-owned background task whose
-		// closure is lost on restart; the Python port records a durable
-		// acp_ask operation BEFORE dispatch (acp_reconcile.record_acp_ask_operation /
-		// settle_acp_ask_operation) so a startup sweep can fail it and notify the
-		// asker, and runs OnACPComplete (default: notify the asker, stash the
-		// reply on offline). Wire that in when the ACP transport lands; today
-		// ACPRoute never returns ok so this branch is dead.
+		callback := params.OnACPComplete
+		if callback == nil {
+			callback = d.completeACPAsk
+		}
+		err := decision.Prompt(params.Text, func(result ACPPromptResult, promptErr error) {
+			var reply, errText *string
+			if promptErr != nil {
+				text := promptErr.Error()
+				errText = &text
+			} else {
+				text := result.Text
+				if text == "" {
+					text = fmt.Sprintf("[acp stop_reason=%s, no text]", result.StopReason)
+				}
+				reply = &text
+			}
+			callback(context.Background(), params.CorrelationID, reply, errText)
+		})
+		if err != nil {
+			return AskResult{}, err
+		}
 		return AskResult{Transport: "acp"}, nil
 	}
 
@@ -377,6 +394,59 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 	}
 
 	return AskResult{Transport: "ws", HookDelivery: hookDelivery}, nil
+}
+
+func peerIDString(value *proto.PeerID) string {
+	if value == nil {
+		return ""
+	}
+	return string(*value)
+}
+func stringValuePeer(value *proto.Peer) string {
+	if value == nil {
+		return ""
+	}
+	return string(value.PeerID)
+}
+
+func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, errText *string) {
+	if d.asks == nil {
+		return
+	}
+	ask, ok := d.asks.Get(cid)
+	if !ok || ask.Closed {
+		return
+	}
+	isError := errText != nil
+	body := ""
+	if reply != nil {
+		body = *reply
+	}
+	if isError {
+		body = "ACP error: " + *errText
+	}
+	framed := fmt.Sprintf("[ack #%s from @%s] %s", cid, ask.ToPeerName, body)
+	result, err := d.Notify(ctx, NotifyParams{FromPeer: string(ask.ToPeerID), ToPeer: string(ask.FromPeerID), Text: framed, BypassCircle: true})
+	if err != nil || !result.Delivered() {
+		if isError {
+			_, _ = d.asks.Close(ctx, cid, "send_failed")
+			return
+		}
+		var identity *AskerIdentity
+		if asker, found := d.reg.GetPeer(ask.FromPeerID); found && asker.Machine != "" && asker.Machine != "unknown" && asker.Path != "" {
+			identity = &AskerIdentity{DisplayName: asker.DisplayName, Circle: asker.Circle, Backend: asker.Backend, Path: asker.Path, Machine: asker.Machine}
+		}
+		d.asks.SetPendingReply(ctx, cid, framed, identity, false)
+		return
+	}
+	if !isError && reply != nil {
+		d.asks.CaptureReply(ctx, cid, *reply, nil)
+	}
+	reason := "ack_with_msg"
+	if isError {
+		reason = "send_failed"
+	}
+	_, _ = d.asks.Close(ctx, cid, reason)
 }
 
 // OpenScheduledAsk registers and delivers a scheduled ask, rolling back the
@@ -464,11 +534,8 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 		"from_peer_id": fromIDPtr,
 	})
 
-	// ACP-routed recipients have no WS session, so router.Broadcast (which
-	// iterates live WS sessions) never reaches them. ponytail: fan out to the
-	// eligible ACP peers through the same ACP-before-WS path used for notify
-	// once the ACP transport lands. Today ACPRoute never returns ok, so no peer
-	// is split off here — match WS broadcast semantics (never resurrect OFFLINE).
+	// ACP-routed recipients have no WS session, so route them separately before
+	// the WebSocket fanout. Broadcast replies are intentionally discarded.
 	for _, p := range peers {
 		if _, ex := excludeIDs[p.PeerID]; ex {
 			continue
@@ -478,6 +545,15 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 		}
 		if decision, ok := d.transport.ACPRoute(p); ok && decision != nil {
 			excludeIDs[p.PeerID] = struct{}{}
+			if err := decision.Prompt(text, func(_ ACPPromptResult, err error) {
+				if err != nil {
+					log.Printf("delivery: ACP broadcast to %s failed: %v", p.PeerID, err)
+				}
+			}); err != nil {
+				failed = append(failed, BroadcastFailure{PeerID: p.PeerID, Error: err.Error()})
+			} else {
+				sent = append(sent, p.DisplayName)
+			}
 		}
 	}
 

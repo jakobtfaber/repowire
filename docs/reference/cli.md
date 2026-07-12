@@ -1,6 +1,8 @@
 # CLI
 
-The `repowire` command is a thin wrapper around setup, the daemon, and the bot peers. Most users only ever need `setup`. Everything else is for operators running their own daemon or control surfaces.
+The native Go `repowire` command owns setup, daemon operation, hooks, and mesh
+control. Telegram, Slack, and the hosted relay server remain separate Python
+clients/deployments invoked by compatibility subcommands.
 
 ## `repowire setup`
 
@@ -8,7 +10,9 @@ The `repowire` command is a thin wrapper around setup, the daemon, and the bot p
 repowire setup [--relay] [--experimental-channels] [--http-mcp] [--update-checks|--no-update-checks] [--no-service] [--non-interactive]
 ```
 
-One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service.
+One-time install. Detects Claude Code, Codex, Gemini CLI, Antigravity, OpenCode,
+and Pi; wires each available transport; configures `/mcp` plus the stdio identity
+shim; and installs the Go daemon as a user service.
 
 Setup uses the SQLite daemon state store. The daemon applies idempotent
 migrations on startup, imports legacy `schedules.json`, `events.json`, and
@@ -18,7 +22,7 @@ files.
 
 - `--relay` opts in to the hosted relay at `repowire.io`.
 - `--experimental-channels` enables the experimental MCP channel / ACP transport for Claude Code (v2.1.80+, claude.ai login, bun).
-- `--http-mcp` enables the experimental localhost Streamable HTTP MCP endpoint at `http://127.0.0.1:8377/mcp` and generates `daemon.auth_token` if needed.
+- `--http-mcp` is accepted for older setup scripts. Normal setup already enables the localhost `/mcp` implementation and generates `daemon.auth_token` if needed.
 - `--update-checks` lets `repowire status` and `repowire doctor` check PyPI for newer Repowire releases and suggest `repowire update`. Checks are disabled by default and updates are never auto-applied. Use `--no-update-checks` to turn the check off again.
 - `--no-service` skips daemon service installation; run `repowire serve` manually.
 - `--non-interactive` skips prompts and uses flag values only.
@@ -63,34 +67,22 @@ unless you are troubleshooting the platform service manager directly.
 repowire doctor
 ```
 
-Run a battery of diagnostic checks and print color-coded results. Each check reports `✓` (ok), `⚠` (warn, non-fatal), `✗` (fail), or `·` (skip, not applicable).
-
-Checks include:
-
-- Daemon reachable (`GET /health`, prints version and warns if the running daemon version differs from the CLI/package version)
-- Per-runtime hook + MCP install state (claude-code, codex, gemini, antigravity, opencode, pi)
-- `tmux`, Python, and package-manager (`uv`/`pipx`/`pip`) availability
-- Update availability when opted in with `repowire setup --update-checks`
-- Spawn allowlist resolves (commands on `PATH`, paths exist as directories)
-- WebSocket auth token state
-- SQLite state database integrity, schema version, import audit, event count, and peer mapping count
-- Relay reachable (when `relay.enabled`)
-- Channel transport (when configured via `--experimental-channels`)
-
-Exits 0 if all checks pass (or only warn/skip). Exits 1 if any check fails — suitable for `bash`-style health gates.
+Runs the same daemon/runtime/integration report as `status`, then checks the
+host prerequisites used by the core (`tmux` and `git`). It exits non-zero when
+the daemon is unavailable; missing optional host tools are reported as warnings.
 
 ## `repowire peer`
 
 ```bash
 repowire peer new PATH [--backend BACKEND] [--profile PROFILE] [--circle CIRCLE]
 repowire peer list                          # god-view list (all circles, includes caller)
-repowire peer describe NAME_OR_ID [--circle C]  # full state for one peer
+repowire peer describe NAME_OR_ID [--circle C]  # daemon state for one peer
 repowire peer ask NAME QUERY [--timeout SEC] [--circle C]  # blocking compatibility ask
 repowire peer claim-role orchestrator [--peer NAME_OR_ID] [--circle C] [--force]
 repowire peer restart NAME_OR_ID [--circle C] [--dry-run] [-m MESSAGE]
 repowire peer doctor NAME_OR_ID [--circle C] [--json] [--fix]  # deep diagnostic + contradictions
 repowire peer rehook NAME_OR_ID [--circle C] [--apply]         # re-establish inbound ws-hook (non-destructive)
-repowire peer prune                         # remove offline peers from the registry
+repowire peer prune [--dry-run] [--force]   # confirm, then remove offline peers
 repowire peer whoami [--register --backend B --name NAME --circle C --path P]  # read-only identity, or self-register
 repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME] [--direction inbound|outbound|both] [--json]
 repowire peer deliveries [--peer-id ID | --pane-id PANE | --peer NAME] [--json]
@@ -109,7 +101,11 @@ For Antigravity interop checks, `python3 scripts/agy_interop_smoke.py --run-cli-
 
 `peer new` spawns a tmux-backed peer through the daemon `/spawn` route using the configured `daemon.spawn.commands.<backend>` command. Pass `--profile NAME` to append args from `daemon.spawn.profiles.<backend>.<name>`, such as a faster or more capable model selection. Antigravity uses the same daemon pre-registration path as MCP spawn, so it appears immediately as a CLI-fallback peer while upstream hooks are pending. `--command` remains accepted as a deprecated explicit override and bypasses daemon registration/profile resolution.
 
-`peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across circles — without it, the command refuses to guess and prints the same misroute-style refusal the daemon emits internally. Output includes identity (project, circle, role, backend), liveness (status, path, machine, last-seen), open ask threads in both directions, and the last few communication events involving the peer. Reads `GET /peers`, `GET /peers/{id}`, `GET /asks/pending?direction=both`, and `GET /events` — no new daemon endpoints.
+`peer describe` accepts either a display name (`clitcoin-claude-code`) or a peer
+id (`repow-5-abd4d21e`). Pass `--circle` when a display name is ambiguous across
+circles; the daemon refuses to guess. Output is the canonical `GET
+/peers/{identifier}` state, including identity, liveness, inbound health, and
+runtime metadata.
 
 `peer claim-role orchestrator` repairs an existing registered peer when the durable session mapping has the wrong role after daemon restart. It updates the live peer and its persisted session mapping, demoting offline or stale orchestrator holders in the same circle. It refuses to demote a fresh online/busy holder, even with `--force`; stop the current holder first if you intentionally need to replace it. Omit `--peer` only from inside a registered peer shell where Repowire can discover the current peer.
 
@@ -273,10 +269,23 @@ command.
 
 Agent folders are a convention, not a registry: jobs still target them with
 `--path` and `--backend`. `--backend` on `agents create` only fills the
-suggested jobs command. The scaffold path is absolute in the output so daemon
-spawn does not depend on the daemon's current directory. If `.repowire/` is
-git-ignored or the folder is outside `daemon.spawn.allowed_paths`, the command
-prints a warning but does not edit repository ignore rules or Repowire config.
+suggested jobs command. The scaffold path is absolute so daemon spawn does not
+depend on the daemon's current directory.
+
+## `repowire orchestrator`
+
+```bash
+repowire orchestrator init [--force]
+repowire orchestrator diff
+repowire orchestrator start [--runtime RUNTIME] [--profile PROFILE]
+```
+
+`init` renders the orchestrator workspace and skill pack embedded in the Go
+binary; `--force` first moves the current workspace to a timestamped backup.
+`diff` reports Repowire-owned template files that differ or are missing.
+`start` selects an installed runtime (Pi first when its Repowire extension is
+installed), preserves the configured/default circle, and spawns with
+`role=orchestrator`.
 
 ## `repowire orchestrator persona`
 

@@ -7,13 +7,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 // mcpRegShim adapts *peer.Registry to service's accessRegistry seam (the same
@@ -120,7 +123,20 @@ func TestMCPInitialize(t *testing.T) {
 	}
 }
 
-// TestMCPToolsList asserts the 4 slice-1 tool names are advertised.
+func TestMCPLocalhostBindingRejectsRemoteAddress(t *testing.T) {
+	h, _ := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: true, Bind: "localhost-only", RequireAuth: true})
+	h.authToken = "secret"
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+	req.RemoteAddr = "203.0.113.20:1234"
+	req.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	h.handleMCP(recorder, req)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("remote MCP status = %d, want 401", recorder.Code)
+	}
+}
+
+// TestMCPToolsList asserts the full stdio-parity tool surface is advertised.
 func TestMCPToolsList(t *testing.T) {
 	h, _ := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: true, RequireAuth: false, AllowUnauthenticatedLocalhost: true})
 	mux := http.NewServeMux()
@@ -141,7 +157,18 @@ func TestMCPToolsList(t *testing.T) {
 	}
 	decodeResult(t, envelope, &result)
 
-	want := map[string]bool{"whoami": false, "list_peers": false, "notify_peer": false, "broadcast": false}
+	want := map[string]bool{}
+	for _, name := range []string{
+		"ack", "answer", "ask", "ask_many", "ask_many_result", "broadcast",
+		"claim_orchestrator_role", "job_cancel", "job_create", "job_list",
+		"job_result", "job_show", "job_status", "job_update", "kill_peer",
+		"list_peers", "mark_reviewed", "notify_peer", "orchestrator_status",
+		"review_queue", "revoke_share", "schedule_create", "schedule_cron",
+		"schedule_delete", "schedule_list", "schedule_self", "set_description",
+		"share_session", "spawn_peer", "wait_on_ack", "whoami",
+	} {
+		want[name] = false
+	}
 	if len(result.Tools) != len(want) {
 		t.Fatalf("tools = %v, want %d entries", result.Tools, len(want))
 	}
@@ -198,6 +225,12 @@ func TestMCPToolsCallListPeersEmpty(t *testing.T) {
 // peer is registered and the header is set.
 func TestMCPToolsCallWhoamiIdentity(t *testing.T) {
 	h, reg := newMCPTestHub(t, config.MCPHTTPConfig{Enabled: true, RequireAuth: false, AllowUnauthenticatedLocalhost: true})
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	h.store = store
 	mux := http.NewServeMux()
 	h.Routes(mux)
 	srv := httptest.NewServer(mux)
@@ -231,7 +264,16 @@ func TestMCPToolsCallWhoamiIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AllocateAndRegister: %v", err)
 	}
-	result := callWhoami(map[string]string{"X-Repowire-Peer": string(name)})
+	// A bare identity header is untrusted and must be treated as direct HTTP.
+	if result := callWhoami(map[string]string{"X-Repowire-Peer": string(name)}); !strings.Contains(result.Content[0].Text, "mcp-http") {
+		t.Fatalf("unproved identity claim was accepted: %q", result.Content[0].Text)
+	}
+	backend, peerID, displayName := "claude-code", string(id), string(name)
+	cert, err := store.MintBirthCertificate(context.Background(), peerID, displayName, backend, &path, nil, nil, nil, nil, nil, time.Hour, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := callWhoami(map[string]string{"X-Repowire-Peer": string(name), "X-Repowire-Identity-Proof": cert.Nonce})
 	if result.IsError {
 		t.Errorf("whoami with valid identity: isError = true, text=%q", result.Content[0].Text)
 	}

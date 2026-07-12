@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 // routes_events.go owns the "events (read + chat ingest)" HTTP route group:
@@ -151,15 +152,24 @@ func (h *Hub) ingestChatTurn(w http.ResponseWriter, r *http.Request) {
 		markTurnFinalized(*req.TurnID, req.SessionID)
 	}
 
-	// ponytail: the session-binding observation upsert and the job-completion
-	// correlation hook fire here in the Python route. They depend on a
-	// *state.Store session-binding store and a job-completion service that are not
-	// yet wired onto the Go Hub. Recording the event is the load-bearing behaviour
-	// for the dashboard; the binding/job hooks are additive and best-effort even
-	// in Python (wrapped in try/except). Upgrade path: thread the session-binding
-	// store + job-completion service onto the Hub and call UpsertObservation /
-	// on_chat_turn here, guarded by `resolved != nil`.
-	_ = resolved
+	if resolved != nil && h.store != nil {
+		peerID, project := string(resolved.PeerID), resolved.Path
+		var sourceURI *string
+		for _, key := range []string{"runtime_source_uri", "source_uri", "transcript_source_uri"} {
+			if value, _ := resolved.Metadata[key].(string); value != "" {
+				sourceURI = &value
+				break
+			}
+		}
+		provenance := map[string]any{"source_kind": "runtime_unavailable", "backend": resolved.Backend, "runtime_session_id": req.SessionID, "source_event_id": req.TurnID, "observed_by_peer_id": resolved.PeerID}
+		if req.SessionID != nil {
+			provenance["source_kind"] = "runtime_transcript"
+		}
+		_, _ = h.store.UpsertObservation(r.Context(), state.Observation{PeerID: &peerID, Backend: string(resolved.Backend), ProjectPath: &project, RuntimeSessionID: req.SessionID, RuntimeSourceURI: sourceURI, Provenance: provenance, Status: state.BindingActive, Metadata: map[string]any{"last_turn_id": req.TurnID, "last_role": req.Role}})
+	}
+	if resolved != nil && h.jobCompletion != nil {
+		h.jobCompletion.OnChatTurn(r.Context(), resolved.PeerID, req.Role, req.Text)
+	}
 
 	h.reg.AddEvent("chat_turn", data)
 	writeJSON(w, http.StatusOK, okResponse{OK: true})

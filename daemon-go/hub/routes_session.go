@@ -32,13 +32,8 @@ import (
 // the PeerRegistry methods the Python update_session / deliver_response /
 // pending_deliveries handlers call.
 //
-// ponytail: a narrow seam because the REGISTRY port that lands UpdateModelByName /
-// UpdateMetadataByName / GetPeerByName onto *peer.Registry is still in flight
-// (same reason askRoutesRegistry / accessRegistry are narrow). *peer.Registry
-// satisfies GetPeer / GetPeerByPane / UpdateStatus / UpdateTurnState today and
-// will satisfy the by-name updaters once the peer-package owner ports them; the
-// handler bodies don't change. Kept narrow also keeps the handler test hermetic
-// (no SQLite, no live transport).
+// The concrete registry satisfies this seam. Keeping it narrow makes the
+// handlers independently testable without SQLite or a live transport.
 type sessionRegistry interface {
 	// GetPeerByPane resolves a tmux-pane-keyed transport to its peer.
 	GetPeerByPane(pane string) (*proto.Peer, bool)

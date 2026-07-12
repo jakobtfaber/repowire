@@ -275,6 +275,8 @@ def _metadata_matches_current_process(pane_meta: dict) -> bool:
     if isinstance(birth_cert, dict):
         candidate_pids.append(birth_cert.get("agent_pid"))
     for pid in candidate_pids:
+        if pid is None:
+            continue
         try:
             if int(pid) == current_parent:
                 return True

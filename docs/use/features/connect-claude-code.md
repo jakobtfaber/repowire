@@ -23,7 +23,10 @@ The hooks shell out to the `repowire` CLI: `repowire hook session`, `repowire ho
 
 ### MCP server
 
-The normal Repowire MCP server is added as `repowire`. It runs as `repowire mcp` over stdio and provides the stable tool surface: `ask`, `ack`, `notify_peer`, `broadcast`, peer listing, schedules, and related commands.
+The normal Repowire MCP entry is added as `repowire`. `repowire mcp` runs as a
+small stdio identity shim and proxies the stable tool surface (`ask`, `ack`,
+`notify_peer`, schedules, jobs, and related commands) to the Go daemon's local
+`/mcp` endpoint.
 
 ## Plugins and skills
 

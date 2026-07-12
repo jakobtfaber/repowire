@@ -28,11 +28,11 @@ and explain any intentional docs deferral in the handoff.
 
 | Change area | Code paths that usually trigger review | Public surfaces to check |
 | --- | --- | --- |
-| CLI and setup | `repowire/cli.py`, `repowire/config/`, `repowire/spawn.py`, `install.sh`, `repowire.yaml.example` | `README.md`, `docs/reference/cli.md`, `CLAUDE.md`, `AGENTS.md` |
-| MCP and Python client | `repowire/mcp/`, `repowire/peer_mcp.py`, `repowire/client.py`, `repowire/protocol/` | `docs/reference/mcp-tools.md`, `docs/reference/python-client.md`, `README.md` when the surface changes materially |
-| Agent runtimes and hooks | `repowire/hooks/`, `repowire/installers/`, `repowire/channel/`, `repowire/acp/` | `docs/use/features/connect-*.md`, `docs/operate/transports.md`, hook/channel troubleshooting docs, `CLAUDE.md`, `AGENTS.md` |
+| CLI and setup | `daemon-go/cli/`, `daemon-go/config/`, `daemon-go/service/spawn_service.go`, `install.sh`, `repowire.yaml.example` | `README.md`, `docs/reference/cli.md`, `CLAUDE.md`, `AGENTS.md` |
+| MCP and Python client | `daemon-go/hub/routes_mcp*.go`, `daemon-go/mcpstdio/`, `repowire/client.py`, `repowire/protocol/` | `docs/reference/mcp-tools.md`, `docs/reference/python-client.md`, `README.md` when the surface changes materially |
+| Agent runtimes and hooks | `daemon-go/hooks/`, `daemon-go/cli/assets/`, `repowire/channel/` | `docs/use/features/connect-*.md`, `docs/operate/transports.md`, hook/channel troubleshooting docs, `CLAUDE.md`, `AGENTS.md` |
 | Dashboard and human surfaces | `web/app/dashboard/`, `repowire/telegram/`, `repowire/slack/`, attachments routes, relay code | `docs/use/features/`, `docs/operate/relay.md`, `README.md`, browser-generated screenshots under `images/` when UI changes materially |
-| Daemon routing and architecture | `repowire/daemon/`, `repowire/session/`, routing/lifecycle/scheduling state | `docs/operate/architecture.md`, `docs/concepts/`, `docs/use/workflows/`, `CLAUDE.md`, `AGENTS.md` |
+| Daemon routing and architecture | `daemon-go/hub/`, `daemon-go/peer/`, `daemon-go/service/`, `daemon-go/state/` | `docs/operate/architecture.md`, `docs/concepts/`, `docs/use/workflows/`, `CLAUDE.md`, `AGENTS.md` |
 
 ## Graphify Reminder
 

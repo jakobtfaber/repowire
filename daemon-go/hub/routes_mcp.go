@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -15,10 +16,8 @@ import (
 )
 
 // ============================================================================
-// POST /mcp — MCP-over-HTTP (streamable HTTP transport, JSON responses). Slice
-// 1 of the HTTP MCP endpoint: config-gated, exposes a starter "steering" tool
-// set (whoami/list_peers/notify_peer/broadcast) that dispatches to the same
-// registry + service.PeerDelivery the rest of the hub uses.
+// POST /mcp — MCP-over-HTTP (streamable HTTP transport, JSON responses),
+// exposing the complete mesh tool surface over the same services as REST.
 //
 // Built on the official github.com/modelcontextprotocol/go-sdk (the FastMCP
 // equivalent for Go — the Python daemon serves its own HTTP MCP via FastMCP,
@@ -30,18 +29,14 @@ import (
 // Gated by config.MCPHTTPConfig (see WithMCP); nil h.mcp or Enabled=false
 // means the route is never registered.
 //
-// Identity: the caller's peer arrives via the X-Repowire-Peer header (stamped
-// by the future stdio shim). Absent that header, callers act as the daemon-
+// Identity: the caller's peer arrives via the X-Repowire-Peer header stamped
+// by the thin stdio shim. Absent that header, callers act as the daemon-
 // owned "mcp-http" identity — mirrors repowire/mcp/server.py's
 // _http_mcp_identity (name="mcp-http", circle="global", role="human"), the
 // existing Python HTTP-MCP default. Tool handlers read the header straight off
 // req.Extra.Header (populated by the SDK's streamable transport per-request;
 // no context plumbing needed).
 //
-// ponytail: ask/ack + dangerous (spawn/kill/restart) tools land in slice 2,
-// alongside the stdio-shim identity plumbing. cfg.AllowDangerousTools is read
-// here (see registerMCPTools) so the gating point exists, even though slice 1
-// has no dangerous tools to gate yet.
 // ============================================================================
 
 // mcpDefaultIdentity mirrors Python's _http_mcp_identity default name: the
@@ -91,7 +86,24 @@ func (h *Hub) handleMCP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	h.validateMCPIdentity(r)
 	h.mcp.handler.ServeHTTP(w, r)
+}
+
+func (h *Hub) validateMCPIdentity(r *http.Request) {
+	claimed := r.Header.Get("X-Repowire-Peer")
+	if claimed == "" {
+		return
+	}
+	proof := r.Header.Get("X-Repowire-Identity-Proof")
+	peer, _ := h.reg.GetPeerByName(claimed, nil)
+	if h.store == nil || peer == nil || !h.store.ValidateMCPIdentityProof(r.Context(), proof, string(peer.PeerID)) {
+		r.Header.Del("X-Repowire-Peer")
+		r.Header.Del("X-Repowire-Identity-Proof")
+		return
+	}
+	// Canonicalize display-name claims before the tool layer sees them.
+	r.Header.Set("X-Repowire-Peer", string(peer.PeerID))
 }
 
 // mcpAuthorized enforces the /mcp auth policy. RequireAuth demands a bearer
@@ -102,6 +114,9 @@ func (h *Hub) handleMCP(w http.ResponseWriter, r *http.Request) {
 // shared with the lifecycle-hook routes).
 func (h *Hub) mcpAuthorized(r *http.Request) bool {
 	cfg := h.mcp.cfg
+	if cfg.Bind == "localhost-only" && !isLocalhost(r) {
+		return false
+	}
 	if cfg.RequireAuth {
 		if h.authToken == "" {
 			return false
@@ -137,9 +152,9 @@ func textResult(text string) *mcp.CallToolResult {
 // ---- tool argument shapes ---------------------------------------------------
 
 type mcpListPeersArgs struct {
-	Status  string `json:"status,omitempty" jsonschema:"Filter by status: online or offline"`
-	Circle  string `json:"circle,omitempty" jsonschema:"Filter by circle name"`
-	Backend string `json:"backend,omitempty" jsonschema:"Filter by backend/agent type"`
+	ShowOffline bool   `json:"show_offline,omitempty" jsonschema:"Include offline peers"`
+	IncludeSelf bool   `json:"include_self,omitempty" jsonschema:"Include the calling peer"`
+	Circle      string `json:"circle,omitempty" jsonschema:"Circle name or * for mesh-wide"`
 }
 
 type mcpNotifyPeerArgs struct {
@@ -152,12 +167,10 @@ type mcpBroadcastArgs struct {
 	Message string `json:"message" jsonschema:"Message text to broadcast"`
 }
 
-// registerMCPTools installs the slice-1 steering tool set onto srv, closing
-// over the hub (registry reads) and delivery (notify/broadcast dispatch).
-// cfg.AllowDangerousTools is deliberately unread: it is the gating point for
-// the lifecycle tools (spawn/kill/restart, ask/ack) that land in slice 2, and
-// there is nothing to gate in slice 1.
-func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, _ config.MCPHTTPConfig) {
+// registerMCPTools installs the complete MCP tool set onto srv. Read and
+// messaging tools are always present; lifecycle/admin tools enforce the
+// configured dangerous-tool gate in their handlers.
+func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, cfg config.MCPHTTPConfig) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "whoami",
 		Description: "Return the caller's own peer identity (peer_id, display_name, circle, backend, status).",
@@ -168,8 +181,8 @@ func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, _
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_peers",
 		Description: "List peers in the mesh, optionally filtered by status, circle, or backend.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args mcpListPeersArgs) (*mcp.CallToolResult, any, error) {
-		return h.mcpListPeers(ctx, args), nil, nil
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args mcpListPeersArgs) (*mcp.CallToolResult, any, error) {
+		return h.mcpListPeers(ctx, args, callerIdentity(req)), nil, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -179,6 +192,8 @@ func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, _
 		res, err := mcpNotifyPeer(ctx, delivery, args, callerIdentity(req))
 		return res, nil, err
 	})
+
+	registerMCPParityTools(srv, h, cfg)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "broadcast",
@@ -198,10 +213,7 @@ func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, _
 // caller shape (name/circle/role, no peer_id) rather than failing the call.
 func (h *Hub) mcpWhoami(fromPeer string) *mcp.CallToolResult {
 	if p, err := h.reg.GetPeerByName(fromPeer, nil); err == nil && p != nil {
-		return textResult(fmt.Sprintf(
-			"peer_id=%s display_name=%s circle=%s backend=%s status=%s",
-			p.PeerID, p.DisplayName, p.Circle, p.Backend, p.Status,
-		))
+		return textResult(mcpPeerTSV([]*proto.Peer{p}))
 	}
 	return textResult(fmt.Sprintf("display_name=%s circle=global backend=mcp-http status=unregistered", fromPeer))
 }
@@ -209,40 +221,48 @@ func (h *Hub) mcpWhoami(fromPeer string) *mcp.CallToolResult {
 // mcpListPeers mirrors h.listPeers' status/circle/backend filters (see
 // routes_peer_read.go), rendered as a compact one-line-per-peer text block
 // instead of the JSON PeersResponse.
-func (h *Hub) mcpListPeers(ctx context.Context, args mcpListPeersArgs) *mcp.CallToolResult {
+func (h *Hub) mcpListPeers(ctx context.Context, args mcpListPeersArgs, caller string) *mcp.CallToolResult {
 	h.reg.LazyRepair(ctx)
 	peers := h.reg.GetAllPeers()
-
-	switch args.Status {
-	case "online":
+	me, _ := h.reg.GetPeerByName(caller, nil)
+	if !args.ShowOffline {
 		peers = filterPeers(peers, func(p *proto.Peer) bool {
 			return p.Status == proto.StatusOnline || p.Status == proto.StatusBusy
 		})
-	case "offline":
+	}
+	effectiveCircle := args.Circle
+	if effectiveCircle == "" && me != nil && me.Role != proto.RoleOrchestrator {
+		effectiveCircle = me.Circle
+	}
+	if effectiveCircle != "" && effectiveCircle != "*" {
 		peers = filterPeers(peers, func(p *proto.Peer) bool {
-			return p.Status == proto.StatusOffline
+			return p.Circle == effectiveCircle || p.Role.BypassesCircles()
 		})
 	}
-	if args.Circle != "" && args.Circle != "*" {
+	if !args.IncludeSelf && me != nil {
 		peers = filterPeers(peers, func(p *proto.Peer) bool {
-			return p.Circle == args.Circle || p.Role.BypassesCircles()
+			return p.PeerID != me.PeerID
 		})
 	}
-	if args.Backend != "" {
-		peers = filterPeers(peers, func(p *proto.Peer) bool {
-			return string(p.Backend) == args.Backend
-		})
-	}
+	return textResult(mcpPeerTSV(peers))
+}
 
-	if len(peers) == 0 {
-		return textResult("no peers")
-	}
+func mcpPeerTSV(peers []*proto.Peer) string {
 	var b strings.Builder
+	b.WriteString("peer_id\tname\tproject\tcircle\trole\tstatus\tpath\tmachine\tdescription\tbackend\tlast_seen\tturn_state\tmodel")
 	for _, p := range peers {
-		fmt.Fprintf(&b, "%s\t%s\tcircle=%s\tbackend=%s\tstatus=%s\n",
-			p.DisplayName, p.PeerID, p.Circle, p.Backend, p.Status)
+		project, _ := p.Metadata["project"].(string)
+		lastSeen, model := "", ""
+		if p.LastSeen != nil {
+			lastSeen = p.LastSeen.Format(time.RFC3339Nano)
+		}
+		if p.Model != nil {
+			model = *p.Model
+		}
+		fmt.Fprintf(&b, "\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
+			p.PeerID, p.DisplayName, project, p.Circle, p.Role, p.Status, p.Path, p.Machine, p.Description, p.Backend, lastSeen, p.TurnState, model)
 	}
-	return textResult(strings.TrimRight(b.String(), "\n"))
+	return b.String()
 }
 
 // mcpNotifyPeer dispatches to service.PeerDelivery.Notify. A non-nil error

@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -30,8 +31,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/repowire/repowire/daemon-go/cli"
 	"github.com/repowire/repowire/daemon-go/config"
+	"github.com/repowire/repowire/daemon-go/hooks"
 	"github.com/repowire/repowire/daemon-go/hub"
+	"github.com/repowire/repowire/daemon-go/mcpstdio"
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/relay"
@@ -299,6 +303,33 @@ func splitCSV(s string) []string {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "help", "--help", "-h", "version", "--version":
+			os.Exit(cli.Run(os.Args[1:]))
+		case "serve":
+			os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+			runDaemon()
+			return
+		case "hook":
+			os.Exit(hooks.Run(os.Args[2:]))
+		case "ws-hook":
+			os.Exit(hooks.RunWS())
+		case "chat-stream":
+			os.Exit(hooks.RunChatStream(os.Args[2:]))
+		case "mcp":
+			os.Exit(mcpstdio.Run())
+		case "lifecycle":
+			os.Exit(hooks.RunLifecycle(os.Args[2:]))
+		}
+		if !strings.HasPrefix(os.Args[1], "-") {
+			os.Exit(cli.Run(os.Args[1:]))
+		}
+	}
+	runDaemon()
+}
+
+func runDaemon() {
 	// Load ~/.repowire/config.yaml FIRST so flag defaults reflect it. The Go hub
 	// now reads the same file the Python code writes (auth, spawn, relay, HTTP
 	// MCP), which is what lets `repowire serve` stop threading config as flags.
@@ -311,6 +342,8 @@ func main() {
 
 	dbPath := flag.String("db", defaultDBPath(), "path to the schema-v12 SQLite state DB ($REPOWIRE_STATE_DB)")
 	addr := flag.String("addr", fmt.Sprintf("%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), "host:port to serve the hub on")
+	hostAlias := flag.String("host", "", "bind host override (CLI compatibility alias)")
+	portAlias := flag.Int("port", 0, "bind port override (CLI compatibility alias)")
 	authToken := flag.String("auth-token", cfg.Daemon.AuthToken, "shared ws auth token ($REPOWIRE_AUTH_TOKEN / config daemon.auth_token); empty disables auth")
 	// Spawn + relay defaults come from config.yaml (env-overridden in config.Load);
 	// the flags remain as explicit overrides. Empty allowlist OR empty commands →
@@ -319,9 +352,28 @@ func main() {
 	spawnPathsFlag := flag.String("spawn-allowed-paths", strings.Join(cfg.Daemon.Spawn.AllowedPaths, ","), "comma-separated spawn allowlist roots override ($REPOWIRE_SPAWN_ALLOWED_PATHS / config daemon.spawn.allowed_paths); empty disables spawn")
 	spawnCommandsFlag := flag.String("spawn-commands", cfg.Daemon.Spawn.CommandsJSON(), "per-backend launch commands as JSON override ($REPOWIRE_SPAWN_COMMANDS / config daemon.spawn.commands); empty disables spawn")
 	relayEnabled := flag.Bool("relay-enabled", cfg.Relay.Enabled, "enable relay client and /shares proxy (config relay.enabled)")
+	relayAlias := flag.Bool("relay", false, "enable relay client (CLI compatibility alias)")
+	_ = flag.Bool("no-install-hooks", false, "accepted for CLI compatibility; setup owns hook installation")
 	relayURL := flag.String("relay-url", cfg.Relay.URL, "relay base url for the /shares proxy ($REPOWIRE_RELAY_URL / config relay.url)")
 	relayKey := flag.String("relay-api-key", cfg.Relay.APIKey, "relay api key ($REPOWIRE_RELAY_API_KEY / config relay.api_key); empty leaves /shares as a 503 stub")
 	flag.Parse()
+	if *hostAlias != "" || *portAlias != 0 {
+		host, portText, err := net.SplitHostPort(*addr)
+		if err != nil {
+			log.Fatalf("parse daemon addr %q: %v", *addr, err)
+		}
+		port, _ := strconv.Atoi(portText)
+		if *hostAlias != "" {
+			host = *hostAlias
+		}
+		if *portAlias != 0 {
+			port = *portAlias
+		}
+		*addr = net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	if *relayAlias {
+		*relayEnabled = true
+	}
 
 	// (1) Open the state store. NewStore owns the schema-v12 bootstrap/migration
 	// now, so a fresh Go daemon no longer needs Python to pre-create the DB.
@@ -334,15 +386,23 @@ func main() {
 	// transport is both the registry's liveness/sever seam and the socket the
 	// hub serves on (ghost eviction must see the live sockets). Then build the
 	// registry against it, then wrap registry+transport in the hub.
-	ctx := context.Background()
+	ctx, cancelDaemon := context.WithCancel(context.Background())
+	defer cancelDaemon()
 	liveness := realLiveness{}
 	transport := service.NewWebSocketTransport()
+	transport.EnableACP(cfg.Experiments.ACPBrokerClient)
 
 	reg, err := peer.NewRegistry(ctx, store, liveness, transport)
 	if err != nil {
 		_ = store.Close()
 		log.Fatalf("hydrate registry: %v", err)
 	}
+	if events, err := store.LoadRecentEvents(ctx, 500); err != nil {
+		log.Printf("hydrate events: %v", err)
+	} else {
+		reg.HydrateEvents(events)
+	}
+	reg.ConfigureDurations(time.Duration(cfg.Daemon.HeartbeatInterval)*time.Second, time.Duration(cfg.Daemon.PeerReapTTLSeconds*float64(time.Second)), time.Duration(cfg.Daemon.DescriptionTTLSeconds*float64(time.Second)))
 
 	// (5) NewHubWithTransport wires reg.OnOffline -> tracker.CancelQueriesToPeer
 	// internally, so a terminal/transport offline cascades query cancellation
@@ -356,8 +416,11 @@ func main() {
 	// PeerDelivery composes registry-access + transport-choice + ask/notify
 	// lifecycle + the durable queued-delivery fallback (store satisfies the
 	// queue seam). The router (WS-only) is the one the hub minted in step 5.
-	asks := service.NewAskTracker(0) // 0 → default 24h TTL (config prune_max_age)
-	delivery := service.NewPeerDelivery(shim, h.Router(), transport, asks, store)
+	asks := service.NewAskTracker(time.Duration(cfg.Daemon.PruneMaxAgeHours * float64(time.Hour)))
+	delivery := service.NewPeerDelivery(shim, h.Router(), transport, asks, store).WithQueueConfig(cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer).WithOrchestratorRecall(cfg.Daemon.OrchestratorRecall)
+	transport.SetACPPermissionHandler(service.NewACPPermissionHandler(asks, func(kind string, data map[string]any) {
+		reg.AddEvent(kind, data)
+	}))
 
 	// (7) Reconciliation seams. Inject AskTracker + PeerDelivery (via the shape
 	// adapters) so the OFFLINE->live stash-redelivery pass and stash-loss
@@ -368,9 +431,9 @@ func main() {
 		reconcileAsks{asks},
 		reconcileDelivery{delivery},
 		realPaneProbe{},
-		peer.ExperimentsConfig{ACPBrokerClient: false},
-		30*time.Minute, // stale_busy_timeout (default)
-		72*time.Hour,   // prune_max_age (default)
+		peer.ExperimentsConfig{ACPBrokerClient: cfg.Experiments.ACPBrokerClient},
+		time.Duration(cfg.Daemon.StaleBusyTimeoutSeconds*float64(time.Second)),
+		time.Duration(cfg.Daemon.PruneMaxAgeHours*float64(time.Hour)),
 	)
 	// Process/tmux probe for the destructive pane-claim proof (hijack guard).
 	reg.WithProcessProbe(realProcessProbe{})
@@ -392,7 +455,26 @@ func main() {
 			log.Fatalf("parse -spawn-commands JSON: %v", err)
 		}
 	}
-	spawnService := service.NewSpawnService(tmuxCtl, ownership, spawnCommands, splitCSV(*spawnPathsFlag))
+	profiles := map[proto.AgentType]map[string][]string{}
+	for backend, items := range cfg.Daemon.Spawn.Profiles {
+		typed := map[string][]string{}
+		for name, profile := range items {
+			typed[name] = profile.Args
+		}
+		profiles[proto.AgentType(backend)] = typed
+	}
+	spawnEnv := map[string]string{}
+	for key, value := range cfg.Daemon.Spawn.Env {
+		spawnEnv[key] = value
+	}
+	if len(cfg.Daemon.Spawn.EnvPath) > 0 {
+		spawnEnv["PATH"] = strings.Join(cfg.Daemon.Spawn.EnvPath, string(os.PathListSeparator))
+	} else if _, configured := spawnEnv["PATH"]; !configured {
+		if path := captureLoginShellPath(); path != "" {
+			spawnEnv["PATH"] = path
+		}
+	}
+	spawnService := service.NewSpawnService(tmuxCtl, ownership, spawnCommands, splitCSV(*spawnPathsFlag)).WithRuntimeConfig(profiles, spawnEnv)
 
 	// (9) Work/jobs + scheduler. SessionControl is the executor-acquisition
 	// ladder (assigned → reuse → resume → spawn); JobRunner dispatches durable
@@ -404,6 +486,8 @@ func main() {
 	// notify behavior).
 	sessionControl := service.NewSessionControl(shim, spawnService, store).WithResume(service.NewLocalResumeResolver())
 	jobRunner := service.NewJobRunner(store, delivery, sessionControl)
+	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, shim, delivery)
+	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
 	scheduler := service.NewScheduler(store, delivery)
 
 	// (10) Relay/shares config. A nil-or-keyless RelayConfig leaves /shares as
@@ -433,6 +517,7 @@ func main() {
 		WithSessionRoutes(shim, h.Tracker(), store).
 		WithSpawn(spawnService, reg, asks, selfMachine).
 		WithWork(jobRunner, store).
+		WithJobCompletion(jobCompletion).
 		WithWorkRegistry(reg).
 		WithSchedules(store, scheduler).
 		WithShares(relayCfg).
@@ -459,6 +544,17 @@ func main() {
 	// (12) Start the background dispatch loops (deadline-driven, never polling).
 	jobRunner.Start(ctx)
 	scheduler.Start(ctx)
+	reconcileDone := make(chan struct{})
+	go func() {
+		defer close(reconcileDone)
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			jobCompletion.ReconcileInflight(ctx)
+		case <-ctx.Done():
+		}
+	}()
 	if relayClient != nil {
 		relayClient.Start(ctx)
 	}
@@ -485,6 +581,8 @@ func main() {
 	select {
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
+			cancelDaemon()
+			<-reconcileDone
 			jobRunner.Stop()
 			scheduler.Stop()
 			_ = store.Close()
@@ -499,6 +597,8 @@ func main() {
 		}
 	}
 
+	cancelDaemon()
+	<-reconcileDone
 	jobRunner.Stop()
 	scheduler.Stop()
 	if relayClient != nil {
@@ -517,11 +617,36 @@ func main() {
 	// live WS read loop can still be running when store.Close() returns; closing
 	// it requires a hub-level socket sweep, which is out of scope for this fix.
 	delivery.Close()
+	transport.CloseACP()
 	reg.Close()
 	if err := store.Close(); err != nil {
 		log.Printf("close state db: %v", err)
 	}
 	log.Printf("hub stopped")
+}
+
+func captureLoginShellPath() string {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/zsh"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, shell, "-lc", `printf 'REPOWIRE_PATH_START:%s:REPOWIRE_PATH_END' "$PATH"`).Output()
+	if err != nil {
+		return ""
+	}
+	text := string(out)
+	start := strings.LastIndex(text, "REPOWIRE_PATH_START:")
+	if start < 0 {
+		return ""
+	}
+	start += len("REPOWIRE_PATH_START:")
+	end := strings.Index(text[start:], ":REPOWIRE_PATH_END")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(text[start : start+end])
 }
 
 const dashboardFallback = "Dashboard not found. Please run 'repowire build-ui'."

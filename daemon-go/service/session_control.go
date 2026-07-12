@@ -9,12 +9,9 @@ package service
 // deadline). Every acquire writes durable operation rows through the ported
 // state.OperationStore so a crashed runner leaves an audit trail.
 //
-// SpawnService is owned by the spawn-kill-restart area and injected (constructor
-// injection — main wires the SAME *SpawnService instance shared with the spawn
-// routes). Registry resolution + resume-safety are still in flight in their
-// respective areas, so they enter through narrow interface seams here, mirroring
-// delivery.go's accessRegistry pattern; the concrete types satisfy them once
-// landed and collapsing to them is signature-only.
+// SpawnService is injected; main wires the same instance used by the spawn
+// routes. Registry resolution and resume safety enter through narrow interfaces
+// so the control service remains independently testable.
 
 import (
 	"context"
@@ -30,8 +27,6 @@ import (
 const spawnRegistrationTimeout = 45 * time.Second
 
 // controlRegistry is the narrow registry seam SessionControl + JobRunner call.
-// *peer.Registry satisfies it once ResolvePeerStrict/GetPeerByPane land on the
-// concrete type (GetAllPeers/GetPeer already exist).
 //
 // ResolvePeerStrict returns 0/1/N candidates: an empty slice is "not found", a
 // one-element slice is the unique resolution, N>1 is ambiguous. This matches the

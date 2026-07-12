@@ -2,14 +2,22 @@
 
 Every agent in the mesh exposes the same set of MCP tools through the repowire server. Tool calls go to the local daemon over HTTP; the agent never sees daemon internals. Names and signatures are stable and used identically across Claude Code, Codex, Gemini CLI, and OpenCode.
 
-## Transports
+## Transport and identity
 
-The default, stable transport is the per-agent stdio MCP server installed by `repowire setup`.
+The Go daemon implements the complete tool surface once, at its localhost-only
+Streamable HTTP `/mcp` endpoint. `repowire setup` enables that endpoint and
+generates `daemon.auth_token` when needed.
 
-An experimental Streamable HTTP MCP endpoint can also be mounted on the local daemon at `/mcp` with:
+Agent runtimes still launch `repowire mcp` over stdio. That process does not
+implement a second MCP server: it is a thin identity-preserving proxy. Because
+it inherits the runtime's session environment and cwd, it can stamp the
+canonical `X-Repowire-Peer` header before forwarding JSON-RPC to `/mcp`. This is
+necessary when multiple peers share a project path; cwd alone is not identity.
+
+Setup normally configures both pieces:
 
 ```bash
-repowire setup --http-mcp
+repowire setup
 repowire service restart
 ```
 
@@ -22,7 +30,13 @@ daemon:
     enabled: true
 ```
 
-`repowire setup --http-mcp` generates `daemon.auth_token` if one is not already set. This endpoint is opt-in, localhost-only, requires `Authorization: Bearer <daemon.auth_token>` by default, and is not exposed through the hosted relay. HTTP MCP uses a daemon-owned `mcp-http` identity instead of tmux/cwd session inference, so it is useful for local MCP clients that cannot run the stdio server in an agent session.
+The endpoint requires `Authorization: Bearer <daemon.auth_token>` by default,
+accepts only loopback callers, and is explicitly rejected by the hosted-relay
+tunnel. `--http-mcp` remains accepted for setup-script compatibility but is no
+longer needed.
+
+Local clients that cannot launch the identity shim can connect directly. They
+use the daemon-owned `mcp-http` identity, so they do not gain pane/session proof.
 
 Client registration examples:
 
@@ -47,7 +61,10 @@ claude mcp add --transport http repowire http://127.0.0.1:8377/mcp \
   --header "Authorization: Bearer rw_local_..."
 ```
 
-Lifecycle/admin tools such as spawn, kill, and schedule mutation are disabled for HTTP MCP unless explicitly enabled with `daemon.mcp_http.allow_dangerous_tools`. The stdio server installed by `repowire setup` remains the stable default and still runs as `repowire mcp`.
+Lifecycle/admin tools such as spawn, kill, and schedule mutation are disabled
+for anonymous direct-HTTP callers unless explicitly enabled with
+`daemon.mcp_http.allow_dangerous_tools`. Calls through the local stdio shim carry
+a registered peer identity and use the normal peer authorization path.
 
 ## Routing
 

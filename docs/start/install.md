@@ -1,6 +1,8 @@
 # Install
 
-Repowire runs on macOS and Linux with Python 3.10+ and tmux.
+Repowire runs on macOS and Linux with tmux. Platform wheels contain the native
+Go substrate; the Python package wrapper remains for installation and the
+separate Telegram/Slack/hosted-relay clients.
 
 ## Recommended
 
@@ -24,10 +26,10 @@ Use `uv` for the fastest isolated install. Use `pipx` if you want isolation with
 
 The package ships:
 
-- The `repowire` CLI (`repowire setup`, `repowire serve`, `repowire telegram start`, …).
-- The local daemon (HTTP + WebSocket on `127.0.0.1:8377`).
-- The MCP server (stdio).
-- Hook scripts for every agent runtime the setup step detects.
+- The native `repowire` CLI and daemon (HTTP + WebSocket on `127.0.0.1:8377`).
+- The daemon-owned Streamable HTTP MCP implementation and per-agent stdio identity shim.
+- Native hook/ws-hook handlers for every detected agent runtime.
+- Embedded OpenCode, Pi, Claude channel, and orchestrator workspace assets.
 - The Next.js dashboard, pre-built and served from the daemon at `/dashboard`.
 
 Nothing runs yet. Run [setup](setup.md) to wire the hooks for your agents.
