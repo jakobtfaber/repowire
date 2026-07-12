@@ -1,8 +1,12 @@
 package hooks
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -41,5 +45,59 @@ func TestHandoffSummaryIsBounded(t *testing.T) {
 	summary := handoffSummary("", strings.Repeat("word ", 400), "")
 	if got := len(strings.Fields(summary)); got > 301 {
 		t.Fatalf("handoff has %d words", got)
+	}
+}
+
+func TestMCPIdentityReregistersAfterCachedCertificateFails(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("TMUX_PANE", "%999")
+	t.Setenv("REPOWIRE_BACKEND", "codex")
+	t.Setenv("REPOWIRE_PEER_ID", "")
+	t.Setenv("REPOWIRE_CONFIG", filepath.Join(homeDir, "missing-config.yaml"))
+
+	oldCert := map[string]any{"nonce": "expired", "peer_id": "repow-old"}
+	if err := writeMetadata("%999", map[string]any{
+		"backend": "codex", "cwd": mustGetwd(), "peer_id": "repow-old",
+		"agent_pid": os.Getppid(), "birth_certificate": oldCert,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	registrations := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/peers/identity/validate":
+			var body struct {
+				Certificate map[string]any `json:"birth_certificate"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body.Certificate["nonce"] != "fresh" {
+				http.Error(w, "expired", http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer": map[string]any{"peer_id": "repow-fresh", "display_name": "repowire-codex"}})
+		case "/peers":
+			registrations++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"peer_id": "repow-fresh", "display_name": "repowire-codex",
+				"birth_certificate": map[string]any{"nonce": "fresh", "peer_id": "repow-fresh"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	port, _ := strconv.Atoi(strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
+	t.Setenv("REPOWIRE_DAEMON__HOST", "127.0.0.1")
+	t.Setenv("REPOWIRE_DAEMON__PORT", strconv.Itoa(port))
+	t.Setenv("REPOWIRE_DAEMON__AUTH_TOKEN", "test-token")
+
+	identity, proof := MCPIdentityProof()
+	if identity != "repow-fresh" || proof != "fresh" || registrations != 1 {
+		t.Fatalf("identity=%q proof=%q registrations=%d", identity, proof, registrations)
 	}
 }

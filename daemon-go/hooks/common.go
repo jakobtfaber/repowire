@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/repowire/repowire/daemon-go/config"
 )
 
 const (
@@ -213,10 +215,13 @@ func popQueryCID(paneID string) string {
 	})
 }
 
-func daemonBaseURL() string {
+func daemonConnection() (string, string) {
+	if cfg, err := config.Load(); err == nil {
+		return fmt.Sprintf("http://%s:%d", cfg.Daemon.Host, cfg.Daemon.Port), cfg.Daemon.AuthToken
+	}
 	host := firstNonempty(os.Getenv("REPOWIRE_DAEMON_HOST"), "127.0.0.1")
 	port := firstNonempty(os.Getenv("REPOWIRE_DAEMON_PORT"), "8377")
-	return "http://" + host + ":" + port
+	return "http://" + host + ":" + port, os.Getenv("REPOWIRE_AUTH_TOKEN")
 }
 
 func daemonRequest(method, path string, payload any, timeout time.Duration) (int, map[string]any) {
@@ -228,15 +233,16 @@ func daemonRequest(method, path string, payload any, timeout time.Duration) (int
 		}
 		body = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequest(method, daemonBaseURL()+path, body)
+	baseURL, authToken := daemonConnection()
+	req, err := http.NewRequest(method, baseURL+path, body)
 	if err != nil {
 		return 0, nil
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if token := os.Getenv("REPOWIRE_AUTH_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
 	}
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {

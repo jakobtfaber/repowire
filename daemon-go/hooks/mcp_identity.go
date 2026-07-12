@@ -3,7 +3,6 @@ package hooks
 import (
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,31 +13,13 @@ import (
 // MCPIdentity resolves or lazily registers the runtime hosting the stdio shim.
 // The returned peer_id is stamped onto every HTTP MCP request.
 func MCPIdentity() string {
-	if peerID := os.Getenv("REPOWIRE_PEER_ID"); peerID != "" {
-		return peerID
-	}
+	claimedPeerID := os.Getenv("REPOWIRE_PEER_ID")
 	backend := firstNonempty(os.Getenv("REPOWIRE_BACKEND"), "claude-code")
 	cwd := mustGetwd()
 	paneID := getPaneID()
 	agentPID := os.Getppid()
 	if peer := validateCertificateIdentity(backend, cwd, paneID, agentPID); peer != nil {
 		return firstNonempty(stringValue(peer, "peer_id"), stringValue(peer, "display_name"))
-	}
-	if paneID != "" {
-		if peer := daemonGet("/peers/by-pane/" + url.PathEscape(paneID)); peer != nil {
-			return firstNonempty(stringValue(peer, "peer_id"), stringValue(peer, "display_name"))
-		}
-		if meta := readMetadata(paneID); stringValue(meta, "cwd") == cwd && stringValue(meta, "backend") == backend {
-			if id := firstNonempty(stringValue(meta, "peer_id"), stringValue(meta, "display_name")); id != "" {
-				return id
-			}
-		}
-	}
-	if result := daemonGet("/peers?path=" + url.QueryEscape(cwd) + "&backend=" + url.QueryEscape(backend) + "&status=online"); result != nil {
-		if peers, ok := result["peers"].([]any); ok && len(peers) == 1 {
-			peer, _ := peers[0].(map[string]any)
-			return firstNonempty(stringValue(peer, "peer_id"), stringValue(peer, "display_name"))
-		}
 	}
 	hint := consumeSpawnHint(cwd, backend)
 	info := getTmuxInfo()
@@ -55,6 +36,9 @@ func MCPIdentity() string {
 	}
 	if paneID != "" {
 		body["pane_id"] = paneID
+	}
+	if claimedPeerID != "" {
+		body["peer_id"] = claimedPeerID
 	}
 	if hint != nil {
 		for _, key := range []string{"peer_id", "role"} {
