@@ -791,11 +791,17 @@ func runService(argv []string) int {
 	}
 }
 
-func serviceLabel() string { return "com.repowire.daemon" }
+func serviceLabel() string { return "io.repowire.daemon" }
+
+const obsoleteServiceLabel = "com.repowire.daemon"
+
 func installService() error {
 	if runtime.GOOS == "darwin" {
 		dir := home("Library", "LaunchAgents")
 		_ = os.MkdirAll(dir, 0o755)
+		obsoletePath := filepath.Join(dir, obsoleteServiceLabel+".plist")
+		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+obsoleteServiceLabel).Run()
+		_ = os.Remove(obsoletePath)
 		path := filepath.Join(dir, serviceLabel()+".plist")
 		logPath := home(".repowire", "daemon.log")
 		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>serve</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, serviceLabel(), executable(), logPath, logPath)
@@ -816,6 +822,8 @@ func installService() error {
 }
 func restartService() error {
 	if runtime.GOOS == "darwin" {
+		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+obsoleteServiceLabel).Run()
+		_ = os.Remove(home("Library", "LaunchAgents", obsoleteServiceLabel+".plist"))
 		return exec.Command("launchctl", "kickstart", "-k", "gui/"+strconv.Itoa(os.Getuid())+"/"+serviceLabel()).Run()
 	}
 	return exec.Command("systemctl", "--user", "restart", "repowire.service").Run()
@@ -841,9 +849,14 @@ func serviceStatus() int {
 }
 func uninstallService() error {
 	if runtime.GOOS == "darwin" {
-		path := home("Library", "LaunchAgents", serviceLabel()+".plist")
-		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
-		return os.Remove(path)
+		for _, label := range []string{serviceLabel(), obsoleteServiceLabel} {
+			path := home("Library", "LaunchAgents", label+".plist")
+			_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+label).Run()
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
 	}
 	_ = exec.Command("systemctl", "--user", "disable", "--now", "repowire.service").Run()
 	return os.Remove(home(".config", "systemd", "user", "repowire.service"))

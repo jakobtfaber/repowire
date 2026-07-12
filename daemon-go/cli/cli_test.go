@@ -156,6 +156,12 @@ func TestVersionGreater(t *testing.T) {
 	}
 }
 
+func TestServiceLabelKeepsExistingInstallIdentity(t *testing.T) {
+	if serviceLabel() != "io.repowire.daemon" {
+		t.Fatalf("service label = %q", serviceLabel())
+	}
+}
+
 func TestMemoryBodyDropsExistingFrontmatter(t *testing.T) {
 	content := "---\nname: old\n---\n\n# Old\n\nbody\n"
 	if got := strings.TrimSpace(memoryBody(content)); got != "# Old\n\nbody" {

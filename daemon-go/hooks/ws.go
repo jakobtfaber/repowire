@@ -196,7 +196,8 @@ func RunWS() int {
 			}
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		wsURL := "ws://" + firstNonempty(os.Getenv("REPOWIRE_DAEMON_HOST"), "127.0.0.1") + ":" + firstNonempty(os.Getenv("REPOWIRE_DAEMON_PORT"), "8377") + "/ws"
+		baseURL, authToken := daemonConnection()
+		wsURL := "ws" + strings.TrimPrefix(baseURL, "http") + "/ws"
 		conn, _, err := websocket.Dial(ctx, wsURL, nil)
 		if err != nil {
 			cancel()
@@ -218,8 +219,8 @@ func RunWS() int {
 		if model := os.Getenv("REPOWIRE_MODEL"); model != "" {
 			connect["model"] = model
 		}
-		if token := os.Getenv("REPOWIRE_AUTH_TOKEN"); token != "" {
-			connect["auth_token"] = token
+		if authToken != "" {
+			connect["auth_token"] = authToken
 		}
 		if err := wsjson.Write(ctx, conn, connect); err != nil {
 			_ = conn.CloseNow()
