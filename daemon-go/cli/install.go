@@ -404,7 +404,8 @@ func installCodex() error {
 	raw, _ := os.ReadFile(configPath)
 	content := string(raw)
 	content = ensureTomlFeature(content, "hooks", "true")
-	content = replaceTomlSection(content, "mcp_servers.repowire", []string{"command = " + strconv.Quote(executable()), "args = [\"mcp\"]", "env = { REPOWIRE_BACKEND = \"codex\" }"})
+	content = replaceTomlSection(content, "mcp_servers.repowire", []string{"command = " + strconv.Quote(executable()), "args = [\"mcp\"]"})
+	content = replaceTomlSection(content, "mcp_servers.repowire.env", []string{"REPOWIRE_BACKEND = \"codex\""})
 	for event, spec := range specs {
 		entries, _ := hooks[event].([]any)
 		for groupIndex, raw := range entries {
@@ -659,12 +660,12 @@ func uninstallCodex() error {
 	return os.WriteFile(path, []byte(removeTomlSection(string(raw), "mcp_servers.repowire")), 0o600)
 }
 func removeTomlSection(content, name string) string {
-	header, inside := "["+name+"]", false
+	header, prefix, inside := "["+name+"]", "["+name+".", false
 	var out []string
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if trimmed == header {
+			if trimmed == header || strings.HasPrefix(trimmed, prefix) {
 				inside = true
 				continue
 			}

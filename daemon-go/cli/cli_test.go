@@ -93,9 +93,18 @@ func TestSetupConfiguresDetectedSpawnCommandAndUpdateChecks(t *testing.T) {
 }
 
 func TestRemoveTomlSection(t *testing.T) {
-	got := removeTomlSection("x=1\n[mcp_servers.repowire]\ncommand=\"x\"\n[other]\ny=2\n", "mcp_servers.repowire")
+	got := removeTomlSection("x=1\n[mcp_servers.repowire]\ncommand=\"x\"\n[mcp_servers.repowire.env]\nREPOWIRE_BACKEND=\"codex\"\n[mcp_servers.repowire.tools.whoami]\napproval_mode=\"approve\"\n[other]\ny=2\n", "mcp_servers.repowire")
 	if strings.Contains(got, "repowire") || !strings.Contains(got, "[other]\ny=2") {
 		t.Fatalf("unexpected TOML: %q", got)
+	}
+}
+
+func TestReplaceCodexMCPConfigKeepsToolSettingsWithoutDuplicateEnv(t *testing.T) {
+	content := "[mcp_servers.repowire]\ncommand=\"old\"\nenv = { REPOWIRE_BACKEND = \"codex\" }\n[mcp_servers.repowire.env]\nREPOWIRE_BACKEND=\"codex\"\n[mcp_servers.repowire.tools.whoami]\napproval_mode=\"approve\"\n[other]\nx=1\n"
+	content = replaceTomlSection(content, "mcp_servers.repowire", []string{"command=\"new\"", "args=[\"mcp\"]"})
+	content = replaceTomlSection(content, "mcp_servers.repowire.env", []string{"REPOWIRE_BACKEND=\"codex\""})
+	if strings.Contains(content, "env = {") || strings.Count(content, "[mcp_servers.repowire.env]") != 1 || !strings.Contains(content, "[mcp_servers.repowire.tools.whoami]\napproval_mode=\"approve\"") {
+		t.Fatalf("invalid MCP replacement:\n%s", content)
 	}
 }
 
