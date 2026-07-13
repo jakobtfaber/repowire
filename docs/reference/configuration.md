@@ -38,6 +38,13 @@ daemon:
     allowed_paths: []
 updates:
   check_enabled: false
+telegram:
+  bot_token: ""
+  chat_id: ""
+slack:
+  bot_token: ""
+  app_token: ""
+  channel_id: ""
 ```
 
 ## Environment variables
@@ -50,9 +57,17 @@ section delimiter:
 REPOWIRE_DAEMON__PORT=9000
 REPOWIRE_DAEMON__AUTH_TOKEN=rw_...
 REPOWIRE_RELAY__URL=wss://repowire.io
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_CHANNEL_ID=C...
 ```
 
 Two legacy flat aliases are kept for the relay: `REPOWIRE_RELAY_URL` and `REPOWIRE_API_KEY` (setting `REPOWIRE_API_KEY` also flips `relay.enabled` to true).
+
+Telegram and Slack accept both their conventional flat environment variables
+shown above and nested `REPOWIRE_TELEGRAM__*` / `REPOWIRE_SLACK__*` aliases.
 
 Resolution precedence, highest first: explicit constructor arguments, the flat relay aliases, `REPOWIRE_*` environment variables, `~/.repowire/config.yaml`, then built-in defaults. Environment variables take precedence over the config file, so an exported `REPOWIRE_DAEMON__PORT` overrides `daemon.port` in the YAML.
 
@@ -125,7 +140,7 @@ Explicit command overrides still win over profiles. `repowire peer restart` pres
 
 Opt-in release availability checks for `repowire status` and `repowire doctor`. Default: `false`.
 
-When enabled, those commands may query PyPI and report that a newer Repowire release is available. They never install packages, rewrite hooks, restart services, or mutate daemon routing. `repowire update` remains the explicit upgrade path.
+When enabled, those commands may query GitHub Releases and report that a newer Repowire release is available. They never install binaries, rewrite hooks, restart services, or mutate daemon routing. `repowire update` remains the explicit upgrade path.
 
 ## `experiments`
 

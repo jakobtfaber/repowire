@@ -39,7 +39,7 @@ runtime's daemon-minted peer identity; it does not duplicate the MCP tools.
 `Authorization: Bearer <token>` and, without the stdio identity proof, act as
 the restricted `mcp-http` caller.
 
-`--update-checks` opts this machine into update availability checks from `repowire status` and `repowire doctor`. It only reports that a newer release exists; `repowire update` remains the explicit command that upgrades the installed package, reinstalls hooks/plugins, and restarts the daemon service when needed.
+`--update-checks` opts this machine into update availability checks from `repowire status` and `repowire doctor`. It only reports that a newer release exists; `repowire update` remains the explicit command that upgrades the installed binary and re-runs setup.
 
 ## Verifying
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -99,6 +100,91 @@ func TestClient_HTTPRequestTunnel(t *testing.T) {
 	}
 }
 
+func TestClient_HTTPRequestAddsDaemonAuth(t *testing.T) {
+	local := fakeLocal(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	got := make(chan map[string]any, 1)
+	relay, _ := startRelay(t, func(ctx context.Context, conn *websocket.Conn) {
+		_ = wsjson.Write(ctx, conn, map[string]any{"type": "http_request", "request_id": "auth-1", "path": "/peers"})
+		var response map[string]any
+		if wsjson.Read(ctx, conn, &response) == nil {
+			got <- response
+		}
+	})
+	c := NewClient(wsURL(relay.URL), "rw_test", "d1", local.URL).WithAuthToken("secret")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+	select {
+	case response := <-got:
+		if int(response["status"].(float64)) != http.StatusNoContent {
+			t.Fatalf("status = %v", response["status"])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for authenticated response")
+	}
+}
+
+func TestClient_HTTPStreamAndCancel(t *testing.T) {
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	var once sync.Once
+	local := fakeLocal(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/events/stream" || r.Header.Get("Authorization") != "Bearer secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"type\":\"ready\"}\n\n"))
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done()
+		once.Do(func() { close(cancelled) })
+	})
+	gotChunk := make(chan string, 1)
+	relay, _ := startRelay(t, func(ctx context.Context, conn *websocket.Conn) {
+		_ = wsjson.Write(ctx, conn, map[string]any{"type": "http_stream_request", "request_id": "stream-1", "path": "/events/stream"})
+		for {
+			var frame map[string]any
+			if wsjson.Read(ctx, conn, &frame) != nil {
+				return
+			}
+			if frame["type"] == "http_stream_chunk" {
+				body, _ := base64.StdEncoding.DecodeString(frame["body"].(string))
+				gotChunk <- string(body)
+				_ = wsjson.Write(ctx, conn, map[string]any{"type": "http_stream_cancel", "request_id": "stream-1"})
+				return
+			}
+		}
+	})
+	c := NewClient(wsURL(relay.URL), "rw_test", "d1", local.URL).WithAuthToken("secret")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+	select {
+	case chunk := <-gotChunk:
+		if !strings.Contains(chunk, "ready") {
+			t.Fatalf("chunk = %q", chunk)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream chunk")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream request was not cancelled")
+	}
+}
+
 func TestClient_HTTPRequestTunnelBlocksMCP(t *testing.T) {
 	var localCalls atomic.Int32
 	local := fakeLocal(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -166,7 +252,7 @@ func TestClient_RelayQueryForwarded(t *testing.T) {
 	select {
 	case resp := <-got:
 		if resp["type"] != "relay_response" || resp["correlation_id"] != "cid-9" ||
-			resp["source_daemon_id"] != "other" {
+			resp["source_daemon_id"] != "other" || resp["target_daemon_id"] != "other" {
 			t.Fatalf("bad relay_response: %v", resp)
 		}
 		if int(resp["status"].(float64)) != 200 {

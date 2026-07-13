@@ -17,7 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const Version = "0.17.0"
+var Version = "0.18.0"
 
 func Run(argv []string) int {
 	if len(argv) == 0 {
@@ -83,7 +83,7 @@ func Run(argv []string) int {
 	case "uninstall":
 		return runUninstall(argv[1:])
 	default:
-		return usage("<setup|serve|status|doctor|link|peer|jobs|schedule|session|trace|share|agents|service|config|memory|orchestrator>")
+		return usage("<setup|serve|status|doctor|link|peer|jobs|schedule|session|trace|share|relay|telegram|slack|agents|service|config|memory|orchestrator>")
 	}
 }
 
@@ -93,7 +93,7 @@ func commandHelp(command string) int {
 }
 
 func help() int {
-	fmt.Println("Repowire - mesh network for AI coding agents\n\nCommands: setup, serve, status, doctor, link, peer, jobs, schedule, session, trace, share, agents, service, config, memory, orchestrator")
+	fmt.Println("Repowire - mesh network for AI coding agents\n\nCommands: setup, serve, status, doctor, link, peer, jobs, schedule, session, trace, share, relay, telegram, slack, agents, service, config, memory, orchestrator")
 	return 0
 }
 
@@ -151,40 +151,47 @@ func updatesEnabled() bool {
 
 func latestVersion() (string, error) {
 	client := &http.Client{Timeout: 3 * time.Second}
-	response, err := client.Get("https://pypi.org/pypi/repowire/json")
+	request, _ := http.NewRequest(http.MethodGet, "https://api.github.com/repos/prassanna-ravishankar/repowire/releases/latest", nil)
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "repowire/"+Version)
+	response, err := client.Do(request)
 	if err != nil {
 		return "", err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("PyPI returned %s", response.Status)
+		return "", fmt.Errorf("GitHub returned %s", response.Status)
 	}
 	var payload struct {
-		Info struct {
-			Version string `json:"version"`
-		} `json:"info"`
+		TagName string `json:"tag_name"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		return "", err
 	}
-	return payload.Info.Version, nil
+	return strings.TrimPrefix(payload.TagName, "v"), nil
 }
 
 func versionGreater(candidate, current string) bool {
 	left, right := strings.Split(strings.TrimPrefix(candidate, "v"), "."), strings.Split(strings.TrimPrefix(current, "v"), ".")
 	for index := 0; index < 3; index++ {
-		var a, b int
-		if index < len(left) {
-			a, _ = strconv.Atoi(strings.FieldsFunc(left[index], func(r rune) bool { return r < '0' || r > '9' })[0])
-		}
-		if index < len(right) {
-			b, _ = strconv.Atoi(strings.FieldsFunc(right[index], func(r rune) bool { return r < '0' || r > '9' })[0])
-		}
+		a, b := versionPart(left, index), versionPart(right, index)
 		if a != b {
 			return a > b
 		}
 	}
 	return false
+}
+
+func versionPart(parts []string, index int) int {
+	if index >= len(parts) {
+		return 0
+	}
+	fields := strings.FieldsFunc(parts[index], func(r rune) bool { return r < '0' || r > '9' })
+	if len(fields) == 0 {
+		return 0
+	}
+	value, _ := strconv.Atoi(fields[0])
+	return value
 }
 
 func runLink(argv []string) int {

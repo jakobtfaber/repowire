@@ -34,8 +34,8 @@ The daemon is the single routing hub. It does not care whether a peer arrived th
 | Schedules and jobs | `daemon-go/service/scheduler.go`, `daemon-go/service/job_runner.go`, `daemon-go/service/job_completion.go`, `daemon-go/state/` | Deadline-driven schedules, durable work, turn completion, executor-death failure, SQLite state |
 | Hooks | `daemon-go/hooks/` | Runtime adapters, ws-hook supervision, tmux injection, chat extraction, remote approval |
 | MCP | `daemon-go/hub/routes_mcp*.go`, `daemon-go/mcpstdio/` | Complete daemon-owned HTTP tool surface plus the per-runtime identity proxy |
-| Control surfaces | `web/`, `repowire/telegram/bot.py`, `repowire/slack/bot.py` | Dashboard and human/service peers |
-| Relay | `repowire/relay/server.py`, `daemon-go/relay/` | Separate hosted server plus the Go daemon's outbound tunnel client |
+| Control surfaces | `web/`, `daemon-go/mobile/` | Dashboard and native Telegram/Slack human peers |
+| Relay | `daemon-go/relayserver/`, `daemon-go/relay/` | Native hosted server plus the daemon's outbound tunnel client |
 
 ## Transports
 

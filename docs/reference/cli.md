@@ -1,8 +1,7 @@
 # CLI
 
-The native Go `repowire` command owns setup, daemon operation, hooks, and mesh
-control. Telegram, Slack, and the hosted relay server remain separate Python
-clients/deployments invoked by compatibility subcommands.
+The native Go `repowire` command owns setup, daemon operation, hooks, mesh
+control, Telegram and Slack peers, and the hosted relay server.
 
 ## `repowire setup`
 
@@ -23,7 +22,7 @@ files.
 - `--relay` opts in to the hosted relay at `repowire.io`.
 - `--experimental-channels` enables the experimental MCP channel / ACP transport for Claude Code (v2.1.80+, claude.ai login, bun).
 - `--http-mcp` is accepted for older setup scripts. Normal setup already enables the localhost `/mcp` implementation and generates `daemon.auth_token` if needed.
-- `--update-checks` lets `repowire status` and `repowire doctor` check PyPI for newer Repowire releases and suggest `repowire update`. Checks are disabled by default and updates are never auto-applied. Use `--no-update-checks` to turn the check off again.
+- `--update-checks` lets `repowire status` and `repowire doctor` check GitHub Releases for newer Repowire versions and suggest `repowire update`. Checks are disabled by default and updates are never auto-applied. Use `--no-update-checks` to turn the check off again.
 - `--no-service` skips daemon service installation; run `repowire serve` manually.
 - `--non-interactive` skips prompts and uses flag values only.
 
@@ -93,7 +92,7 @@ repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 
 `peer deliveries` drains one-shot queued deliveries for a peer. Draining deletes the queued rows to avoid duplicate paste/replay. For queued asks, `peer deliveries` shows the original ask text once, while `peer asks` continues to show the open ask until the agent closes it with `peer ack` or the MCP `ack` tool.
 
-For Antigravity interop checks, `python3 scripts/agy_interop_smoke.py --run-cli-fallback` writes a JSON evidence report covering observed hook evidence, MCP availability state, and CLI fallback ask→ack. It records current behaviour only; hook or MCP support is not treated as verified unless the report observes matching daemon evidence.
+For Antigravity interop checks, use `peer whoami`, `peer deliveries`, `peer asks`, and `peer ack` to exercise the CLI fallback directly against the live daemon.
 
 `peer list` is god-view: it returns every peer regardless of circle and includes the calling shell. The MCP [`list_peers`](mcp-tools.md#list_peers) tool defaults to a peer-facing view (online only, caller hidden).
 
@@ -366,21 +365,13 @@ Run the Slack bot peer over Socket Mode (no public URL needed). Reads `SLACK_BOT
 repowire update
 ```
 
-Re-install repowire via the same package manager that installed it. Use after pulling a new release.
-When config enables optional runtime support such as ACP, `update` upgrades the
-matching package extra so the service runtime keeps the dependency. After
-reinstalling hooks/plugins, `update` restarts the daemon service when it is
-running. SQLite state migrations run during that daemon restart; verify with
-`repowire doctor`.
+Download and install the latest checksum-verified native release, then re-run
+non-interactive setup. SQLite state migrations run when the daemon restarts;
+verify with `repowire doctor`.
 
-`repowire update` is the only command that upgrades the installed package.
+`repowire update` is the only command that upgrades the installed binary.
 Hooks, MCP calls, daemon routing, `status`, and `doctor` never auto-update
 Repowire.
-
-When config enables an optional runtime surface that requires package extras,
-such as `experiments.acp_broker_client`, `update` uses an explicit package spec
-like `repowire[acp]` where the package manager supports it so optional
-dependencies are preserved.
 
 ## `repowire uninstall`
 
@@ -388,7 +379,7 @@ dependencies are preserved.
 repowire uninstall [--yes]
 ```
 
-Remove hooks, MCP entries, and the daemon service. Prompts before deleting `~/.repowire/` (config, logs, attachments); decline to keep it for reinstalls. `--yes` skips the prompts and removes the directory along with the installed package.
+Remove hooks, MCP entries, and the daemon service. `--yes` also removes `~/.repowire/` (config, logs, attachments); omit it to keep local state for reinstalls. Remove the release binary separately if desired.
 
 ## See also
 

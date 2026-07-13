@@ -504,7 +504,7 @@ func runDaemon() {
 	// local HTTP surface (127.0.0.1) — same trust model as the Python client.
 	var relayClient *relay.Client
 	if relayCfg.Enabled {
-		relayClient = relay.NewClient(relayCfg.URL, relayCfg.APIKey, selfMachine, "http://"+*addr)
+		relayClient = relay.NewClient(relayCfg.URL, relayCfg.APIKey, selfMachine, "http://"+*addr).WithAuthToken(cfg.Daemon.AuthToken)
 	}
 
 	// (11) Wire EVERY route group onto the hub. Each With* gates a route group

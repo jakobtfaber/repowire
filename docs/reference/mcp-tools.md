@@ -72,7 +72,7 @@ a registered peer identity and use the normal peer authorization path.
 
 ### `ask`
 
-```python
+```text
 ask(peer_name: str, query: str, reply_to: str | None = None, circle: str | None = None, attachments: list[dict] | None = None) -> str
 ```
 
@@ -88,14 +88,14 @@ Peer resolution defaults to the caller's circle. Callers or targets whose role b
 
 Pass `reply_to` to chain a follow-up: the prior thread closes and a new one opens referencing it. See [misroute refusal](../concepts/message-types.md#misroute-refusal) for what happens when names collide within the resolution scope.
 
-```python
+```text
 ask("project-b", "What API endpoints do you expose?")
 # returns "ask-c1a1c7dd"
 ```
 
 ### `wait_on_ack`
 
-```python
+```text
 wait_on_ack(correlation_id: str, timeout_seconds: int = 600) -> str
 ```
 
@@ -113,7 +113,7 @@ This is the waiting primitive for unattended sessions, and mandatory style
 for job executors: a job's fire ends when the turn ends, so a job that needs
 a peer's answer must `ask` then `wait_on_ack` rather than ending its turn.
 
-```python
+```text
 cid = ask("reviewer", "Review the diff on branch fix/x")
 wait_on_ack(cid, timeout_seconds=900)
 # {"status": "resolved", "reply": "LGTM with one nit", ...}
@@ -121,7 +121,7 @@ wait_on_ack(cid, timeout_seconds=900)
 
 ### `ack`
 
-```python
+```text
 ack(correlation_id: str, message: str | None = None, attachments: list[dict] | None = None) -> str
 ```
 
@@ -129,14 +129,14 @@ Close an open ask. Bare `ack(cid)` signals "seen, no action needed." A reply `ac
 
 When the ask carries a structured question, `ack` delegates to the typed answer path: bare `ack(cid)` records an acknowledged answer, while `ack(cid, message)` records a text answer. Use `answer` directly when selecting an option.
 
-```python
+```text
 ack("ask-c1a1c7dd")
 ack("ask-c1a1c7dd", "we expose /health, /peers, /ask, /ack")
 ```
 
 ### `answer`
 
-```python
+```text
 answer(correlation_id: str, option_id: str | None = None, text: str | None = None) -> str
 ```
 
@@ -144,14 +144,14 @@ Answer a structured question carried on an ask. Pass `option_id` to select a cho
 
 This is the typed counterpart to `ack` for questions such as tool approvals and future AskUserQuestion-style prompts. Plain asks still use `ack`; `/answer` rejects a plain ask so the existing `ack` retry semantics are not bypassed. If the asking peer is offline after a structured answer is recorded, the readable reply is stashed and redelivered on reconnect.
 
-```python
+```text
 answer("acpperm-8b9c1f42", option_id="allow")
 answer("ask-c1a1c7dd", text="Use the staging database")
 ```
 
 ### `notify_peer`
 
-```python
+```text
 notify_peer(peer_name: str, message: str, circle: str | None = None, attachments: list[dict] | None = None) -> str
 ```
 
@@ -175,7 +175,7 @@ Peer resolution mirrors `ask`: defaults to the caller's circle, except callers o
 
 The special peer `telegram` routes to the user's phone. The `dashboard` already sees agent turns; you do not need to notify it. Both are human-role peers and resolve mesh-wide regardless of your circle.
 
-```python
+```text
 notify_peer("telegram", "deploy finished, green across CI")
 ```
 
@@ -186,13 +186,13 @@ older transport that may ignore the structured field.
 
 ### `broadcast`
 
-```python
+```text
 broadcast(message: str) -> str
 ```
 
 Fan out to every online peer in your circle. No correlation, no reply. Use sparingly — treat it as a soft interrupt for everyone in scope.
 
-```python
+```text
 broadcast("rebasing main, hold pushes for ~5 min")
 ```
 
@@ -200,7 +200,7 @@ ACP-brokered peers (experimental) are included in the fan-out: each receives the
 
 ### `ask_many` / `ask_many_result`
 
-```python
+```text
 ask_many(peer_names: list[str], query: str, circle: str | None = None, timeout_seconds: int = 300) -> str
 ask_many_result(parent_id: str) -> str
 ```
@@ -209,7 +209,7 @@ Ask the same question to several peers in parallel under one parent (`askm-...`)
 
 `ask_many` returns the `parent_id`; poll `ask_many_result(parent_id)` for the current rollup — per-peer status (`pending` / `acked` / `replied` / `failed`), captured reply bodies, and a `state` of `complete` / `partial` / `pending`. Timeout is lazy: a parent past its `timeout_seconds` deadline with open children reports `partial` / `timed_out` at read time (no background timer). State is in-memory and does not survive a daemon restart.
 
-```python
+```text
 parent = ask_many(["reviewer-a", "reviewer-b"], "ready to merge #42?")
 # ... later ...
 ask_many_result(parent)  # shows who replied, who's still pending
@@ -219,7 +219,7 @@ ask_many_result(parent)  # shows who replied, who's still pending
 
 ### `list_peers`
 
-```python
+```text
 list_peers(show_offline: bool = False, include_self: bool = False) -> str
 ```
 
@@ -236,7 +236,7 @@ Pass `circle="*"` to widen to the whole mesh, `circle="<name>"` to scope to a di
 
 ### `whoami`
 
-```python
+```text
 whoami() -> str
 ```
 
@@ -244,19 +244,19 @@ Returns the caller's own TSV row. Useful when an agent needs to know which displ
 
 ### `set_description`
 
-```python
+```text
 set_description(description: str) -> str
 ```
 
 Update the free-form description visible in `list_peers`. Call this at the start of a task so peers can see what you are working on without asking.
 
-```python
+```text
 set_description("rebuilding docs slice B")
 ```
 
 ### `claim_orchestrator_role`
 
-```python
+```text
 claim_orchestrator_role(force: bool = False) -> str
 ```
 
@@ -264,7 +264,7 @@ Self-repair tool for the orchestrator workspace. Use it after a daemon restart w
 
 ### `orchestrator_status`
 
-```python
+```text
 orchestrator_status(circle: str | None = None) -> str
 ```
 
@@ -278,7 +278,7 @@ This is a *presence check*, not a snapshot of mesh state.
 
 ### `job_create`
 
-```python
+```text
 job_create(title: str = "", kind: str = "general", assigned_peer_id: str | None = None, owner_peer_id: str | None = None, repowire_session_id: str | None = None, correlation_id: str | None = None, circle: str | None = None, source_kind: str | None = None, source_id: str | None = None, scope: str | None = None, visibility: str = "circle", request: dict | None = None, deadline_at: str | None = None, expires_at: str | None = None, prompt: str | None = None, prompt_file: str | None = None, path: str | None = None, backend: str | None = None, profile: str | None = None, due_at: str | None = None, cron: str | None = None, result_surface: str | None = None, process_scope: str | None = None, continuity: str | None = None, provenance: dict | None = None) -> str
 ```
 
@@ -286,7 +286,7 @@ Create a durable tracked work job through the daemon `/jobs` API. Pass `cron` to
 
 ### `job_list`
 
-```python
+```text
 job_list(state: str | None = None, owner_peer_id: str | None = None, created_by_peer_id: str | None = None, repowire_session_id: str | None = None, circle: str | None = None) -> str
 ```
 
@@ -294,7 +294,7 @@ List durable jobs through `/jobs`. Returns a JSON string shaped like `{"work": [
 
 ### `job_status` / `job_show`
 
-```python
+```text
 job_status(job_id: str) -> str
 job_show(job_id: str) -> str
 ```
@@ -303,7 +303,7 @@ Return one job's current status JSON. `job_show` is an alias for `job_status`.
 
 ### `job_update`
 
-```python
+```text
 job_update(job_id: str, state: str, state_reason: str | None = None, phase: str | None = None, progress: dict | None = None, progress_note: str | None = None, result_summary: str | None = None, result_data: dict | None = None, error: dict | None = None, artifacts: list | None = None, provenance: dict | None = None, attempt_id: str | None = None) -> str
 ```
 
@@ -313,7 +313,7 @@ Update a job lifecycle state through `PATCH /jobs/{job_id}`. Returns the updated
 
 ### `job_result`
 
-```python
+```text
 job_result(job_id: str) -> str
 ```
 
@@ -321,7 +321,7 @@ Return terminal result JSON for a job, or `result_state="not_ready"` with the cu
 
 ### `job_cancel`
 
-```python
+```text
 job_cancel(job_id: str, reason: str = "cancel_requested") -> str
 ```
 
@@ -329,7 +329,7 @@ Request cancellation for a tracked work job. Returns status JSON. Queued jobs mo
 
 ### `spawn_peer`
 
-```python
+```text
 spawn_peer(path: str, backend: str, profile: str | None = None, circle: str | None = None, message: str | None = None) -> str
 ```
 
@@ -339,7 +339,7 @@ Hook-backed runtimes self-register via `SessionStart` within a few seconds. Anti
 
 ### `kill_peer`
 
-```python
+```text
 kill_peer(peer_identifier: str, circle: str | None = None) -> str
 ```
 
@@ -349,7 +349,7 @@ Terminate a peer by name or `peer_id`. The mesh registration is always removed o
 
 ### `mark_reviewed`
 
-```python
+```text
 mark_reviewed(pr_url: str, last_reviewed_sha: str | None = None) -> str
 ```
 
@@ -357,7 +357,7 @@ Record that you've reviewed a GitHub PR. After this call, the PR stops surfacing
 
 ### `review_queue`
 
-```python
+```text
 review_queue(peer_name: str | None = None) -> str
 ```
 
@@ -375,7 +375,7 @@ List PRs awaiting your review (or another peer's). Defaults to the calling peer.
 
 ### `schedule_create`
 
-```python
+```text
 schedule_create(to_peer: str, text: str, fire_at: str, kind: str = "notify", circle: str | None = None) -> str
 ```
 
@@ -387,7 +387,7 @@ Use for self-wake reminders, post-stand-up nudges, or future check-ins that don'
 
 ### `schedule_self`
 
-```python
+```text
 schedule_self(text: str, fire_at: str | None = None, cron: str | None = None, kind: str = "notify", circle: str | None = None) -> str
 ```
 
@@ -397,7 +397,7 @@ For one-shot reminders, pass an ISO-8601 `fire_at`. For recurring reminders, pas
 
 ### `schedule_cron`
 
-```python
+```text
 schedule_cron(to_peer: str, text: str, cron: str, kind: str = "notify", circle: str | None = None) -> str
 ```
 
@@ -407,7 +407,7 @@ Recurring schedules advance to their next matching fire time after delivery. Can
 
 ### `schedule_list`
 
-```python
+```text
 schedule_list(mine_only: bool = True, include_cron: bool = False) -> str
 ```
 
@@ -415,7 +415,7 @@ List pending scheduled check-ins. Returns TSV with columns: `schedule_id`, `from
 
 ### `schedule_delete`
 
-```python
+```text
 schedule_delete(schedule_id: str) -> str
 ```
 
@@ -425,7 +425,7 @@ Cancel a pending scheduled check-in by the ID `schedule_create` returned.
 
 ### `share_session`
 
-```python
+```text
 share_session(
     peer_name: str | None = None,
     permissions: str = "ro",
@@ -452,7 +452,7 @@ expires: never
 
 ### `revoke_share`
 
-```python
+```text
 revoke_share(share_id: str) -> str
 ```
 
@@ -461,7 +461,7 @@ Revoke a share link. Active SSE connections on that link receive a
 
 ## See also
 
-- The [typed Python client](python-client.md) exposes the same routing calls over the daemon's HTTP API for non-MCP callers.
+- The [HTTP API](http-api.md) exposes the same routing primitives for non-MCP callers.
 - [Message types](../concepts/message-types.md) covers the semantics of `ask`, `ack`, `notify_peer`, and `broadcast` at a higher level.
 - The [orchestrator pattern](../concepts/orchestrator.md) shows where `orchestrator_status`, `review_queue`, and the scheduling tools fit together.
 - [Session sharing](../use/features/session-sharing.md) — full usage guide with examples.

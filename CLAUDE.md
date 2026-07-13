@@ -20,7 +20,7 @@ These are the load-bearing ideas. When a change feels off, it's usually because 
 
 Things that have cost time before. Not exhaustive, and some may drift — verify against the live system rather than trusting this blindly.
 
-- **Hooks run from the *installed* native binary.** After changing `daemon-go/hooks/` (or daemon code you want live), `uv tool install . --force-reinstall`, then re-run `repowire setup` when installer output changed. Editing the source tree alone does nothing for a running agent.
+- **Hooks run from the binary recorded by setup.** After changing `daemon-go/hooks/` (or daemon code you want live), rebuild that binary, then re-run `repowire setup` when installer output changed. Editing the source tree alone does nothing for a running agent.
 - **Restarting the daemon bounces the whole mesh.** `repowire service restart` re-registers every peer (including the session you're in and any spawned reviewers). Expected, but it interrupts in-flight work — sequence it deliberately. For a live test, spawn a *throwaway* peer rather than restarting yourself.
 - **Verify UI/behavior changes live, not just by green gates.** A passing build or a 200 response is not proof. A landing-page fix shipped "green" twice while still rendering blank in the browser; a `resume_mode=resumed` field meant nothing until a resumed peer actually recalled prior context. Use agent-browser for web, a real round-trip for delivery/resume.
 - **`gh pr edit` is broken on the installed `gh` (2.54.0)** — it queries deprecated Projects-classic GraphQL and 400s on any edit. Set the PR body/labels via REST instead: `gh api -X PATCH repos/OWNER/REPO/pulls/N -F body=@file`. `gh pr comment` works fine. (gh-pr-flow's "use gh api directly" is the general lesson.)
@@ -33,23 +33,21 @@ Things that have cost time before. Not exhaustive, and some may drift — verify
 ## Build, test, release
 
 ```bash
-uv tool install . --force-reinstall     # install globally (hooks run from installed package)
-uv sync --extra dev                     # dev deps (pytest, ruff, ty, httpx-ws)
-pytest                                  # full suite
-ruff check repowire/                    # lint
-uv run ty check repowire/               # type check
-cd daemon-go && go test -race ./...     # native daemon/CLI/hooks suite
+mkdir -p bin && cd daemon-go
+gofmt -w . && go vet ./... && go test -race ./...
+go build -o ../bin/repowire .           # hooks run from this recorded binary
+cd ../web && npm test -- --run && npm run build
 ```
 
-CI runs ruff + ty + pytest (`.github/workflows/ci.yml`). Channel server deps: `cd repowire/channel && bun install`.
+CI runs Go vet/race tests, web tests/build, release cross-compiles, and the relay image build (`.github/workflows/ci.yml`). Channel server deps: `cd daemon-go/cli/assets/channel && bun install`.
 
-**Release:** bump `version` in `pyproject.toml` (and `uv.lock`), commit, tag, push — CI publishes to PyPI from the tag, and `relay.yml` redeploys the relay/web on any `web/**` change.
+**Release:** update `daemon-go/cli.Version`, commit, tag, push — CI publishes native GitHub Release archives from the tag, and `relay.yml` redeploys the relay/web on relevant changes.
 ```bash
 git tag v0.X.Y && git push origin main --tags
 ```
 Versioning: patch (0.x.Y) for fixes/cleanup/small additions, minor (0.X.0) for significant features or breaking changes. After 0.9.x → 0.10.0, 0.11.0… **never auto-bump to 1.0.0** — that's Prass's call. Merge PRs with `gh pr merge <N> --squash --delete-branch`, then checkout main, pull, release.
 
-**Testing idioms:** route tests use `httpx.AsyncClient` + `ASGITransport` with manually-initialized deps; WebSocket tests use `httpx-ws` + `ASGIWebSocketTransport`; mock `subprocess.Popen` in session-handler tests so a ws-hook doesn't leak to the live daemon. There's a conftest `make_daemon_app` harness for daemon route tests.
+**Testing idioms:** route and WebSocket tests use `httptest` plus the native WebSocket client. Keep runtime-detection tests environment-hermetic, and avoid leaking ws-hooks to the live daemon.
 
 ## Architecture
 
@@ -77,18 +75,18 @@ Key modules (the graph in `graphify-out/` is the live map; these are the hubs):
 - `daemon-go/cli/` — native CLI, setup/installers, and embedded runtime/channel/orchestrator assets
 - `daemon-go/mcpstdio/` — thin per-session identity proxy from MCP stdio to daemon HTTP MCP
 - `daemon-go/service/agent_backends.go` — per-backend command, capability, and resume configuration
-- `relay/server.py` + `daemon-go/relay/client.go` — hosted relay server plus native daemon relay client
-- `telegram/bot.py`, `slack/bot.py` — bot peers (Socket Mode / inline buttons), zero extra deps, sticky routing; `@telegram`/`@dashboard` are the human
+- `daemon-go/relayserver/` + `daemon-go/relay/client.go` — hosted relay server plus daemon relay client
+- `daemon-go/mobile/` — native Telegram and Slack bot peers (Socket Mode / inline buttons), sticky routing; `@telegram`/`@dashboard` are the human
 
 ### Transport mechanics worth knowing
 
 - **Hooks (default):** SessionStart registers the peer + spawns the ws-hook (flock-deduped) + injects context. Stop posts chat turns, drains any old legacy `/query` FIFO response, then fetches `/asks/pending` and emits `{"decision":"block","reason":<reminder>}` if open asks exist (Stop can't add context otherwise), then marks online. UserPromptSubmit → BUSY; Notification(idle_prompt) → ONLINE. The ws-hook injects `[ask #cid]` text on arrival; the Stop reminder is the *only* thing that resurfaces an un-acked ask.
 - **Channel (experimental, `repowire setup --experimental-channels`):** Claude Code ↔ `channel/server.ts` (MCP stdio) ↔ daemon. Messages arrive as `<channel>` tags; Claude replies via the `reply`/`ack` tools. Requires claude.ai login, Claude Code 2.1.80+, bun. Only the Stop hook is kept in channel mode (for dashboard chat turns).
-- **Config** lives at `~/.repowire/config.yaml` (`daemon`, `relay`, `telegram`, `slack`, `updates`, `experiments`, …). The native core loads its sections through `daemon-go/config`; separate Python bot/relay clients retain `config/models.py`. Channel/MCP config is in `~/.claude.json`, managed by `repowire setup`.
+- **Config** lives at `~/.repowire/config.yaml` (`daemon`, `relay`, `telegram`, `slack`, `updates`, `experiments`, …) and is loaded through `daemon-go/config`. Channel/MCP config is in `~/.claude.json`, managed by `repowire setup`.
 
 ## Docs, memory, graph
 
-- **Public docs (`docs/`) are part of the change.** Behavior changes update the relevant docs in the same PR — README for install/quickstart/major features, `docs/reference/*` for CLI/MCP/HTTP/config surfaces, `docs/guides|capabilities|concepts|patterns|operations/*` for the rest. If you intentionally defer, file a Beads follow-up and say so in the handoff. `python3 scripts/pre_pr_hygiene.py` is an advisory pre-PR check (points at docs surfaces, fails on beads-ledger churn). Screenshots: browser-generated only, never AI-mockups.
+- **Public docs (`docs/`) are part of the change.** Behavior changes update the relevant docs in the same PR — README for install/quickstart/major features, `docs/reference/*` for CLI/MCP/HTTP/config surfaces, `docs/guides|capabilities|concepts|patterns|operations/*` for the rest. If you intentionally defer, file a Beads follow-up and say so in the handoff. `scripts/pre-pr-hygiene.sh` is an advisory pre-PR check (points at docs surfaces, fails on beads-ledger churn). Screenshots: browser-generated only, never AI-mockups.
 - **Knowledge graph:** `graphify-out/` holds a graphify graph; refresh after significant changes with `/graphify . --update`. Useful for "what touches X / how does A reach B" questions grep can't answer. Don't paste generated JSON into hand-written docs.
 - **Memory** is project-local at `.claude/memory/` (committed, public) — and `bd remember` for beads-tracked knowledge. Public-repo sanitization: no secrets, no absolute/home paths (repo-relative only), no IPs/hostnames/personal identifiers. When in doubt, omit.
 

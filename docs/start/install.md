@@ -1,8 +1,8 @@
 # Install
 
-Repowire runs on macOS and Linux with tmux. Platform wheels contain the native
-Go substrate; the Python package wrapper remains for installation and the
-separate Telegram/Slack/hosted-relay clients.
+Repowire runs on macOS and Linux with tmux. The CLI, daemon, hooks, MCP shim,
+Telegram/Slack peers, and hosted relay are native Go binaries. Python is not
+required.
 
 ## Recommended
 
@@ -10,21 +10,15 @@ separate Telegram/Slack/hosted-relay clients.
 curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
 ```
 
-The installer detects `uv`, `pipx`, and `pip` in that order, installs Repowire with the first available package manager, then drops you into [setup](setup.md).
+The installer detects the current OS and architecture, downloads the matching
+GitHub Release archive, verifies its SHA-256 checksum, and then runs [setup](setup.md).
 
-## Alternatives
-
-```bash
-uv tool install repowire
-pipx install repowire
-pip install repowire
-```
-
-Use `uv` for the fastest isolated install. Use `pipx` if you want isolation without uv. Use plain `pip` only inside a virtualenv you control.
+Set `REPOWIRE_VERSION=v0.X.Y`, `REPOWIRE_INSTALL_DIR`, or `REPOWIRE_BIN_DIR`
+before running the installer to pin a version or choose alternate locations.
 
 ## What gets installed
 
-The package ships:
+The release archive ships:
 
 - The native `repowire` CLI and daemon (HTTP + WebSocket on `127.0.0.1:8377`).
 - The daemon-owned Streamable HTTP MCP implementation and per-agent stdio identity shim.

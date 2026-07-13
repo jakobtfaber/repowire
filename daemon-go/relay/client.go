@@ -52,6 +52,7 @@ type Client struct {
 	apiKey       string
 	daemonID     string
 	localBaseURL string // http://127.0.0.1:<port>
+	authToken    string
 	httpc        *http.Client
 
 	mu            sync.Mutex
@@ -63,6 +64,54 @@ type Client struct {
 	lastErrorAt   *time.Time
 	cancel        context.CancelFunc
 	done          chan struct{}
+}
+
+type relaySession struct {
+	conn *websocket.Conn
+
+	writeMu   sync.Mutex
+	streamsMu sync.Mutex
+	streams   map[string]context.CancelFunc
+}
+
+func newRelaySession(conn *websocket.Conn) *relaySession {
+	return &relaySession{conn: conn, streams: map[string]context.CancelFunc{}}
+}
+
+func (s *relaySession) write(ctx context.Context, value any) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return wsjson.Write(ctx, s.conn, value)
+}
+
+func (s *relaySession) addStream(id string, cancel context.CancelFunc) {
+	s.streamsMu.Lock()
+	s.streams[id] = cancel
+	s.streamsMu.Unlock()
+}
+
+func (s *relaySession) removeStream(id string) {
+	s.streamsMu.Lock()
+	delete(s.streams, id)
+	s.streamsMu.Unlock()
+}
+
+func (s *relaySession) cancelStream(id string) {
+	s.streamsMu.Lock()
+	cancel := s.streams[id]
+	s.streamsMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (s *relaySession) cancelAll() {
+	s.streamsMu.Lock()
+	for _, cancel := range s.streams {
+		cancel()
+	}
+	s.streams = map[string]context.CancelFunc{}
+	s.streamsMu.Unlock()
 }
 
 // Status is the health/telemetry snapshot (mirrors relay_client.status()).
@@ -115,6 +164,12 @@ func NewClient(relayURL, apiKey, daemonID, localBaseURL string) *Client {
 		localBaseURL: strings.TrimRight(localBaseURL, "/"),
 		httpc:        &http.Client{Timeout: tunnelTimeout},
 	}
+}
+
+// WithAuthToken authenticates tunneled requests to a protected local daemon.
+func (c *Client) WithAuthToken(token string) *Client {
+	c.authToken = token
+	return c
 }
 
 // Start launches the reconnect loop. Idempotent; no-op when the api key is empty
@@ -202,7 +257,6 @@ func (c *Client) runLoop(ctx context.Context) {
 		close(c.done)
 		c.mu.Unlock()
 	}()
-
 	backoff := initialBackoff
 	for {
 		if ctx.Err() != nil {
@@ -245,6 +299,8 @@ func (c *Client) connectAndServe(ctx context.Context) (bool, error) {
 	}
 	conn.SetReadLimit(readLimit)
 	defer conn.Close(websocket.StatusNormalClosure, "")
+	session := newRelaySession(conn)
+	defer session.cancelAll()
 
 	now := time.Now().UTC()
 	c.mu.Lock()
@@ -281,12 +337,9 @@ func (c *Client) connectAndServe(ctx context.Context) (bool, error) {
 		}
 	}()
 
-	// Sequential frame handling (parity with the Python `async for` listener). A
-	// slow tunneled request delays the next frame but the keepalive goroutine
-	// keeps the socket alive. All wsjson.Write calls stay on this goroutine, so
-	// there is never a concurrent writer.
-	// ponytail: sequential; if tunnel throughput ever matters, hand each frame to
-	// a worker with a write mutex.
+	// Ordinary requests remain sequential. Streaming requests run in their own
+	// goroutine so the read loop can receive cancellation frames; relaySession
+	// serializes the resulting WebSocket writes.
 	for {
 		var msg map[string]any
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
@@ -295,18 +348,22 @@ func (c *Client) connectAndServe(ctx context.Context) (bool, error) {
 			}
 			return true, err
 		}
-		c.handleMessage(ctx, conn, msg)
+		c.handleMessage(ctx, session, msg)
 	}
 }
 
-func (c *Client) handleMessage(ctx context.Context, conn *websocket.Conn, msg map[string]any) {
+func (c *Client) handleMessage(ctx context.Context, session *relaySession, msg map[string]any) {
 	switch t, _ := msg["type"].(string); t {
 	case "ping":
-		_ = wsjson.Write(ctx, conn, map[string]any{"type": "pong"})
+		_ = session.write(ctx, map[string]any{"type": "pong"})
 	case "http_request":
-		c.handleHTTPRequest(ctx, conn, msg)
+		c.handleHTTPRequest(ctx, session, msg)
+	case "http_stream_request":
+		c.startHTTPStream(ctx, session, msg)
+	case "http_stream_cancel":
+		session.cancelStream(stringField(msg, "request_id"))
 	case "relay_query", "relay_notify", "relay_broadcast":
-		c.handleRelayMessage(ctx, conn, msg)
+		c.handleRelayMessage(ctx, session, msg)
 	default:
 		// Unknown/opaque — ignore (Python logs at debug).
 	}
@@ -314,7 +371,7 @@ func (c *Client) handleMessage(ctx context.Context, conn *websocket.Conn, msg ma
 
 // handleHTTPRequest tunnels a relay http_request to the local daemon and returns
 // an http_response frame (base64 bodies both ways).
-func (c *Client) handleHTTPRequest(ctx context.Context, conn *websocket.Conn, msg map[string]any) {
+func (c *Client) handleHTTPRequest(ctx context.Context, session *relaySession, msg map[string]any) {
 	reqID, _ := msg["request_id"].(string)
 	method, _ := msg["method"].(string)
 	if method == "" {
@@ -328,7 +385,7 @@ func (c *Client) handleHTTPRequest(ctx context.Context, conn *websocket.Conn, ms
 	// the hosted relay even though the final local hop would appear loopback, so
 	// reject it here before it can reach the daemon's localhost auth check.
 	if path == "/mcp" || strings.HasPrefix(path, "/mcp/") {
-		c.sendHTTPResponse(ctx, conn, reqID, http.StatusNotFound, nil, []byte("not found"))
+		c.sendHTTPResponse(ctx, session, reqID, http.StatusNotFound, nil, []byte("not found"))
 		return
 	}
 	u := c.localBaseURL + path
@@ -343,7 +400,7 @@ func (c *Client) handleHTTPRequest(ctx context.Context, conn *websocket.Conn, ms
 
 	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(body))
 	if err != nil {
-		c.sendHTTPResponse(ctx, conn, reqID, http.StatusBadGateway, nil, []byte(err.Error()))
+		c.sendHTTPResponse(ctx, session, reqID, http.StatusBadGateway, nil, []byte(err.Error()))
 		return
 	}
 	if hs, ok := msg["headers"].(map[string]any); ok {
@@ -356,11 +413,12 @@ func (c *Client) handleHTTPRequest(ctx context.Context, conn *websocket.Conn, ms
 			}
 		}
 	}
+	c.authorize(req)
 
 	resp, err := c.httpc.Do(req)
 	if err != nil {
 		c.recordErr(err)
-		c.sendHTTPResponse(ctx, conn, reqID, http.StatusBadGateway, nil, []byte(err.Error()))
+		c.sendHTTPResponse(ctx, session, reqID, http.StatusBadGateway, nil, []byte(err.Error()))
 		return
 	}
 	defer resp.Body.Close()
@@ -369,14 +427,14 @@ func (c *Client) handleHTTPRequest(ctx context.Context, conn *websocket.Conn, ms
 	for k := range resp.Header {
 		headers[k] = resp.Header.Get(k)
 	}
-	c.sendHTTPResponse(ctx, conn, reqID, resp.StatusCode, headers, respBody)
+	c.sendHTTPResponse(ctx, session, reqID, resp.StatusCode, headers, respBody)
 }
 
-func (c *Client) sendHTTPResponse(ctx context.Context, conn *websocket.Conn, reqID string, status int, headers map[string]any, body []byte) {
+func (c *Client) sendHTTPResponse(ctx context.Context, session *relaySession, reqID string, status int, headers map[string]any, body []byte) {
 	if headers == nil {
 		headers = map[string]any{}
 	}
-	_ = wsjson.Write(ctx, conn, map[string]any{
+	_ = session.write(ctx, map[string]any{
 		"type":       "http_response",
 		"request_id": reqID,
 		"status":     status,
@@ -385,9 +443,108 @@ func (c *Client) sendHTTPResponse(ctx context.Context, conn *websocket.Conn, req
 	})
 }
 
+func (c *Client) startHTTPStream(parent context.Context, session *relaySession, msg map[string]any) {
+	reqID := stringField(msg, "request_id")
+	streamCtx, cancel := context.WithCancel(parent)
+	session.addStream(reqID, cancel)
+	go func() {
+		defer cancel()
+		defer session.removeStream(reqID)
+		c.handleHTTPStream(streamCtx, session, msg)
+	}()
+}
+
+func (c *Client) handleHTTPStream(ctx context.Context, session *relaySession, msg map[string]any) {
+	reqID := stringField(msg, "request_id")
+	path := stringField(msg, "path")
+	if path == "" {
+		path = "/"
+	}
+	if path == "/mcp" || strings.HasPrefix(path, "/mcp/") {
+		_ = session.write(ctx, map[string]any{"type": "http_stream_start", "request_id": reqID, "status": http.StatusNotFound, "headers": map[string]any{}})
+		_ = session.write(ctx, map[string]any{"type": "http_stream_end", "request_id": reqID})
+		return
+	}
+	u := c.localBaseURL + path
+	if qs := stringField(msg, "query_string"); qs != "" {
+		u += "?" + qs
+	}
+	method := stringField(msg, "method")
+	if method == "" {
+		method = http.MethodGet
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+	if err != nil {
+		c.sendStreamError(ctx, session, reqID, err)
+		return
+	}
+	copyRequestHeaders(req.Header, msg["headers"])
+	c.authorize(req)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		if ctx.Err() == nil {
+			c.recordErr(err)
+			c.sendStreamError(ctx, session, reqID, err)
+		}
+		return
+	}
+	defer resp.Body.Close()
+	headers := make(map[string]any, len(resp.Header))
+	for key := range resp.Header {
+		headers[key] = resp.Header.Get(key)
+	}
+	if err := session.write(ctx, map[string]any{"type": "http_stream_start", "request_id": reqID, "status": resp.StatusCode, "headers": headers}); err != nil {
+		return
+	}
+	buf := make([]byte, 32<<10)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if err := session.write(ctx, map[string]any{"type": "http_stream_chunk", "request_id": reqID, "body": base64.StdEncoding.EncodeToString(buf[:n])}); err != nil {
+				return
+			}
+		}
+		if readErr != nil {
+			if readErr != io.EOF && ctx.Err() == nil {
+				c.recordErr(readErr)
+			}
+			break
+		}
+	}
+	_ = session.write(ctx, map[string]any{"type": "http_stream_end", "request_id": reqID})
+}
+
+func (c *Client) sendStreamError(ctx context.Context, session *relaySession, reqID string, err error) {
+	_ = session.write(ctx, map[string]any{"type": "http_stream_start", "request_id": reqID, "status": http.StatusBadGateway, "headers": map[string]any{}})
+	_ = session.write(ctx, map[string]any{"type": "http_stream_chunk", "request_id": reqID, "body": base64.StdEncoding.EncodeToString([]byte(err.Error()))})
+	_ = session.write(ctx, map[string]any{"type": "http_stream_end", "request_id": reqID})
+}
+
+func (c *Client) authorize(req *http.Request) {
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+}
+
+func copyRequestHeaders(dst http.Header, raw any) {
+	headers, _ := raw.(map[string]any)
+	for key, value := range headers {
+		if !strippedForwardHeaders[strings.ToLower(key)] {
+			if text, ok := value.(string); ok {
+				dst.Set(key, text)
+			}
+		}
+	}
+}
+
+func stringField(msg map[string]any, key string) string {
+	value, _ := msg[key].(string)
+	return value
+}
+
 // handleRelayMessage forwards a cross-daemon relay_query/notify/broadcast to the
 // matching local endpoint and returns a relay_response frame.
-func (c *Client) handleRelayMessage(ctx context.Context, conn *websocket.Conn, msg map[string]any) {
+func (c *Client) handleRelayMessage(ctx context.Context, session *relaySession, msg map[string]any) {
 	t, _ := msg["type"].(string)
 	corr, _ := msg["correlation_id"].(string)
 	src, _ := msg["source_daemon_id"].(string)
@@ -405,6 +562,7 @@ func (c *Client) handleRelayMessage(ctx context.Context, conn *websocket.Conn, m
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.localBaseURL+endpoint, bytes.NewReader(pb))
 	if err == nil {
 		req.Header.Set("Content-Type", "application/json")
+		c.authorize(req)
 		resp, derr := c.httpc.Do(req)
 		if derr != nil {
 			c.recordErr(derr)
@@ -424,10 +582,11 @@ func (c *Client) handleRelayMessage(ctx context.Context, conn *websocket.Conn, m
 			}
 		}
 	}
-	_ = wsjson.Write(ctx, conn, map[string]any{
+	_ = session.write(ctx, map[string]any{
 		"type":             "relay_response",
 		"correlation_id":   corr,
 		"source_daemon_id": src,
+		"target_daemon_id": src,
 		"status":           status,
 		"body":             respBody,
 	})

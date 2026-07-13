@@ -49,4 +49,4 @@ All hooks shell out to the daemon over HTTP. If the daemon is down, hooks succee
 
 ## After upgrading `repowire`
 
-Hooks call the installed `repowire` binary. If you upgraded via a tool that swapped binaries in place (`uv tool upgrade`, `pipx upgrade`), existing hooks still point at the same path and continue to work. If you reinstalled to a different location, re-run `repowire setup` so the hook entries pick up the new path.
+Hooks call the installed `repowire` binary. Native upgrades keep the `~/.local/bin/repowire` symlink stable. If you install to a different location, re-run `repowire setup` so hook entries pick up the new path.

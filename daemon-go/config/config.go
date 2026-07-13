@@ -20,6 +20,8 @@ const (
 type Config struct {
 	Daemon      DaemonConfig      `yaml:"daemon"`
 	Relay       RelayConfig       `yaml:"relay"`
+	Telegram    TelegramConfig    `yaml:"telegram"`
+	Slack       SlackConfig       `yaml:"slack"`
 	Experiments ExperimentsConfig `yaml:"experiments"`
 }
 
@@ -72,6 +74,17 @@ type RelayConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	URL     string `yaml:"url"`
 	APIKey  string `yaml:"api_key"`
+}
+
+type TelegramConfig struct {
+	BotToken string `yaml:"bot_token"`
+	ChatID   string `yaml:"chat_id"`
+}
+
+type SlackConfig struct {
+	BotToken  string `yaml:"bot_token"`
+	AppToken  string `yaml:"app_token"`
+	ChannelID string `yaml:"channel_id"`
 }
 
 type ExperimentsConfig struct {
@@ -190,6 +203,21 @@ func applyEnv(cfg *Config) {
 	if v := firstEnv("REPOWIRE_API_KEY", "REPOWIRE_RELAY__API_KEY", "REPOWIRE_RELAY_API_KEY"); v != "" {
 		cfg.Relay.APIKey = v
 		cfg.Relay.Enabled = true
+	}
+	if v := firstEnv("TELEGRAM_BOT_TOKEN", "REPOWIRE_TELEGRAM__BOT_TOKEN"); v != "" {
+		cfg.Telegram.BotToken = v
+	}
+	if v := firstEnv("TELEGRAM_CHAT_ID", "REPOWIRE_TELEGRAM__CHAT_ID"); v != "" {
+		cfg.Telegram.ChatID = v
+	}
+	if v := firstEnv("SLACK_BOT_TOKEN", "REPOWIRE_SLACK__BOT_TOKEN"); v != "" {
+		cfg.Slack.BotToken = v
+	}
+	if v := firstEnv("SLACK_APP_TOKEN", "REPOWIRE_SLACK__APP_TOKEN"); v != "" {
+		cfg.Slack.AppToken = v
+	}
+	if v := firstEnv("SLACK_CHANNEL_ID", "REPOWIRE_SLACK__CHANNEL_ID"); v != "" {
+		cfg.Slack.ChannelID = v
 	}
 	setBoolEnv(&cfg.Experiments.ACPBrokerClient, "REPOWIRE_EXPERIMENTS__ACP_BROKER_CLIENT")
 	setBoolEnv(&cfg.Experiments.ChatTurnStreaming, "REPOWIRE_EXPERIMENTS__CHAT_TURN_STREAMING")

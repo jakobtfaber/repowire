@@ -1,6 +1,6 @@
 # HTTP API
 
-The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and client libraries. The stable public client surface is the CLI, MCP tools, and Python client; raw HTTP routes may move faster.
+The daemon exposes HTTP routes for the dashboard, hooks, CLI helpers, and external integrations. The stable public client surfaces are the CLI and MCP tools; raw HTTP routes may move faster.
 
 ## Primary route groups
 
@@ -63,6 +63,5 @@ Authorization: Bearer <token>
 
 ## Related
 
-- [Python client](python-client.md)
 - [CLI](cli.md)
 - [Operations: architecture](../operate/architecture.md)

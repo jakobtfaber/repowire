@@ -154,6 +154,9 @@ func TestVersionGreater(t *testing.T) {
 	if !versionGreater("0.18.0", "0.17.9") || versionGreater("0.17.0", "0.17.0") || versionGreater("0.16.9", "0.17.0") {
 		t.Fatal("semantic version comparison is wrong")
 	}
+	if versionGreater("", "0.17.0") || versionGreater("not-a-version", "0.17.0") {
+		t.Fatal("malformed versions must not be considered upgrades")
+	}
 }
 
 func TestServiceLabelKeepsExistingInstallIdentity(t *testing.T) {

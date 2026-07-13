@@ -44,6 +44,13 @@ relay:
   enabled: true
   url: wss://example.test
   api_key: key
+telegram:
+  bot_token: telegram-file-token
+  chat_id: "42"
+slack:
+  bot_token: slack-file-token
+  app_token: slack-file-app-token
+  channel_id: C123
 `), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -64,6 +71,12 @@ relay:
 	if !cfg.Relay.Enabled || cfg.Relay.URL != "wss://example.test" || cfg.Relay.APIKey != "key" {
 		t.Fatalf("relay config not loaded: %+v", cfg.Relay)
 	}
+	if cfg.Telegram.BotToken != "telegram-file-token" || cfg.Telegram.ChatID != "42" {
+		t.Fatalf("telegram config not loaded: %+v", cfg.Telegram)
+	}
+	if cfg.Slack.BotToken != "slack-file-token" || cfg.Slack.AppToken != "slack-file-app-token" || cfg.Slack.ChannelID != "C123" {
+		t.Fatalf("slack config not loaded: %+v", cfg.Slack)
+	}
 }
 
 func TestLoadEnvOverridesYAML(t *testing.T) {
@@ -76,6 +89,11 @@ func TestLoadEnvOverridesYAML(t *testing.T) {
 	t.Setenv("REPOWIRE_API_KEY", "relay-token")
 	t.Setenv("REPOWIRE_DAEMON__MCP_HTTP__ENABLED", "true")
 	t.Setenv("REPOWIRE_EXPERIMENTS__ACP_BROKER_CLIENT", "true")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "telegram-env-token")
+	t.Setenv("REPOWIRE_TELEGRAM__CHAT_ID", "99")
+	t.Setenv("SLACK_BOT_TOKEN", "slack-env-token")
+	t.Setenv("REPOWIRE_SLACK__APP_TOKEN", "slack-env-app-token")
+	t.Setenv("SLACK_CHANNEL_ID", "C999")
 	if err := os.WriteFile(path, []byte(`
 daemon:
   port: 9999
@@ -107,5 +125,11 @@ daemon:
 	}
 	if !cfg.Daemon.MCPHTTP.Enabled || !cfg.Experiments.ACPBrokerClient {
 		t.Fatalf("nested boolean env overrides failed: %+v %+v", cfg.Daemon.MCPHTTP, cfg.Experiments)
+	}
+	if cfg.Telegram.BotToken != "telegram-env-token" || cfg.Telegram.ChatID != "99" {
+		t.Fatalf("telegram env overrides failed: %+v", cfg.Telegram)
+	}
+	if cfg.Slack.BotToken != "slack-env-token" || cfg.Slack.AppToken != "slack-env-app-token" || cfg.Slack.ChannelID != "C999" {
+		t.Fatalf("slack env overrides failed: %+v", cfg.Slack)
 	}
 }

@@ -7,10 +7,10 @@
   <h1>Repowire</h1>
   <p>Let your coding agents talk to each other.</p>
 
-  [![PyPI](https://img.shields.io/pypi/v/repowire)](https://pypi.org/project/repowire/)
+  [![Release](https://img.shields.io/github/v/release/prassanna-ravishankar/repowire)](https://github.com/prassanna-ravishankar/repowire/releases)
   [![CI](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml/badge.svg)](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml)
-  [![Python](https://img.shields.io/pypi/pyversions/repowire)](https://pypi.org/project/repowire/)
-  [![License](https://img.shields.io/pypi/l/repowire)](https://github.com/prassanna-ravishankar/repowire/blob/main/LICENSE)
+  [![Go](https://img.shields.io/github/go-mod/go-version/prassanna-ravishankar/repowire?filename=daemon-go%2Fgo.mod)](daemon-go/go.mod)
+  [![License](https://img.shields.io/github/license/prassanna-ravishankar/repowire)](LICENSE)
   [![Docs](https://img.shields.io/badge/docs-repowire.io-2563EB)](https://docs.repowire.io/)
 </div>
 
@@ -29,7 +29,7 @@ Repowire runs locally by default through a daemon on your machine. The hosted re
 
 ## Quickstart
 
-**Requirements:** macOS or Linux, Python 3.10+, tmux.
+**Requirements:** macOS or Linux and tmux. Python is not required.
 
 **1. Install Repowire and wire your agents.**
 
@@ -38,7 +38,7 @@ curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/
 repowire setup
 ```
 
-The installer detects `uv`, `pipx`, and `pip` in that order.
+The installer downloads a checksum-verified native binary from GitHub Releases.
 
 **2. Open your normal agent CLIs.**
 
@@ -259,7 +259,7 @@ relay:
   api_key: "rw_..."
 ```
 
-Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not upgrade packages, rewrite hooks, or restart services. Use `repowire update` when you want to upgrade explicitly; it preserves enabled package extras such as `repowire[acp]` where practical.
+Update checks are off by default. If enabled with `repowire setup --update-checks`, `repowire status` and `repowire doctor` may report that a newer release is available, but they do not rewrite hooks or restart services. Use `repowire update` when you want to upgrade explicitly.
 
 Security defaults:
 
@@ -275,20 +275,20 @@ Security defaults:
 ```bash
 git clone https://github.com/prassanna-ravishankar/repowire
 cd repowire
-uv sync --extra dev
-uv tool install . --force-reinstall
+cd web && npm ci && npm run build && cd ..
+mkdir -p bin
+(cd daemon-go && go build -o ../bin/repowire .)
+./bin/repowire setup --non-interactive
 ```
 
-Hooks and the MCP identity shim run the installed `repowire` Go executable, not
-an arbitrary binary in your checkout. Editable/source installs rebuild changed
-Go sources into the Repowire cache on the next invocation; platform wheels ship
-the native binary. Restart the daemon service after a local change so the live
-mesh uses it:
+Hooks and the MCP identity shim run the binary recorded by setup, not an
+arbitrary binary elsewhere in your checkout. Rebuild that binary after native
+changes, then restart the daemon service:
 
 ```bash
-uv tool install . --force-reinstall
-repowire setup --non-interactive   # rewrites hooks/MCP/service to the installed local build
-repowire service restart           # enough when only daemon code changed
+(cd daemon-go && go build -o ../bin/repowire .)
+./bin/repowire setup --non-interactive   # rewrites hooks/MCP/service to this build
+./bin/repowire service restart           # enough when only daemon code changed
 ```
 
 If service management fails, use `repowire service status` first. Raw `launchctl` on macOS or `systemctl --user` on Linux are fallback troubleshooting tools.
@@ -308,7 +308,8 @@ If service management fails, use `repowire service status` first. Raw `launchctl
 
 ```bash
 repowire uninstall
-uv tool uninstall repowire
+rm -f ~/.local/bin/repowire
+rm -rf ~/.local/share/repowire
 ```
 
 `repowire uninstall` removes hooks, MCP entries, channel transport config, OpenCode plugin files, and the daemon service. It does not automatically remove `~/.repowire/`, which contains local config, events, attachments, and relay keys.
@@ -319,7 +320,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Before opening a PR, run the advisory re
 checklist:
 
 ```bash
-python3 scripts/pre_pr_hygiene.py
+scripts/pre-pr-hygiene.sh
 ```
 
 It is an opt-in prompt for docs, README, agent-instruction, and graphify follow-ups, not a

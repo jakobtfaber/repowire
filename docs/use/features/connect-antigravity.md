@@ -77,7 +77,9 @@ agy plugin list     # should show repowire under "imports"
 For a repeatable evidence snapshot, run the smoke harness:
 
 ```bash
-python3 scripts/agy_interop_smoke.py --run-cli-fallback --output agy-smoke.json
+repowire peer whoami --register --backend antigravity
+repowire peer deliveries
+repowire peer asks
 ```
 
 The JSON report records current local evidence separately for the `agy` binary,

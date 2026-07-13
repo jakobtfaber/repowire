@@ -10,15 +10,19 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/repowire/repowire/daemon-go/config"
+	"github.com/repowire/repowire/daemon-go/mobile"
+	"github.com/repowire/repowire/daemon-go/relayserver"
 )
 
 var execLookPath = exec.LookPath
@@ -912,30 +916,12 @@ func runBuildUI() int {
 	return 0
 }
 func runUpdate() int {
-	python := os.Getenv("REPOWIRE_PYTHON")
-	code := 0
-	switch {
-	case strings.Contains(python, "/uv/tools/"):
-		code = runExternal("uv", "tool", "upgrade", "repowire")
-	case strings.Contains(python, "pipx"):
-		code = runExternal("pipx", "upgrade", "repowire")
-	case python != "":
-		code = runExternal(python, "-m", "pip", "install", "-U", "repowire")
-	default:
-		return fatal(fmt.Errorf("cannot determine the package environment; reinstall Repowire explicitly"))
-	}
-	if code != 0 {
-		return code
-	}
-	command, err := exec.LookPath("repowire")
-	if err != nil {
-		return fatal(fmt.Errorf("upgrade succeeded but the repowire launcher is not on PATH"))
-	}
-	args := []string{"setup", "--non-interactive"}
+	args := "--non-interactive"
 	if channelConfigured() {
-		args = append(args, "--experimental-channels")
+		args += " --experimental-channels"
 	}
-	return runExternal(command, args...)
+	command := "curl -fsSL https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh -s -- " + args
+	return runExternal("sh", "-c", command)
 }
 
 func channelConfigured() bool {
@@ -967,7 +953,14 @@ func runRelay(argv []string) int {
 	case "start":
 		host := a.string("host", "0.0.0.0")
 		port := a.integer("port", 8000)
-		return runPythonExtra(`from repowire.relay.server import create_app; import sys, uvicorn; uvicorn.run(create_app(), host=sys.argv[1], port=int(sys.argv[2]), ws_ping_interval=None, ws_ping_timeout=None)`, host, strconv.Itoa(port))
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		addr := host + ":" + strconv.Itoa(port)
+		fmt.Println("Repowire relay listening on", addr)
+		if err := relayserver.ListenAndServe(ctx, addr, relayserver.FindWebOutputDir()); err != nil {
+			return fatal(err)
+		}
+		return 0
 	default:
 		return usage("relay <start|generate-key>")
 	}
@@ -977,19 +970,32 @@ func runBot(name string, argv []string) int {
 	if len(argv) != 1 || argv[0] != "start" {
 		return usage(name + " start")
 	}
-	module := "repowire." + name + ".bot"
-	return runPythonExtra("from " + module + " import main; main()")
-}
-
-func runPythonExtra(code string, args ...string) int {
-	python := os.Getenv("REPOWIRE_PYTHON")
-	if python == "" {
-		python, _ = exec.LookPath("python3")
+	cfg, err := config.Load()
+	if err != nil {
+		return fatal(err)
 	}
-	if python == "" {
-		return fatal(fmt.Errorf("this separate Python client/deployment requires the Repowire Python package"))
+	host := cfg.Daemon.Host
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
 	}
-	return runExternal(python, append([]string{"-c", code}, args...)...)
+	daemonURL := os.Getenv("REPOWIRE_DAEMON_URL")
+	if daemonURL == "" {
+		daemonURL = "http://" + host + ":" + strconv.Itoa(cfg.Daemon.Port)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	peer := mobile.NewDaemonPeer(daemonURL, cfg.Daemon.AuthToken, name, "/"+name, "default")
+	switch name {
+	case "telegram":
+		if err := mobile.NewTelegram(cfg.Telegram.BotToken, cfg.Telegram.ChatID, peer).Run(ctx); err != nil {
+			return fatal(err)
+		}
+	case "slack":
+		if err := mobile.NewSlack(cfg.Slack.BotToken, cfg.Slack.AppToken, cfg.Slack.ChannelID, peer).Run(ctx); err != nil {
+			return fatal(err)
+		}
+	}
+	return 0
 }
 
 func runExternal(name string, args ...string) int {

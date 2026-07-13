@@ -1,4 +1,4 @@
-name: Publish
+name: Publish native release
 
 on:
   push:
@@ -7,49 +7,48 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
-      id-token: write
+      contents: write
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
       - uses: actions/setup-go@v5
         with:
           go-version-file: daemon-go/go.mod
           cache-dependency-path: daemon-go/go.sum
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "22"
 
-      - name: Build UI
+      - name: Build dashboard
         run: cd web && npm ci && npm run build
 
-      - name: Set version from tag
-        run: uv version ${GITHUB_REF#refs/tags/v}
-
-      # One wheel per platform. Go cross-compiles with no cgo, so a single
-      # ubuntu runner produces every target. The build hook force-includes
-      # repowire/_bin/repowire-hub-go and stamps the platform tag.
-      - name: Build platform wheels
+      - name: Build release archives
+        shell: bash
         run: |
           set -euo pipefail
-          targets=(
-            "darwin arm64 macosx_11_0_arm64"
-            "darwin amd64 macosx_10_12_x86_64"
-            "linux  amd64 manylinux2014_x86_64"
-            "linux  arm64 manylinux2014_aarch64"
-          )
-          for t in "${targets[@]}"; do
-            read -r goos goarch plat <<< "$t"
-            echo "::group::wheel $goos/$goarch ($plat)"
-            mkdir -p repowire/_bin
-            (cd daemon-go && CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch \
-              go build -o ../repowire/_bin/repowire-hub-go .)
-            REPOWIRE_WHEEL_TAG="py3-none-$plat" uv build --wheel -o dist
-            rm -rf repowire/_bin
-            echo "::endgroup::"
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            stage=$(mktemp -d)
+            mkdir -p "$stage/web"
+            cp -R web/out "$stage/web/out"
+            (
+              cd daemon-go
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+                -ldflags="-s -w -X github.com/repowire/repowire/daemon-go/cli.Version=$version" \
+                -o "$stage/repowire" .
+            )
+            tar -C "$stage" -czf "dist/repowire_${version}_${os}_${arch}.tar.gz" repowire web
+            rm -rf "$stage"
           done
-          ls -la dist
+          cd dist
+          sha256sum repowire_*.tar.gz > checksums.txt
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" dist/* --clobber
