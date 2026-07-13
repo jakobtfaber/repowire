@@ -19,8 +19,11 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Build dashboard
-        run: cd web && npm ci && npm run build
+      - name: Verify Go
+        run: cd daemon-go && go vet ./... && go test -race ./...
+
+      - name: Verify and build dashboard
+        run: cd web && npm ci && npm test -- --run && npm run build
 
       - name: Build release archives
         shell: bash
@@ -43,8 +46,9 @@ jobs:
             tar -C "$stage" -czf "dist/repowire_${version}_${os}_${arch}.tar.gz" repowire web
             rm -rf "$stage"
           done
+          cp install.sh dist/install.sh
           cd dist
-          sha256sum repowire_*.tar.gz > checksums.txt
+          sha256sum repowire_*.tar.gz install.sh > checksums.txt
 
       - name: Publish GitHub release
         env:

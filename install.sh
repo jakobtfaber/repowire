@@ -1,5 +1,5 @@
 #!/bin/sh
-# Repowire native installer — curl -sSfL https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
+# Repowire native installer — curl -fsSL https://github.com/prassanna-ravishankar/repowire/releases/latest/download/install.sh | sh
 set -eu
 
 repo="prassanna-ravishankar/repowire"

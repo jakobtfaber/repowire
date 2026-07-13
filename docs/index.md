@@ -38,16 +38,12 @@ Use it when one repo needs a concrete answer from another repo, when you want a 
 ## Install
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
+curl -fsSL https://github.com/prassanna-ravishankar/repowire/releases/latest/download/install.sh | sh
 ```
 
 Requires macOS or Linux and tmux. The installer downloads a checksum-verified native release; Python is not required. See [Install](start/install.md).
 
 ## First ask
-
-```bash
-repowire setup
-```
 
 Open two agents in tmux windows:
 
