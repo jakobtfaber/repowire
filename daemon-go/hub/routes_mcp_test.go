@@ -273,12 +273,17 @@ func TestMCPToolsCallWhoamiIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	before, _ := reg.GetPeer(id)
 	result := callWhoami(map[string]string{"X-Repowire-Peer": string(name), "X-Repowire-Identity-Proof": cert.Nonce})
 	if result.IsError {
 		t.Errorf("whoami with valid identity: isError = true, text=%q", result.Content[0].Text)
 	}
 	if !strings.Contains(result.Content[0].Text, string(id)) {
 		t.Errorf("whoami text = %q, want it to contain peer_id %q", result.Content[0].Text, id)
+	}
+	after, _ := reg.GetPeer(id)
+	if before.LastSeen == nil || after.LastSeen == nil || !after.LastSeen.After(*before.LastSeen) {
+		t.Errorf("validated MCP request did not refresh last_seen: before=%v after=%v", before.LastSeen, after.LastSeen)
 	}
 }
 

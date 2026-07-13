@@ -13,19 +13,24 @@ import (
 	"github.com/repowire/repowire/daemon-go/hooks"
 )
 
+var resolveIdentity = hooks.MCPIdentityProof
+
 // Run proxies newline-delimited MCP stdio messages to the daemon's stateless
 // Streamable HTTP endpoint while preserving the hosting runtime's identity.
 func Run() int {
+	return run(os.Stdin, os.Stdout)
+}
+
+func run(in io.Reader, out io.Writer) int {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "repowire mcp:", err)
 		return 1
 	}
-	identity, proof := hooks.MCPIdentityProof()
 	endpoint := fmt.Sprintf("http://%s:%d/mcp", cfg.Daemon.Host, cfg.Daemon.Port)
-	scanner := bufio.NewScanner(os.Stdin)
+	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 64*1024), 16<<20)
-	writer := bufio.NewWriter(os.Stdout)
+	writer := bufio.NewWriter(out)
 	defer writer.Flush()
 	client := &http.Client{}
 	for scanner.Scan() {
@@ -33,6 +38,7 @@ func Run() int {
 		if len(line) == 0 {
 			continue
 		}
+		identity, proof := resolveIdentity()
 		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(line))
 		if err != nil {
 			writeError(writer, line, err.Error())

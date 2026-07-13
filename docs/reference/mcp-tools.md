@@ -13,6 +13,8 @@ implement a second MCP server: it is a thin identity-preserving proxy. Because
 it inherits the runtime's session environment and cwd, it can stamp the
 canonical `X-Repowire-Peer` header before forwarding JSON-RPC to `/mcp`. This is
 necessary when multiple peers share a project path; cwd alone is not identity.
+The proxy revalidates its PID-bound identity certificate for every request, and
+the daemon refreshes `last_seen` only after that proof succeeds.
 
 Setup normally configures both pieces:
 

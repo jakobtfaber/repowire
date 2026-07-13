@@ -103,7 +103,9 @@ func (h *Hub) validateMCPIdentity(r *http.Request) {
 		return
 	}
 	// Canonicalize display-name claims before the tool layer sees them.
-	r.Header.Set("X-Repowire-Peer", string(peer.PeerID))
+	peerID := string(peer.PeerID)
+	r.Header.Set("X-Repowire-Peer", peerID)
+	_, _ = h.reg.TouchLastSeen(r.Context(), peerID, nil)
 }
 
 // mcpAuthorized enforces the /mcp auth policy. RequireAuth demands a bearer
