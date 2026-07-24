@@ -857,14 +857,14 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     parameters: Type.Object({
       path: Type.String({ description: "Absolute path to the project directory" }),
       backend: Type.String({ description: "Backend/runtime profile to spawn (claude-code, codex, gemini, antigravity, opencode, pi)" }),
-      circle: Type.Optional(Type.String({ description: "Circle to spawn into (default: 'default')" })),
+      circle: Type.Optional(Type.String({ description: "Circle to spawn into (default: current circle)" })),
       message: Type.Optional(Type.String({ description: "Optional first-turn prompt for the spawned agent" })),
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
       const body: Record<string, unknown> = {
         path: params.path,
         backend: params.backend,
-        circle: params.circle || "default",
+        circle: params.circle || circle,
       };
       if (params.message !== undefined) body.message = params.message;
       const result = await daemon("/spawn", body);

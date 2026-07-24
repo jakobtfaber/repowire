@@ -15,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/repowire/repowire/daemon-go/config"
+	"github.com/repowire/repowire/daemon-go/proto"
 )
 
 func addMCPTool[T any](srv *mcp.Server, name, description string, fn func(context.Context, string, T) (string, error)) {
@@ -73,6 +74,22 @@ func requireMCPAdmin(h *Hub, cfg config.MCPHTTPConfig, caller, tool string) erro
 		return nil
 	}
 	return fmt.Errorf("%s is disabled for anonymous HTTP MCP; enable daemon.mcp_http.allow_dangerous_tools or use the local identity shim", tool)
+}
+
+// mcpSpawnCircle keeps agent spawns in the caller's circle. Direct /spawn
+// callers (the CLI) intentionally bypass this MCP-specific policy.
+func (h *Hub) mcpSpawnCircle(caller, requested string) (string, error) {
+	if caller == mcpDefaultIdentity {
+		return firstNonempty(requested, "global"), nil
+	}
+	peer, err := h.reg.GetPeerByName(caller, nil)
+	if err != nil || peer == nil {
+		return "", fmt.Errorf("spawn_peer caller is not registered")
+	}
+	if peer.Role != proto.RoleOrchestrator && requested != "" && requested != peer.Circle {
+		return "", fmt.Errorf("spawn_peer agents may only spawn in their own circle (%s)", peer.Circle)
+	}
+	return firstNonempty(requested, peer.Circle), nil
 }
 
 type mcpAskArgs struct {
@@ -388,12 +405,12 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := required("path", a.Path); err != nil {
 			return "", err
 		}
-		body := structMap(a)
-		if body["circle"] == nil {
-			if peer, _ := h.reg.GetPeerByName(caller, nil); peer != nil {
-				body["circle"] = peer.Circle
-			}
+		circle, err := h.mcpSpawnCircle(caller, a.Circle)
+		if err != nil {
+			return "", err
 		}
+		body := structMap(a)
+		body["circle"] = circle
 		result, err := h.mcpLocal(ctx, http.MethodPost, "/spawn", body)
 		if err != nil {
 			return "", err

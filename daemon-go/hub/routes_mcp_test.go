@@ -185,6 +185,33 @@ func TestMCPToolsList(t *testing.T) {
 	}
 }
 
+func TestMCPSpawnCirclePolicy(t *testing.T) {
+	h, reg := newMCPTestHub(t, config.MCPHTTPConfig{})
+	register := func(circle string, role proto.PeerRole) proto.PeerID {
+		t.Helper()
+		id, _, err := reg.AllocateAndRegister(context.Background(), peer.AllocateParams{
+			Circle: circle, Backend: proto.AgentClaudeCode, Role: role,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	agent := register("alpha", proto.RoleAgent)
+	if circle, err := h.mcpSpawnCircle(string(agent), ""); err != nil || circle != "alpha" {
+		t.Fatalf("agent default = %q, %v; want alpha, nil", circle, err)
+	}
+	if _, err := h.mcpSpawnCircle(string(agent), "beta"); err == nil {
+		t.Fatal("agent cross-circle spawn was allowed")
+	}
+
+	orchestrator := register("alpha", proto.RoleOrchestrator)
+	if circle, err := h.mcpSpawnCircle(string(orchestrator), "beta"); err != nil || circle != "beta" {
+		t.Fatalf("orchestrator cross-circle spawn = %q, %v; want beta, nil", circle, err)
+	}
+}
+
 // mcpToolCallResult is the shared tools/call result decode shape.
 type mcpToolCallResult struct {
 	Content []struct {
