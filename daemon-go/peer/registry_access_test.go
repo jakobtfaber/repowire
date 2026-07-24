@@ -160,7 +160,7 @@ func TestUpdateModelAndMetadataByName(t *testing.T) {
 	})
 
 	// Model update by name: found + live + mapping carry the new model.
-	found, err := r.UpdateModelByName(ctx, string(name), "claude-opus-4", nil)
+	found, err := r.UpdateModelByName(ctx, string(name), "claude-opus-4")
 	if err != nil || !found {
 		t.Fatalf("UpdateModelByName: found=%v err=%v", found, err)
 	}
@@ -169,7 +169,7 @@ func TestUpdateModelAndMetadataByName(t *testing.T) {
 	}
 
 	// Metadata merge keeps existing keys and adds new ones.
-	found, err = r.UpdateMetadataByName(ctx, string(name), map[string]any{"k1": "v1"}, nil)
+	found, err = r.UpdateMetadataByName(ctx, string(name), map[string]any{"k1": "v1"})
 	if err != nil || !found {
 		t.Fatalf("UpdateMetadataByName: found=%v err=%v", found, err)
 	}
@@ -179,7 +179,7 @@ func TestUpdateModelAndMetadataByName(t *testing.T) {
 	}
 
 	// Unknown peer is a no-op (found=false, no error).
-	if found, err := r.UpdateModelByName(ctx, "ghost", "x", nil); found || err != nil {
+	if found, err := r.UpdateModelByName(ctx, "ghost", "x"); found || err != nil {
 		t.Fatalf("unknown peer model: found=%v err=%v, want (false,nil)", found, err)
 	}
 }

@@ -373,14 +373,7 @@ func (c *Client) handleMessage(ctx context.Context, session *relaySession, msg m
 // an http_response frame (base64 bodies both ways).
 func (c *Client) handleHTTPRequest(ctx context.Context, session *relaySession, msg map[string]any) {
 	reqID, _ := msg["request_id"].(string)
-	method, _ := msg["method"].(string)
-	if method == "" {
-		method = "GET"
-	}
-	path, _ := msg["path"].(string)
-	if path == "" {
-		path = "/"
-	}
+	path := requestPath(msg)
 	// HTTP MCP is deliberately local-only. A tunneled request originates from
 	// the hosted relay even though the final local hop would appear loopback, so
 	// reject it here before it can reach the daemon's localhost auth check.
@@ -388,32 +381,15 @@ func (c *Client) handleHTTPRequest(ctx context.Context, session *relaySession, m
 		c.sendHTTPResponse(ctx, session, reqID, http.StatusNotFound, nil, []byte("not found"))
 		return
 	}
-	u := c.localBaseURL + path
-	if qs, _ := msg["query_string"].(string); qs != "" {
-		u += "?" + qs
-	}
-
 	var body []byte
 	if b, ok := msg["body"].(string); ok && b != "" {
 		body, _ = base64.StdEncoding.DecodeString(b)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(body))
+	req, err := c.localRequest(ctx, msg, bytes.NewReader(body))
 	if err != nil {
 		c.sendHTTPResponse(ctx, session, reqID, http.StatusBadGateway, nil, []byte(err.Error()))
 		return
 	}
-	if hs, ok := msg["headers"].(map[string]any); ok {
-		for k, v := range hs {
-			if strippedForwardHeaders[strings.ToLower(k)] {
-				continue
-			}
-			if vs, ok := v.(string); ok {
-				req.Header.Set(k, vs)
-			}
-		}
-	}
-	c.authorize(req)
 
 	resp, err := c.httpc.Do(req)
 	if err != nil {
@@ -423,11 +399,7 @@ func (c *Client) handleHTTPRequest(ctx context.Context, session *relaySession, m
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
-	headers := make(map[string]any, len(resp.Header))
-	for k := range resp.Header {
-		headers[k] = resp.Header.Get(k)
-	}
-	c.sendHTTPResponse(ctx, session, reqID, resp.StatusCode, headers, respBody)
+	c.sendHTTPResponse(ctx, session, reqID, resp.StatusCode, responseHeaders(resp.Header), respBody)
 }
 
 func (c *Client) sendHTTPResponse(ctx context.Context, session *relaySession, reqID string, status int, headers map[string]any, body []byte) {
@@ -456,30 +428,17 @@ func (c *Client) startHTTPStream(parent context.Context, session *relaySession, 
 
 func (c *Client) handleHTTPStream(ctx context.Context, session *relaySession, msg map[string]any) {
 	reqID := stringField(msg, "request_id")
-	path := stringField(msg, "path")
-	if path == "" {
-		path = "/"
-	}
+	path := requestPath(msg)
 	if path == "/mcp" || strings.HasPrefix(path, "/mcp/") {
 		_ = session.write(ctx, map[string]any{"type": "http_stream_start", "request_id": reqID, "status": http.StatusNotFound, "headers": map[string]any{}})
 		_ = session.write(ctx, map[string]any{"type": "http_stream_end", "request_id": reqID})
 		return
 	}
-	u := c.localBaseURL + path
-	if qs := stringField(msg, "query_string"); qs != "" {
-		u += "?" + qs
-	}
-	method := stringField(msg, "method")
-	if method == "" {
-		method = http.MethodGet
-	}
-	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+	req, err := c.localRequest(ctx, msg, nil)
 	if err != nil {
 		c.sendStreamError(ctx, session, reqID, err)
 		return
 	}
-	copyRequestHeaders(req.Header, msg["headers"])
-	c.authorize(req)
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -489,11 +448,7 @@ func (c *Client) handleHTTPStream(ctx context.Context, session *relaySession, ms
 		return
 	}
 	defer resp.Body.Close()
-	headers := make(map[string]any, len(resp.Header))
-	for key := range resp.Header {
-		headers[key] = resp.Header.Get(key)
-	}
-	if err := session.write(ctx, map[string]any{"type": "http_stream_start", "request_id": reqID, "status": resp.StatusCode, "headers": headers}); err != nil {
+	if err := session.write(ctx, map[string]any{"type": "http_stream_start", "request_id": reqID, "status": resp.StatusCode, "headers": responseHeaders(resp.Header)}); err != nil {
 		return
 	}
 	buf := make([]byte, 32<<10)
@@ -512,6 +467,39 @@ func (c *Client) handleHTTPStream(ctx context.Context, session *relaySession, ms
 		}
 	}
 	_ = session.write(ctx, map[string]any{"type": "http_stream_end", "request_id": reqID})
+}
+
+func requestPath(msg map[string]any) string {
+	if path := stringField(msg, "path"); path != "" {
+		return path
+	}
+	return "/"
+}
+
+func (c *Client) localRequest(ctx context.Context, msg map[string]any, body io.Reader) (*http.Request, error) {
+	method := stringField(msg, "method")
+	if method == "" {
+		method = http.MethodGet
+	}
+	u := c.localBaseURL + requestPath(msg)
+	if query := stringField(msg, "query_string"); query != "" {
+		u += "?" + query
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
+	if err != nil {
+		return nil, err
+	}
+	copyRequestHeaders(req.Header, msg["headers"])
+	c.authorize(req)
+	return req, nil
+}
+
+func responseHeaders(header http.Header) map[string]any {
+	out := make(map[string]any, len(header))
+	for key := range header {
+		out[key] = header.Get(key)
+	}
+	return out
 }
 
 func (c *Client) sendStreamError(ctx context.Context, session *relaySession, reqID string, err error) {

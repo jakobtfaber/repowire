@@ -61,8 +61,8 @@ func (s *Store) importLegacySessions(ctx context.Context, path string) error {
 			description, model, agent_pid
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			string(mapping.SessionID), string(mapping.DisplayName), mapping.Circle, string(mapping.Backend),
-			stringPointer(mapping.Path), string(mapping.Role), legacyTime(mapping.UpdatedAt),
-			mapping.Description, stringPointer(mapping.Model), intPointer(mapping.AgentPID)); err != nil {
+			strOrNil(mapping.Path), string(mapping.Role), legacyTime(mapping.UpdatedAt),
+			mapping.Description, strOrNil(mapping.Model), nullable(mapping.AgentPID)); err != nil {
 			return err
 		}
 	}
@@ -171,8 +171,8 @@ func (s *Store) importLegacySchedules(ctx context.Context, path string) error {
 		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO schedules(
 			schedule_id, from_peer, to_peer, text, kind, circle, fire_at, cron, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, schedule.ScheduleID, schedule.FromPeer,
-			schedule.ToPeer, schedule.Text, schedule.Kind, stringPointer(schedule.Circle),
-			schedule.FireAt, stringPointer(schedule.Cron), schedule.CreatedAt, formatTS(time.Now())); err != nil {
+			schedule.ToPeer, schedule.Text, schedule.Kind, strOrNil(schedule.Circle),
+			schedule.FireAt, strOrNil(schedule.Cron), schedule.CreatedAt, formatTS(time.Now())); err != nil {
 			return err
 		}
 	}
@@ -210,20 +210,6 @@ func recordLegacy(ctx context.Context, db legacyExecer, path string, count int, 
 func regularFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
-}
-
-func stringPointer(value *string) any {
-	if value == nil {
-		return nil
-	}
-	return *value
-}
-
-func intPointer(value *int) any {
-	if value == nil {
-		return nil
-	}
-	return *value
 }
 
 func nullableText(value string) any {

@@ -19,23 +19,13 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-// mcpRegShim adapts *peer.Registry to service's accessRegistry seam (the same
-// shape main.go's regShim bridges — AddEvent just needs a ctx-taking
-// signature). Local to this test file; not exported.
-type mcpRegShim struct{ *peer.Registry }
-
-func (s mcpRegShim) AddEvent(_ context.Context, typ string, payload map[string]any) string {
-	return s.Registry.AddEvent(typ, payload)
-}
-
 // newMCPTestHub builds a Hub over a real registry (like newTestHub) plus a real
 // service.PeerDelivery wired over it, then attaches WithMCP. cfg lets each test
 // dial in the auth policy under test.
 func newMCPTestHub(t *testing.T, cfg config.MCPHTTPConfig) (*Hub, *peer.Registry) {
 	t.Helper()
 	h := newTestHub(t)
-	shim := mcpRegShim{h.regForTest()}
-	delivery := service.NewPeerDelivery(shim, h.Router(), h.Transport(), service.NewAskTracker(0), nil)
+	delivery := service.NewPeerDelivery(h.regForTest(), h.Router(), h.Transport(), service.NewAskTracker(0), nil)
 	h.WithMCP(cfg, delivery)
 	return h, h.regForTest()
 }
@@ -338,8 +328,7 @@ func TestMCPUnknownMethod(t *testing.T) {
 func TestMCPRequireAuthMissingBearer(t *testing.T) {
 	h := newTestHub(t)
 	h.authToken = "secret-token"
-	shim := mcpRegShim{h.regForTest()}
-	delivery := service.NewPeerDelivery(shim, h.Router(), h.Transport(), service.NewAskTracker(0), nil)
+	delivery := service.NewPeerDelivery(h.regForTest(), h.Router(), h.Transport(), service.NewAskTracker(0), nil)
 	h.WithMCP(config.MCPHTTPConfig{Enabled: true, RequireAuth: true}, delivery)
 	mux := http.NewServeMux()
 	h.Routes(mux)

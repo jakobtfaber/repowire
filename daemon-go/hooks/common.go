@@ -40,7 +40,6 @@ type Payload struct {
 	ResponseText   string
 	Model          string
 	Backend        string
-	Raw            map[string]any
 }
 
 func Normalize(raw map[string]any, backend string) Payload {
@@ -62,7 +61,7 @@ func Normalize(raw map[string]any, backend string) Payload {
 	return Payload{
 		Event: event, SessionID: stringField("session_id"), CWD: stringField("cwd"),
 		TranscriptPath: stringField("transcript_path"), ResponseText: response,
-		Model: extractModel(raw["model"]), Backend: backend, Raw: raw,
+		Model: extractModel(raw["model"]), Backend: backend,
 	}
 }
 

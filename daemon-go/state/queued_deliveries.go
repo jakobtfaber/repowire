@@ -38,13 +38,8 @@ type QueuedDelivery struct {
 	Metadata    map[string]any
 }
 
-// qdISOLayout matches Python's datetime.isoformat() in UTC, e.g.
-// "2024-01-15T10:30:00.123456+00:00". Lexicographic ordering of these strings
-// is chronological, which is what drain/list/cap/expiry all rely on.
-const qdISOLayout = "2006-01-02T15:04:05.000000-07:00"
-
 func qdFormatISO(t time.Time) string {
-	return t.UTC().Format(qdISOLayout)
+	return formatISO(t)
 }
 
 func newDeliveryID() (string, error) {
@@ -119,12 +114,12 @@ func (s *Store) EnqueueDelivery(
 	if _, err := tx.ExecContext(ctx, insert,
 		out.DeliveryID,
 		out.PeerID,
-		nullStr(out.RepowireSessionID),
+		strOrNil(out.RepowireSessionID),
 		string(out.Kind),
-		nullStr(out.FromPeerID),
+		strOrNil(out.FromPeerID),
 		out.FromPeerName,
 		out.ToPeerName,
-		nullStr(out.CorrelationID),
+		strOrNil(out.CorrelationID),
 		out.Text,
 		string(attachmentsJSON),
 		string(metadataJSON),
@@ -388,11 +383,4 @@ func scanDelivery(rows *sql.Rows) (QueuedDelivery, error) {
 		}
 	}
 	return d, nil
-}
-
-func nullStr(p *string) any {
-	if p == nil {
-		return nil
-	}
-	return *p
 }

@@ -307,7 +307,7 @@ func (h *Hub) persistBinding(
 	}); err != nil {
 		// Fail loud in the journal, not on the request: registration is durable
 		// in the registry regardless; the binding is observability/resume sugar.
-		h.reg.AddEvent("session_binding_persist_failed", map[string]any{
+		h.reg.AddEvent(r.Context(), "session_binding_persist_failed", map[string]any{
 			"peer_id": pid, "detail": err.Error(),
 		})
 		return nil
@@ -320,7 +320,7 @@ func (h *Hub) persistBinding(
 		time.Time{}, // zero issuedAt → MintBirthCertificate uses time.Now()
 	)
 	if err != nil {
-		h.reg.AddEvent("birth_certificate_mint_failed", map[string]any{
+		h.reg.AddEvent(r.Context(), "birth_certificate_mint_failed", map[string]any{
 			"peer_id": pid, "detail": err.Error(),
 		})
 		return nil

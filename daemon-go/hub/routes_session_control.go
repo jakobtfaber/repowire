@@ -67,7 +67,7 @@ func (h *Hub) resumeSession(w http.ResponseWriter, r *http.Request, id string, r
 		runtimeID = *binding.RuntimeSessionID
 	}
 	backend := proto.AgentType(binding.Backend)
-	plan, ok := service.NewLocalResumeResolver().Resolve(backend, binding.ProjectPath, runtimeID, &binding.RepowireSessionID, binding.ResumeCapability)
+	plan, ok := (service.LocalResumeResolver{}).Resolve(backend, binding.ProjectPath, runtimeID, &binding.RepowireSessionID, binding.ResumeCapability)
 	if !ok {
 		writeJSONError(w, http.StatusConflict, "resume_unavailable: runtime session is unsupported or stale")
 		return

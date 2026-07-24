@@ -132,7 +132,7 @@ func (b *eventBuffer) appendStructured(e Event) {
 // wire shape {"id","type","timestamp",...data} and returning the minted event id.
 // Mirrors PeerRegistry.add_event / EventLog.add_event. Callers (the chat-ingest
 // and query/response routes) pass already-wire-shaped data maps.
-func (r *Registry) AddEvent(eventType string, data map[string]any) string {
+func (r *Registry) AddEvent(ctx context.Context, eventType string, data map[string]any) string {
 	id := uuid.NewString()
 	event := Event{
 		EventID: id, Type: eventType, Timestamp: time.Now().UTC(), Payload: data,
@@ -150,7 +150,7 @@ func (r *Registry) AddEvent(eventType string, data map[string]any) string {
 	} else if value, _ := data["repowire_session_id"].(string); value != "" {
 		event.SessionID = proto.PeerID(value)
 	}
-	r.appendEvent(context.Background(), event)
+	r.appendEvent(ctx, event)
 	return id
 }
 

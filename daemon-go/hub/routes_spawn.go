@@ -239,7 +239,7 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 	// Non-self-registering backends are daemon-pre-registered for CLI polling.
 	if result.PaneID != "" && !selfRegistersOnSpawn(backend) {
 		resolvedPath := service.NormPath(req.Path)
-		warning := backendStr(backend) + " hooks do not currently fire reliably; Repowire pre-registered this peer for CLI polling."
+		warning := string(backend) + " hooks do not currently fire reliably; Repowire pre-registered this peer for CLI polling."
 		metadata := map[string]any{
 			"repowire_cli_fallback": true,
 			"spawn_registration":    "daemon_pre_registered",
@@ -287,7 +287,7 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 		resp.DisplayName = string(displayName)
 		resp.RegistrationState = "cli_fallback"
 		resp.Warnings = append(resp.Warnings,
-			backendStr(backend)+" plugin hooks are pending upstream; peer was pre-registered for CLI polling, "+
+			string(backend)+" plugin hooks are pending upstream; peer was pre-registered for CLI polling, "+
 				"so ask/notify delivery queues until the peer drains it with `repowire peer asks` / `repowire peer deliveries`.")
 	}
 
@@ -320,8 +320,6 @@ func (h *Hub) writeSpawnError(w http.ResponseWriter, err error) {
 	}
 	writeJSONError(w, http.StatusInternalServerError, err.Error())
 }
-
-func backendStr(b proto.AgentType) string { return string(b) }
 
 // ---------------------------------------------------------------------------
 // POST /kill-peer
@@ -362,7 +360,7 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 	}
 	h.spawn.reg.LazyRepair(ctx)
 
-	resolved, err := h.resolveStrictDirect(req.PeerIdentifier, req.Circle)
+	resolved, err := h.resolveStrict(req.PeerIdentifier, req.Circle)
 	if err != nil {
 		return KillResponse{}, err
 	}
@@ -434,8 +432,9 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	h.spawn.reg.LazyRepair(ctx)
 
-	resolved, ok := h.resolveStrict(w, name, req.Circle)
-	if !ok {
+	resolved, err := h.resolveStrict(name, req.Circle)
+	if err != nil {
+		h.writeSpawnError(w, err)
 		return
 	}
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
@@ -569,11 +568,11 @@ func (h *Hub) restartResumeCommand(ctx context.Context, peer *proto.Peer, resolv
 	if runtimeID == "" {
 		return "", nil, restartResumeUnavailable(peer, "missing_id")
 	}
-	plan, ok := service.NewLocalResumeResolver().Resolve(peer.Backend, resolvedPath, runtimeID, repowireSessionID, capability)
+	plan, ok := (service.LocalResumeResolver{}).Resolve(peer.Backend, resolvedPath, runtimeID, repowireSessionID, capability)
 	if !ok {
 		return "", nil, restartResumeUnavailable(peer, "resume_unavailable")
 	}
-	command, err := service.ResumeCommand(base, peer.Backend, plan)
+	command, err := service.BuildResumeCommand(base, peer.Backend, runtimeID)
 	if err != nil {
 		return "", nil, map[string]any{"error": "resume_unavailable", "hint": err.Error(), "peer_id": string(peer.PeerID)}
 	}
@@ -648,8 +647,9 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	h.spawn.reg.LazyRepair(ctx)
 
-	resolved, ok := h.resolveStrict(w, name, circle)
-	if !ok {
+	resolved, err := h.resolveStrict(name, circle)
+	if err != nil {
+		h.writeSpawnError(w, err)
 		return
 	}
 	peerCopy := resolved // switch uses identity + spawned-set ownership, not adoption
@@ -778,8 +778,9 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	h.spawn.reg.LazyRepair(ctx)
 
-	resolved, ok := h.resolveStrict(w, name, req.Circle)
-	if !ok {
+	resolved, err := h.resolveStrict(name, req.Circle)
+	if err != nil {
+		h.writeSpawnError(w, err)
 		return
 	}
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
@@ -806,10 +807,10 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 	// Ownership gate: prove the pane is real AND belongs to THIS peer. Accept
 	// durable spawn-ownership proof OR live tmux evidence whose current_path
 	// matches the peer's path.
-	paneVerified := svc(h).Ownership().IsSpawned(*peerCopy.PaneID) ||
-		svc(h).Ownership().ValidateForPeer(peerCopy).OK
+	paneVerified := h.spawn.svc.Ownership().IsSpawned(*peerCopy.PaneID) ||
+		h.spawn.svc.Ownership().ValidateForPeer(peerCopy).OK
 	if !paneVerified {
-		if ev := svc(h).Tmux().ProbePane(*peerCopy.PaneID); ev != nil &&
+		if ev := h.spawn.svc.Tmux().ProbePane(*peerCopy.PaneID); ev != nil &&
 			peerCopy.Path != "" && service.NormPath(ev.CurrentPath) == service.NormPath(peerCopy.Path) {
 			paneVerified = true
 		}
@@ -858,46 +859,12 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// svc is a tiny accessor to keep the rehook handler readable.
-func svc(h *Hub) *service.SpawnService { return h.spawn.svc }
-
 // ---------------------------------------------------------------------------
 // Shared resolution + destructive-proof helpers.
 // ---------------------------------------------------------------------------
 
-// resolveStrict resolves an identifier to a single peer via ResolvePeerStrict:
-// empty list → 404, ambiguous (>1) → 409 with a candidates list, error → 409.
-// Returns (peer, true) only on a unique resolution.
-func (h *Hub) resolveStrict(w http.ResponseWriter, identifier string, circle *string) (*proto.Peer, bool) {
-	candidates, err := h.spawn.reg.ResolvePeerStrict(identifier, circle)
-	if err != nil {
-		writeJSONError(w, http.StatusConflict, err.Error())
-		return nil, false
-	}
-	if len(candidates) == 0 {
-		writeJSONError(w, http.StatusNotFound, "Peer not found: "+identifier)
-		return nil, false
-	}
-	if len(candidates) > 1 {
-		cands := make([]map[string]any, 0, len(candidates))
-		for _, p := range candidates {
-			cands = append(cands, map[string]any{
-				"peer_id":      string(p.PeerID),
-				"display_name": string(p.DisplayName),
-				"circle":       p.Circle,
-				"tmux_session": p.TmuxSession,
-			})
-		}
-		writeJSONError(w, http.StatusConflict, map[string]any{
-			"error":      "Ambiguous peer identifier: " + identifier,
-			"candidates": cands,
-		})
-		return nil, false
-	}
-	return candidates[0], true
-}
-
-func (h *Hub) resolveStrictDirect(identifier string, circle *string) (*proto.Peer, error) {
+// resolveStrict resolves an identifier without coupling the operation to HTTP.
+func (h *Hub) resolveStrict(identifier string, circle *string) (*proto.Peer, error) {
 	candidates, err := h.spawn.reg.ResolvePeerStrict(identifier, circle)
 	if err != nil {
 		return nil, &service.SpawnError{Status: http.StatusConflict, Detail: err.Error()}
@@ -976,7 +943,7 @@ func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 
 	if p.PaneID != nil && *p.PaneID != "" && own.IsSpawned(*p.PaneID) {
 		return destructiveProof{ok: true, paneID: *p.PaneID, mode: "repowire_spawned_pane",
-			tmuxSession: spawnDerefStr(p.TmuxSession)}
+			tmuxSession: derefString(p.TmuxSession)}
 	}
 
 	ownership := own.ValidateForPeer(p)
@@ -985,11 +952,11 @@ func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 			tmuxSession: ownership.Record.TmuxSession, mode: "durable_spawn_ownership"}
 	}
 	if ownership.Error != "" && ownership.Error != "missing_ownership" {
-		pane := spawnDerefStr(p.PaneID)
+		pane := derefString(p.PaneID)
 		if ownership.Record != nil {
 			pane = ownership.Record.PaneID
 		}
-		ts := spawnDerefStr(p.TmuxSession)
+		ts := derefString(p.TmuxSession)
 		if ownership.Evidence != nil {
 			ts = ownership.Evidence.TmuxSession
 		} else if ownership.Record != nil {
@@ -1047,7 +1014,7 @@ func (h *Hub) paneControlErrorDetail(p *proto.Peer, proof destructiveProof) map[
 	return map[string]any{
 		"error":   errCode,
 		"hint":    hint,
-		"pane_id": spawnDerefStr(p.PaneID),
+		"pane_id": derefString(p.PaneID),
 	}
 }
 
@@ -1072,15 +1039,6 @@ func (h *Hub) writeQuiesceError(w http.ResponseWriter, qerr error, ctx context.C
 		"error": inProgressErr,
 		"hint":  inProgressHint,
 	})
-}
-
-// spawnDerefStr dereferences an optional string ("" when nil). Named to avoid
-// colliding with the work area's package-level derefStr helper.
-func spawnDerefStr(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // selfHostname returns the daemon hostname for the same-host gate (used by main

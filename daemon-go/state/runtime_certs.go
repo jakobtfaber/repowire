@@ -145,10 +145,10 @@ func (s *Store) MintBirthCertificate(
 		cert.DisplayName,
 		cert.Backend,
 		cert.ProjectPath,
-		nullableStr(cert.RuntimeSessionID),
-		nullableStr(cert.PaneID),
-		nullableInt(cert.AgentPID),
-		nullableInt(cert.ParentPID),
+		strOrNil(cert.RuntimeSessionID),
+		strOrNil(cert.PaneID),
+		nullable(cert.AgentPID),
+		nullable(cert.ParentPID),
 		cert.IssuedAt,
 		cert.ExpiresAt,
 		string(metaJSON),
@@ -313,26 +313,5 @@ func (s *Store) getCertByNonce(ctx context.Context, nonce string) (*RuntimeIdent
 
 // decodeMetadata mirrors _json_loads: empty/invalid/non-object -> {}.
 func decodeMetadata(raw string) map[string]any {
-	if raw == "" {
-		return map[string]any{}
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil || m == nil {
-		return map[string]any{}
-	}
-	return m
-}
-
-func nullableStr(p *string) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-func nullableInt(p *int) any {
-	if p == nil {
-		return nil
-	}
-	return *p
+	return decodeJSONObject(raw)
 }

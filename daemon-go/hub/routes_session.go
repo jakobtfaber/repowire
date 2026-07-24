@@ -72,8 +72,8 @@ func (h *Hub) WithSessionRoutes(reg sessionRegistry, store queuedDrainStore) *Hu
 
 // registerSessionRoutes attaches the session endpoints, each behind requireAuth.
 func (h *Hub) registerSessionRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/session/update", h.requireAuth(h.handleSessionUpdate))
-	mux.HandleFunc("/deliveries/pending", h.requireAuth(h.handleDeliveriesPending))
+	mux.HandleFunc("POST /session/update", h.requireAuth(h.handleSessionUpdate))
+	mux.HandleFunc("GET /deliveries/pending", h.requireAuth(h.handleDeliveriesPending))
 }
 
 // sessionReady reports whether the session deps are wired; 503 otherwise.
@@ -106,10 +106,6 @@ type SessionUpdateRequest struct {
 // by resolved peer_id; model/metadata via the by-name updaters. Mirrors
 // messages.py update_session.
 func (h *Hub) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
 	if !h.sessionReady(w) {
 		return
 	}
@@ -218,10 +214,6 @@ type PendingDeliveriesResponse struct {
 // by exactly one of pane_id or peer_id (400 otherwise); 404 if the peer is
 // unknown. A nil store returns an empty list. Mirrors asks.py pending_deliveries.
 func (h *Hub) handleDeliveriesPending(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "GET only")
-		return
-	}
 	if !h.sessionReady(w) {
 		return
 	}

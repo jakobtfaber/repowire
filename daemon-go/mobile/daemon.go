@@ -30,9 +30,6 @@ type DaemonPeer struct {
 }
 
 func NewDaemonPeer(baseURL, auth, name, path, circle string) *DaemonPeer {
-	if circle == "" {
-		circle = "default"
-	}
 	return &DaemonPeer{
 		baseURL: strings.TrimRight(baseURL, "/"), auth: auth, name: name,
 		path: path, circle: circle, http: &http.Client{Timeout: 20 * time.Second},

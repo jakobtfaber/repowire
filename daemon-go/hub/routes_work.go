@@ -1,10 +1,9 @@
 package hub
 
 // routes_work.go — tracked-work + durable-job HTTP routes. Port of
-// repowire/daemon/routes/work.py. Both /work and /jobs aliases are served; the
-// pre-1.22 ServeMux (this module's pattern semantics, same as routes_ask_lifecycle)
-// dispatches the {work_id} subpaths off the "/work/" and "/jobs/" subtree
-// handlers. create_work merges the execution request, resolves assigned_peer_id
+// repowire/daemon/routes/work.py. Both /work and /jobs aliases are served with
+// method-qualified ServeMux patterns. create_work merges the execution request,
+// resolves assigned_peer_id
 // via ResolvePeerStrict (404/409), routes cron → calendar else work_store, then
 // service.JobRunner.Wake(). Terminal update_state/cancel release the executor via
 // service.SessionControl. Wire shapes match the Python responses verbatim — clients read
@@ -24,8 +23,7 @@ import (
 )
 
 // workRoutesRegistry is the narrow registry seam create_work needs to canonicalize
-// an assigned-peer identifier into a peer_id. *peer.Registry satisfies it once
-// ResolvePeerStrict lands on the concrete type.
+// an assigned-peer identifier into a peer_id. *peer.Registry satisfies it.
 type workRoutesRegistry interface {
 	ResolvePeerStrict(identifier string, circle *string) ([]*proto.Peer, error)
 }
@@ -44,23 +42,11 @@ type workRoutes struct {
 // WithWork attaches the work/jobs route group. runner drives dispatch + Wake;
 // control releases executors on terminal transitions; reg canonicalizes assigned
 // peers. nil store → the routes 503. Returns the hub for chaining; call before Routes.
-func (h *Hub) WithWork(runner *service.JobRunner, store *state.Store) *Hub {
-	h.work = &workRoutes{store: store, runner: runner}
+func (h *Hub) WithWork(runner *service.JobRunner, store *state.Store, reg workRoutesRegistry) *Hub {
+	h.work = &workRoutes{store: store, runner: runner, reg: reg}
 	if runner != nil {
 		h.work.control = runner.Control()
 	}
-	return h
-}
-
-// WithWorkRegistry attaches the assigned-peer resolver (the registry seam). Split
-// from WithWork so main can pass the concrete *peer.Registry once ResolvePeerStrict
-// lands without changing WithWork's signature. nil → assigned_peer_id is passed
-// through verbatim (repow- ids skip resolution anyway).
-func (h *Hub) WithWorkRegistry(reg workRoutesRegistry) *Hub {
-	if h.work == nil {
-		h.work = &workRoutes{}
-	}
-	h.work.reg = reg
 	return h
 }
 
@@ -68,18 +54,19 @@ func (h *Hub) WithWorkRegistry(reg workRoutesRegistry) *Hub {
 // collection endpoints (POST create, GET list) and the "/work/"/"/jobs/" subtrees
 // (per-id status/update/run/retry/cancel/result) are dispatched by suffix.
 func (h *Hub) registerWorkRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/work", h.requireAuth(h.handleWorkCollection))
-	mux.HandleFunc("/jobs", h.requireAuth(h.handleWorkCollection))
-	mux.HandleFunc("/work/", h.requireAuth(h.handleWorkItem))
-	mux.HandleFunc("/jobs/", h.requireAuth(h.handleWorkItem))
-}
-
-func (h *Hub) workReady(w http.ResponseWriter) bool {
-	if h.work == nil || h.work.store == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "work store not configured")
-		return false
+	for _, base := range []string{"/work", "/jobs"} {
+		mux.HandleFunc("POST "+base, h.requireAuth(h.handleCreateWork))
+		mux.HandleFunc("GET "+base, h.requireAuth(h.handleListWork))
+		mux.HandleFunc("GET "+base+"/{work_id}", h.requireAuth(h.handleWorkStatus))
+		mux.HandleFunc("PATCH "+base+"/{work_id}", h.requireAuth(h.handleWorkUpdate))
+		mux.HandleFunc("GET "+base+"/{work_id}/{$}", h.requireAuth(h.handleWorkStatus))
+		mux.HandleFunc("PATCH "+base+"/{work_id}/{$}", h.requireAuth(h.handleWorkUpdate))
+		mux.HandleFunc("GET "+base+"/{work_id}/status", h.requireAuth(h.handleWorkStatus))
+		mux.HandleFunc("GET "+base+"/{work_id}/result", h.requireAuth(h.handleWorkResult))
+		mux.HandleFunc("POST "+base+"/{work_id}/run", h.requireAuth(h.handleWorkRun))
+		mux.HandleFunc("POST "+base+"/{work_id}/retry", h.requireAuth(h.handleWorkRetry))
+		mux.HandleFunc("POST "+base+"/{work_id}/cancel", h.requireAuth(h.handleWorkCancel))
 	}
-	return true
 }
 
 // ----------------------------------------------------------------------------
@@ -152,20 +139,6 @@ func (h *Hub) workRouteReady() error {
 // ----------------------------------------------------------------------------
 // Collection: POST /work|/jobs (create), GET /work|/jobs (list)
 // ----------------------------------------------------------------------------
-
-func (h *Hub) handleWorkCollection(w http.ResponseWriter, r *http.Request) {
-	if !h.workReady(w) {
-		return
-	}
-	switch r.Method {
-	case http.MethodPost:
-		h.handleCreateWork(w, r)
-	case http.MethodGet:
-		h.handleListWork(w, r)
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
-}
 
 func (h *Hub) handleCreateWork(w http.ResponseWriter, r *http.Request) {
 	var req workCreateRequest
@@ -331,51 +304,8 @@ func (h *Hub) jobList(ctx context.Context, req workListRequest) (map[string]any,
 // Item: /work/{id}[/status|/run|/retry|/cancel|/result], /jobs aliases
 // ----------------------------------------------------------------------------
 
-func (h *Hub) handleWorkItem(w http.ResponseWriter, r *http.Request) {
-	if !h.workReady(w) {
-		return
-	}
-	// Strip the "/work/" or "/jobs/" prefix, then split id/action.
-	path := r.URL.Path
-	rest := strings.TrimPrefix(strings.TrimPrefix(path, "/work/"), "")
-	if strings.HasPrefix(path, "/jobs/") {
-		rest = strings.TrimPrefix(path, "/jobs/")
-	}
-	rest = strings.Trim(rest, "/")
-	if rest == "" {
-		writeError(w, http.StatusNotFound, "missing work id")
-		return
-	}
-	parts := strings.SplitN(rest, "/", 2)
-	workID := parts[0]
-	action := ""
-	if len(parts) == 2 {
-		action = parts[1]
-	}
-
-	switch {
-	case action == "" && r.Method == http.MethodGet:
-		// GET /jobs/{id} → status (the Python /jobs/{id} alias).
-		h.handleWorkStatus(w, r, workID)
-	case action == "" && r.Method == http.MethodPatch:
-		h.handleWorkUpdate(w, r, workID)
-	case action == "status" && r.Method == http.MethodGet:
-		h.handleWorkStatus(w, r, workID)
-	case action == "result" && r.Method == http.MethodGet:
-		h.handleWorkResult(w, r, workID)
-	case action == "run" && r.Method == http.MethodPost:
-		h.handleWorkRun(w, r, workID)
-	case action == "retry" && r.Method == http.MethodPost:
-		h.handleWorkRetry(w, r, workID)
-	case action == "cancel" && r.Method == http.MethodPost:
-		h.handleWorkCancel(w, r, workID)
-	default:
-		writeError(w, http.StatusNotFound, "unknown work route")
-	}
-}
-
-func (h *Hub) handleWorkStatus(w http.ResponseWriter, r *http.Request, workID string) {
-	result, err := h.jobStatus(r.Context(), workID)
+func (h *Hub) handleWorkStatus(w http.ResponseWriter, r *http.Request) {
+	result, err := h.jobStatus(r.Context(), r.PathValue("work_id"))
 	if err != nil {
 		writeRouteError(w, err)
 		return
@@ -408,8 +338,8 @@ func (h *Hub) jobStatus(ctx context.Context, workID string) (map[string]any, err
 	return map[string]any{"status": work.Status()}, nil
 }
 
-func (h *Hub) handleWorkResult(w http.ResponseWriter, r *http.Request, workID string) {
-	result, err := h.jobResult(r.Context(), workID)
+func (h *Hub) handleWorkResult(w http.ResponseWriter, r *http.Request) {
+	result, err := h.jobResult(r.Context(), r.PathValue("work_id"))
 	if err != nil {
 		writeRouteError(w, err)
 		return
@@ -444,12 +374,12 @@ func (h *Hub) jobResult(ctx context.Context, workID string) (map[string]any, err
 	return map[string]any{"result": work.Result()}, nil
 }
 
-func (h *Hub) handleWorkUpdate(w http.ResponseWriter, r *http.Request, workID string) {
+func (h *Hub) handleWorkUpdate(w http.ResponseWriter, r *http.Request) {
 	var req workUpdateRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	result, err := h.jobUpdate(r.Context(), workID, req)
+	result, err := h.jobUpdate(r.Context(), r.PathValue("work_id"), req)
 	if err != nil {
 		writeRouteError(w, err)
 		return
@@ -494,7 +424,12 @@ func (h *Hub) jobUpdate(ctx context.Context, workID string, req workUpdateReques
 	return map[string]any{"status": work.Status()}, nil
 }
 
-func (h *Hub) handleWorkRun(w http.ResponseWriter, r *http.Request, workID string) {
+func (h *Hub) handleWorkRun(w http.ResponseWriter, r *http.Request) {
+	if err := h.workRouteReady(); err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	workID := r.PathValue("work_id")
 	if strings.HasPrefix(workID, "cal-") {
 		writeError(w, http.StatusConflict, "Recurring job templates cannot be run")
 		return
@@ -516,7 +451,12 @@ func (h *Hub) handleWorkRun(w http.ResponseWriter, r *http.Request, workID strin
 	h.runAndRespond(w, ctx, workID, false)
 }
 
-func (h *Hub) handleWorkRetry(w http.ResponseWriter, r *http.Request, workID string) {
+func (h *Hub) handleWorkRetry(w http.ResponseWriter, r *http.Request) {
+	if err := h.workRouteReady(); err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	workID := r.PathValue("work_id")
 	if strings.HasPrefix(workID, "cal-") {
 		writeError(w, http.StatusConflict, "Recurring job templates cannot be retried")
 		return
@@ -538,12 +478,12 @@ func (h *Hub) handleWorkRetry(w http.ResponseWriter, r *http.Request, workID str
 	h.runAndRespond(w, ctx, workID, true)
 }
 
-func (h *Hub) handleWorkCancel(w http.ResponseWriter, r *http.Request, workID string) {
+func (h *Hub) handleWorkCancel(w http.ResponseWriter, r *http.Request) {
 	var req workCancelRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	result, err := h.jobCancel(r.Context(), workID, req)
+	result, err := h.jobCancel(r.Context(), r.PathValue("work_id"), req)
 	if err != nil {
 		writeRouteError(w, err)
 		return
@@ -677,7 +617,7 @@ func (h *Hub) releaseIfTerminal(ctx context.Context, work *state.TrackedWork, te
 	if err != nil {
 		return work
 	}
-	return h.mergeReleaseResult(ctx, work, release, strOrEmpty(attemptID))
+	return h.mergeReleaseResult(ctx, work, release, derefString(attemptID))
 }
 
 // mergeReleaseResult stamps the release result onto provenance.release and
@@ -889,7 +829,7 @@ func orDefault(v, def string) string {
 	return v
 }
 
-// mapAtAny, anySlice, cloneAny, and strOrEmpty are duplicated from
+// mapAtAny, anySlice, and cloneAny are duplicated from
 // service/session_control.go (which owns the canonical definitions) because
 // this route file is on the hub side of the hub/service split — not worth an
 // exported seam for four generic map helpers.
@@ -917,11 +857,4 @@ func cloneAny(m map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
-}
-
-func strOrEmpty(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return *p
 }

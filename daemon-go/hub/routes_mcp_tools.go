@@ -199,7 +199,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := requireFields("peer_name", a.PeerName, "query", a.Query); err != nil {
 			return "", err
 		}
-		result, err := h.openAsk(ctx, AskRequest{FromPeer: caller, ToPeer: a.PeerName, Text: a.Query, ReplyTo: stringPtr(a.ReplyTo), Circle: h.mcpSendCircle(caller, a.Circle), Attachments: a.Attachments})
+		result, err := h.openAsk(ctx, AskRequest{FromPeer: caller, ToPeer: a.PeerName, Text: a.Query, ReplyTo: strPtr(a.ReplyTo), Circle: h.mcpSendCircle(caller, a.Circle), Attachments: a.Attachments})
 		return result.CorrelationID, err
 	})
 	addMCPTool(srv, "wait_on_ack", "Wait for a tracked ask to resolve.", func(ctx context.Context, caller string, a mcpWaitArgs) (string, error) {
@@ -231,7 +231,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := required("query", a.Query); err != nil {
 			return "", err
 		}
-		result, err := h.openAskMany(ctx, AskManyRequest{FromPeer: caller, ToPeers: a.PeerNames, Text: a.Query, Circle: stringPtr(a.Circle), TimeoutSeconds: defaultInt(a.TimeoutSeconds, 300)})
+		result, err := h.openAskMany(ctx, AskManyRequest{FromPeer: caller, ToPeers: a.PeerNames, Text: a.Query, Circle: strPtr(a.Circle), TimeoutSeconds: defaultInt(a.TimeoutSeconds, 300)})
 		if err != nil {
 			return "", err
 		}
@@ -275,15 +275,15 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		}
 		result, err := h.jobCreate(ctx, workCreateRequest{
 			Title: a.Title, Kind: firstNonempty(a.Kind, "general"), CreatedByPeerID: &caller,
-			AssignedPeerID: stringPtr(a.AssignedPeerID), OwnerPeerID: stringPtr(a.OwnerPeerID), RepowireSessionID: stringPtr(a.RepowireSessionID), CorrelationID: stringPtr(a.CorrelationID), Circle: stringPtr(a.Circle),
-			SourceKind: stringPtr(a.SourceKind), SourceID: stringPtr(a.SourceID), Scope: stringPtr(a.Scope), Visibility: firstNonempty(a.Visibility, "circle"), DeadlineAt: stringPtr(a.DeadlineAt), ExpiresAt: stringPtr(a.ExpiresAt),
-			Prompt: stringPtr(a.Prompt), Path: stringPtr(a.Path), Backend: stringPtr(a.Backend), Profile: stringPtr(a.Profile), DueAt: stringPtr(a.DueAt), Cron: stringPtr(a.Cron), ResultSurface: stringPtr(a.ResultSurface), ProcessScope: stringPtr(a.ProcessScope), Continuity: stringPtr(a.Continuity),
+			AssignedPeerID: strPtr(a.AssignedPeerID), OwnerPeerID: strPtr(a.OwnerPeerID), RepowireSessionID: strPtr(a.RepowireSessionID), CorrelationID: strPtr(a.CorrelationID), Circle: strPtr(a.Circle),
+			SourceKind: strPtr(a.SourceKind), SourceID: strPtr(a.SourceID), Scope: strPtr(a.Scope), Visibility: firstNonempty(a.Visibility, "circle"), DeadlineAt: strPtr(a.DeadlineAt), ExpiresAt: strPtr(a.ExpiresAt),
+			Prompt: strPtr(a.Prompt), Path: strPtr(a.Path), Backend: strPtr(a.Backend), Profile: strPtr(a.Profile), DueAt: strPtr(a.DueAt), Cron: strPtr(a.Cron), ResultSurface: strPtr(a.ResultSurface), ProcessScope: strPtr(a.ProcessScope), Continuity: strPtr(a.Continuity),
 			Request: firstNonNilMap(a.Request), Provenance: a.Provenance,
 		})
 		return jsonResult(result), err
 	})
 	addMCPTool(srv, "job_list", "List durable jobs as JSON.", func(ctx context.Context, _ string, a mcpJobListArgs) (string, error) {
-		result, err := h.jobList(ctx, workListRequest{State: stringPtr(a.State), OwnerPeerID: stringPtr(a.OwnerPeerID), CreatedByPeerID: stringPtr(a.CreatedByPeerID), RepowireSessionID: stringPtr(a.RepowireSessionID), Circle: stringPtr(a.Circle)})
+		result, err := h.jobList(ctx, workListRequest{State: strPtr(a.State), OwnerPeerID: strPtr(a.OwnerPeerID), CreatedByPeerID: strPtr(a.CreatedByPeerID), RepowireSessionID: strPtr(a.RepowireSessionID), Circle: strPtr(a.Circle)})
 		return jsonResult(result), err
 	})
 	jobStatus := func(ctx context.Context, _ string, a mcpIDArgs) (string, error) {
@@ -299,7 +299,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := requireFields("job_id", a.JobID, "state", a.State); err != nil {
 			return "", err
 		}
-		result, err := h.jobUpdate(ctx, a.JobID, workUpdateRequest{State: a.State, StateReason: stringPtr(a.StateReason), Phase: stringPtr(a.Phase), ProgressNote: stringPtr(a.ProgressNote), ResultSummary: stringPtr(a.ResultSummary), AttemptID: stringPtr(a.AttemptID), Progress: a.Progress, ResultData: a.ResultData, Error: a.Error, Provenance: a.Provenance, Artifacts: a.Artifacts})
+		result, err := h.jobUpdate(ctx, a.JobID, workUpdateRequest{State: a.State, StateReason: strPtr(a.StateReason), Phase: strPtr(a.Phase), ProgressNote: strPtr(a.ProgressNote), ResultSummary: strPtr(a.ResultSummary), AttemptID: strPtr(a.AttemptID), Progress: a.Progress, ResultData: a.ResultData, Error: a.Error, Provenance: a.Provenance, Artifacts: a.Artifacts})
 		return jsonResult(result), err
 	})
 	addMCPTool(srv, "job_result", "Return a tracked job result as JSON.", func(ctx context.Context, _ string, a mcpIDArgs) (string, error) {
@@ -340,11 +340,11 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 			value := proto.AgentType(a.Backend)
 			backend = &value
 		}
-		result, err := h.spawnPeer(ctx, SpawnRequest{Path: a.Path, Backend: backend, Profile: stringPtr(a.Profile), Command: stringPtr(a.Command), Circle: circle, Message: stringPtr(a.Message)})
+		result, err := h.spawnPeer(ctx, SpawnRequest{Path: a.Path, Backend: backend, Profile: strPtr(a.Profile), Command: strPtr(a.Command), Circle: circle, Message: strPtr(a.Message)})
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Spawned %s (tmux: %s) peer_id=%s registration_state=%s", result.DisplayName, result.TmuxSession, deref(result.PeerID), result.RegistrationState), nil
+		return fmt.Sprintf("Spawned %s (tmux: %s) peer_id=%s registration_state=%s", result.DisplayName, result.TmuxSession, derefString(result.PeerID), result.RegistrationState), nil
 	})
 	addMCPTool(srv, "orchestrator_status", "Check whether a live orchestrator is present in a circle.", func(ctx context.Context, caller string, a mcpCircleArgs) (string, error) {
 		circle := a.Circle
@@ -369,7 +369,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := required("peer_identifier", a.PeerIdentifier); err != nil {
 			return "", err
 		}
-		result, err := h.killPeer(ctx, KillPeerRequest{PeerIdentifier: a.PeerIdentifier, Circle: stringPtr(a.Circle), FromPeer: &caller})
+		result, err := h.killPeer(ctx, KillPeerRequest{PeerIdentifier: a.PeerIdentifier, Circle: strPtr(a.Circle), FromPeer: &caller})
 		return jsonResult(result), err
 	})
 	addMCPTool(srv, "mark_reviewed", "Record that the caller reviewed a pull request.", func(ctx context.Context, caller string, a mcpMarkReviewArgs) (string, error) {
@@ -386,7 +386,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		}
 		lines := []string{"pr_url\tlast_reviewed_sha\tcurrent_head_sha\tstate\tmy_action"}
 		for _, item := range items {
-			lines = append(lines, strings.Join([]string{item.PRURL, deref(item.LastReviewedSHA), deref(item.CurrentHeadSHA), item.State, item.MyAction}, "\t"))
+			lines = append(lines, strings.Join([]string{item.PRURL, derefString(item.LastReviewedSHA), derefString(item.CurrentHeadSHA), item.State, item.MyAction}, "\t"))
 		}
 		return strings.Join(lines, "\n"), nil
 	})
@@ -403,7 +403,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if (a.FireAt == "") == (a.Cron == "") {
 			return "", fmt.Errorf("provide exactly one of fire_at or cron")
 		}
-		result, err := h.schedules.create(ctx, scheduleCreateRequest{FromPeer: caller, ToPeer: caller, Text: a.Text, FireAt: stringPtr(a.FireAt), Cron: stringPtr(a.Cron), Kind: firstNonempty(a.Kind, "notify"), Circle: stringPtr(a.Circle)})
+		result, err := h.schedules.create(ctx, scheduleCreateRequest{FromPeer: caller, ToPeer: caller, Text: a.Text, FireAt: strPtr(a.FireAt), Cron: strPtr(a.Cron), Kind: firstNonempty(a.Kind, "notify"), Circle: strPtr(a.Circle)})
 		return result.ScheduleID, err
 	})
 	addMCPTool(srv, "schedule_list", "List pending scheduled messages.", func(ctx context.Context, caller string, a mcpScheduleListArgs) (string, error) {
@@ -423,7 +423,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		for _, item := range result.Schedules {
 			fields := []string{item.ScheduleID, item.FromPeer, item.ToPeer, item.Kind, item.FireAt, strings.NewReplacer("\t", " ", "\n", " ").Replace(item.Text)}
 			if a.IncludeCron {
-				fields = append(fields, deref(item.Cron))
+				fields = append(fields, derefString(item.Cron))
 			}
 			lines = append(lines, strings.Join(fields, "\t"))
 		}
@@ -478,23 +478,9 @@ func scheduleTool(h *Hub, cfg config.MCPHTTPConfig, cron bool) func(context.Cont
 		if !cron && a.FireAt == "" {
 			return "", fmt.Errorf("fire_at is required")
 		}
-		result, err := h.schedules.create(ctx, scheduleCreateRequest{FromPeer: caller, ToPeer: a.ToPeer, Text: a.Text, FireAt: stringPtr(a.FireAt), Cron: stringPtr(a.Cron), Kind: firstNonempty(a.Kind, "notify"), Circle: stringPtr(a.Circle)})
+		result, err := h.schedules.create(ctx, scheduleCreateRequest{FromPeer: caller, ToPeer: a.ToPeer, Text: a.Text, FireAt: strPtr(a.FireAt), Cron: strPtr(a.Cron), Kind: firstNonempty(a.Kind, "notify"), Circle: strPtr(a.Circle)})
 		return result.ScheduleID, err
 	}
-}
-
-func stringPtr(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return &value
-}
-
-func deref(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
 }
 
 func firstNonNilMap(value map[string]any) map[string]any {
@@ -504,11 +490,6 @@ func firstNonNilMap(value map[string]any) map[string]any {
 	return value
 }
 
-func optional(body map[string]any, key, value string) {
-	if value != "" {
-		body[key] = value
-	}
-}
 func required(name, value string) error {
 	if value == "" {
 		return fmt.Errorf("%s is required", name)

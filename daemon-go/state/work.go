@@ -72,7 +72,7 @@ func validateWorkState(state string) (string, error) {
 
 // nowISO matches work_store.now_iso(): RFC3339 with offset, UTC.
 func workNowISO() string {
-	return time.Now().UTC().Format("2006-01-02T15:04:05.000000-07:00")
+	return nowISO()
 }
 
 // newWorkID matches work_store.new_work_id(): "work-" + 12 hex chars.
@@ -183,11 +183,7 @@ func dumpJSONArray(a []any) string {
 // Python's json.dumps(sort_keys=True, separators=(",", ":")). encoding/json
 // already sorts map keys and omits spaces, so this is a thin wrapper.
 func marshalSorted(v any) (string, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
+	return marshalJSON(v)
 }
 
 // loadJSONObject decodes a column into a map, defaulting to empty on null/blank/non-object.
@@ -195,14 +191,7 @@ func loadJSONObject(raw sql.NullString) map[string]any {
 	if !raw.Valid || raw.String == "" {
 		return map[string]any{}
 	}
-	var v any
-	if err := json.Unmarshal([]byte(raw.String), &v); err != nil {
-		return map[string]any{}
-	}
-	if m, ok := v.(map[string]any); ok {
-		return m
-	}
-	return map[string]any{}
+	return decodeJSONObject(raw.String)
 }
 
 // loadJSONArray decodes a column into a slice, defaulting to empty on null/blank/non-array.
@@ -226,13 +215,6 @@ func nsPtr(s sql.NullString) *string {
 	}
 	v := s.String
 	return &v
-}
-
-func strOrNil(p *string) any {
-	if p == nil {
-		return nil
-	}
-	return *p
 }
 
 const workColumns = `work_id, title, kind, state, state_reason, phase, progress_json,
@@ -740,17 +722,8 @@ func requestDueAt(w *TrackedWork) string {
 
 // parseISO parses the ISO timestamps work.py writes (_parse_iso), normalizing to UTC.
 func workParseISO(value string) (time.Time, error) {
-	v := strings.Replace(value, "Z", "+00:00", 1)
-	layouts := []string{
-		"2006-01-02T15:04:05.999999-07:00",
-		"2006-01-02T15:04:05-07:00",
-		time.RFC3339Nano,
-		time.RFC3339,
-	}
-	for _, l := range layouts {
-		if t, err := time.Parse(l, v); err == nil {
-			return t.UTC(), nil
-		}
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t.UTC(), nil
 	}
 	return time.Time{}, fmt.Errorf("unparseable ISO timestamp %q", value)
 }

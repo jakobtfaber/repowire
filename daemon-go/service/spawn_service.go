@@ -7,13 +7,6 @@ package service
 // allowlisting and command resolution gate every spawn before any pane is created
 // (fail loud over silent degrade — a misconfigured spawn 403/422s, never spawns
 // into an unexpected directory).
-//
-// ponytail: spawn profiles, env/PATH capture, and backend-native resume command
-// building are NOT ported here — the authoritative NewSpawnService signature
-// takes only (commands, allowedPaths). ResolveCommand accepts a profile arg but
-// errors 422 profile_unavailable for any non-nil profile until config-package
-// profiles land. Upgrade path: thread a SpawnSettings equivalent through and port
-// apply_spawn_profile + spawn_env + build_resume_command.
 
 import (
 	"crypto/sha256"
@@ -554,9 +547,14 @@ func commandWithEnv(command string, env map[string]string) string {
 	return "env " + strings.Join(assignments, " ") + " " + command
 }
 
-// shellQuote single-quotes a value for a shell command line (shlex.quote analogue
-// for the common case).
+// shellQuote quotes a value for a shell command line only when needed.
 func shellQuote(v string) string {
+	if v != "" && strings.IndexFunc(v, func(r rune) bool {
+		return !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' ||
+			r == '_' || r == '-' || r == '.' || r == '/' || r == ':' || r == '@' || r == '%')
+	}) == -1 {
+		return v
+	}
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
 }
 

@@ -39,8 +39,8 @@ func attachmentsDir() string {
 }
 
 func (h *Hub) registerAttachmentRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/attachments", h.requireAuth(h.uploadAttachment))
-	mux.HandleFunc("/attachments/", h.requireAuth(h.getAttachment))
+	mux.HandleFunc("POST /attachments", h.requireAuth(h.uploadAttachment))
+	mux.HandleFunc("GET /attachments/{attachment_id}", h.requireAuth(h.getAttachment))
 }
 
 // cleanupExpiredAttachments removes files older than the TTL. Best-effort.
@@ -77,10 +77,6 @@ func attachmentDirSize(dir string) int64 {
 }
 
 func (h *Hub) uploadAttachment(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	// Cap the multipart parse so a huge upload can't exhaust memory; the file
 	// itself is streamed to disk below with an exact byte-count guard.
 	if err := r.ParseMultipartForm(8192); err != nil && err != http.ErrNotMultipart {
@@ -191,11 +187,7 @@ func (h *Hub) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) getAttachment(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/attachments/")
+	id := r.PathValue("attachment_id")
 	if id == "" {
 		writeError(w, http.StatusNotFound, "Not found")
 		return

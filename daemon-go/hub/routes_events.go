@@ -38,9 +38,9 @@ type okResponse struct {
 // behind the shared bearer-token gate. Kept separate from Hub.Routes so the route
 // group is wired with one line and the base mux registration is untouched.
 func (h *Hub) EventRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/events", h.requireAuth(h.getEvents))
-	mux.HandleFunc("/events/chat", h.requireAuth(h.ingestChatTurn))
-	mux.HandleFunc("/events/chat_delta", h.requireAuth(h.ingestChatTurnDelta))
+	mux.HandleFunc("GET /events", h.requireAuth(h.getEvents))
+	mux.HandleFunc("POST /events/chat", h.requireAuth(h.ingestChatTurn))
+	mux.HandleFunc("POST /events/chat_delta", h.requireAuth(h.ingestChatTurnDelta))
 }
 
 // getEvents handles GET /events?since=<event_id>.
@@ -49,10 +49,6 @@ func (h *Hub) EventRoutes(mux *http.ServeMux) {
 // after that id, or the full window if the id was evicted (gap-recovery
 // fallback). Returns a JSON array of event maps.
 func (h *Hub) getEvents(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	h.reg.LazyRepairAsync(context.Background())
 
 	since := r.URL.Query().Get("since")
@@ -95,11 +91,6 @@ type chatTurnRequest struct {
 // set so a late chat_delta for the same turn is dropped. The resolved event is
 // recorded via reg.AddEvent("chat_turn", data).
 func (h *Hub) ingestChatTurn(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
 	var req chatTurnRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusUnprocessableEntity, "malformed chat turn: "+err.Error())
@@ -171,7 +162,7 @@ func (h *Hub) ingestChatTurn(w http.ResponseWriter, r *http.Request) {
 		h.jobCompletion.OnChatTurn(r.Context(), resolved.PeerID, req.Role, req.Text)
 	}
 
-	h.reg.AddEvent("chat_turn", data)
+	h.reg.AddEvent(r.Context(), "chat_turn", data)
 	writeJSON(w, http.StatusOK, okResponse{OK: true})
 }
 
@@ -199,11 +190,6 @@ type chatTurnDeltaRequest struct {
 // resolves the peer via pane_id (canonicalising "peer") and records via
 // reg.AddEvent("chat_turn_delta", data).
 func (h *Hub) ingestChatTurnDelta(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
 	var req chatTurnDeltaRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusUnprocessableEntity, "malformed chat delta: "+err.Error())
@@ -264,7 +250,7 @@ func (h *Hub) ingestChatTurnDelta(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.reg.AddEvent("chat_turn_delta", data)
+	h.reg.AddEvent(r.Context(), "chat_turn_delta", data)
 	writeJSON(w, http.StatusOK, okResponse{OK: true})
 }
 

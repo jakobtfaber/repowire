@@ -192,7 +192,7 @@ func TestLocalResumeResolverRequiresCodexSessionFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	resolver := NewLocalResumeResolver()
+	resolver := LocalResumeResolver{}
 	plan, ok := resolver.Resolve(proto.AgentCodex, projectPath, "runtime-123", nil, map[string]any{"supported": true})
 	if !ok {
 		t.Fatal("expected codex session file to validate as resumable")

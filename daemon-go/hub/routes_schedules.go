@@ -17,7 +17,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/service"
@@ -51,8 +50,9 @@ func NewScheduleRoutes(store scheduleStore, scheduler scheduleWaker) *ScheduleRo
 // middleware. POST/GET share the "/schedules" pattern (dispatched by method);
 // DELETE uses the trailing-id pattern.
 func (sr *ScheduleRoutes) Register(mux *http.ServeMux, auth func(http.HandlerFunc) http.HandlerFunc) {
-	mux.HandleFunc("/schedules", auth(sr.handleSchedules))
-	mux.HandleFunc("/schedules/", auth(sr.handleScheduleByID))
+	mux.HandleFunc("POST /schedules", auth(sr.handleCreate))
+	mux.HandleFunc("GET /schedules", auth(sr.handleList))
+	mux.HandleFunc("DELETE /schedules/{schedule_id}", auth(sr.handleScheduleByID))
 }
 
 // ----------------------------------------------------------------------------
@@ -102,18 +102,6 @@ type scheduleListResponse struct {
 // ----------------------------------------------------------------------------
 // Handlers
 // ----------------------------------------------------------------------------
-
-// handleSchedules dispatches POST (create) and GET (list) on /schedules.
-func (sr *ScheduleRoutes) handleSchedules(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost:
-		sr.handleCreate(w, r)
-	case http.MethodGet:
-		sr.handleList(w, r)
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
-}
 
 func (sr *ScheduleRoutes) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var req scheduleCreateRequest
@@ -211,14 +199,7 @@ func (sr *ScheduleRoutes) list(ctx context.Context, fromPeer *string) (scheduleL
 
 // handleScheduleByID handles DELETE /schedules/{id}.
 func (sr *ScheduleRoutes) handleScheduleByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	// The "/schedules/" prefix pattern doesn't populate PathValue; strip the
-	// prefix manually (the codebase's convention — see /asks/ in
-	// routes_ask_lifecycle.go).
-	id := strings.TrimPrefix(r.URL.Path, "/schedules/")
+	id := r.PathValue("schedule_id")
 	if id == "" {
 		writeError(w, http.StatusNotFound, "No schedule: ")
 		return

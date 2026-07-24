@@ -16,8 +16,6 @@ import (
 // stale ids fall back to fresh spawn.
 type LocalResumeResolver struct{}
 
-func NewLocalResumeResolver() LocalResumeResolver { return LocalResumeResolver{} }
-
 func (LocalResumeResolver) Resolve(backend proto.AgentType, path, runtimeSessionID string, repowireSessionID *string, capability map[string]any) (map[string]any, bool) {
 	if runtimeSessionID == "" {
 		return nil, false

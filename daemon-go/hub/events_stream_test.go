@@ -49,7 +49,7 @@ func TestEventsStreamFlushesThenStreamsLive(t *testing.T) {
 	h, srv := newStreamRig(t)
 
 	// Buffer one event before connecting — it must appear in the initial flush.
-	h.reg.AddEvent("chat_turn", map[string]any{"peer": "a", "text": "first"})
+	h.reg.AddEvent(context.Background(), "chat_turn", map[string]any{"peer": "a", "text": "first"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -86,7 +86,7 @@ func TestEventsStreamFlushesThenStreamsLive(t *testing.T) {
 	// Push a live event; the handler must wake and stream it. Small delay so the
 	// handler has entered its select loop (the initial-flush drain is done).
 	time.Sleep(50 * time.Millisecond)
-	h.reg.AddEvent("chat_turn", map[string]any{"peer": "b", "text": "second"})
+	h.reg.AddEvent(context.Background(), "chat_turn", map[string]any{"peer": "b", "text": "second"})
 
 	if got := readDataFrame(t, sc); !strings.Contains(got, `"second"`) {
 		t.Fatalf("live frame = %q, want it to contain %q", got, "second")

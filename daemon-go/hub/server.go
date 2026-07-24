@@ -82,7 +82,7 @@ type Hub struct {
 
 	// work holds the tracked-work / durable-job route dependencies (work store,
 	// JobRunner, SessionControl, assigned-peer resolver), wired via WithWork /
-	// WithWorkRegistry. The /work·/jobs handlers 503 while unwired.
+	// assigned-peer resolver. The /work·/jobs handlers 503 while unwired.
 	work *workRoutes
 
 	// spawn holds the spawn-kill-restart route dependencies (SpawnService + the

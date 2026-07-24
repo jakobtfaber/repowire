@@ -3,10 +3,8 @@ package state
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -51,29 +49,25 @@ type SessionBinding struct {
 // sbNowISO renders the same wall-clock form the Python store writes for new rows
 // (datetime.now(timezone.utc).isoformat(), microsecond precision, +00:00 zone).
 func sbNowISO() string {
-	return time.Now().UTC().Format("2006-01-02T15:04:05.000000-07:00")
+	return nowISO()
 }
 
 func sbJSONDumps(v map[string]any) string {
 	if v == nil {
 		v = map[string]any{}
 	}
-	b, err := json.Marshal(v)
+	b, err := marshalJSON(v)
 	if err != nil {
 		return "{}"
 	}
-	return string(b)
+	return b
 }
 
 func sbJSONLoads(raw sql.NullString) map[string]any {
 	if !raw.Valid || raw.String == "" {
 		return map[string]any{}
 	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw.String), &m); err != nil || m == nil {
-		return map[string]any{}
-	}
-	return m
+	return decodeJSONObject(raw.String)
 }
 
 // sbMergeDicts mirrors Python _merge_dicts: copy existing, overlay non-nil updates.
@@ -231,12 +225,12 @@ func (s *Store) UpsertObservation(ctx context.Context, obs Observation) (*Sessio
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if _, err := s.db.ExecContext(ctx, q,
 		binding.RepowireSessionID,
-		sbNullable(binding.PeerID),
-		sbNullable(binding.CurrentExecutorPeerID),
+		strOrNil(binding.PeerID),
+		strOrNil(binding.CurrentExecutorPeerID),
 		binding.Backend,
 		binding.ProjectPath,
-		sbNullable(binding.RuntimeSessionID),
-		sbNullable(binding.RuntimeSourceURI),
+		strOrNil(binding.RuntimeSessionID),
+		strOrNil(binding.RuntimeSourceURI),
 		sbJSONDumps(binding.SourceCursor),
 		sbJSONDumps(binding.Provenance),
 		sbJSONDumps(binding.ResumeCapability),
@@ -403,11 +397,4 @@ func sbCoalesceStr(next, fallback string) string {
 		return next
 	}
 	return fallback
-}
-
-func sbNullable(p *string) any {
-	if p == nil {
-		return nil
-	}
-	return *p
 }

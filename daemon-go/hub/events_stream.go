@@ -32,7 +32,7 @@ const sseWriteTimeout = 30 * time.Second
 // connection open) is wired with one line and the base events group is
 // untouched. Registered after EventRoutes in Hub.Routes.
 func (h *Hub) EventsStreamRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/events/stream", h.requireAuth(h.handleEventsStream))
+	mux.HandleFunc("GET /events/stream", h.requireAuth(h.handleEventsStream))
 }
 
 // handleEventsStream streams dashboard events over SSE.
@@ -43,10 +43,6 @@ func (h *Hub) EventsStreamRoutes(mux *http.ServeMux) {
 // ticker (write a `: keepalive` comment frame). Requires an http.Flusher; 500 if
 // the ResponseWriter cannot flush (fail loud rather than silently buffer forever).
 func (h *Hub) handleEventsStream(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")

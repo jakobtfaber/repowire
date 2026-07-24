@@ -51,15 +51,6 @@ func (r *Registry) UnregisterPeer(ctx context.Context, identifier string, circle
 	return true, nil
 }
 
-// MarkOfflineByName resolves an addressing string to its canonical PeerID, then
-// drives the PeerID-keyed MarkOffline (which owns the FSM transition + terminal
-// retirement). Returns (found, cancelledQueries, err). A resolution ambiguity is
-// a fail-loud error (→ 409); (false,0,nil) is "no such peer" (→ the route may
-// still treat a terminal offline of an unknown id as a no-op, mirroring Python).
-func (r *Registry) MarkOfflineByName(ctx context.Context, identifier string, terminal bool) (found bool, cancelled int, err error) {
-	return r.MarkOfflineByNameWithReason(ctx, identifier, terminal, "terminal_offline")
-}
-
 // MarkOfflineByNameWithReason preserves the explicit terminal cause for
 // durable-job failure and other terminal-offline observers.
 func (r *Registry) MarkOfflineByNameWithReason(ctx context.Context, identifier string, terminal bool, reason string) (found bool, cancelled int, err error) {

@@ -63,19 +63,9 @@ func (h *Hub) relayHTTPAndKey() (string, string, bool) {
 }
 
 func (h *Hub) registerShareRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/shares", h.requireAuth(h.handleShares))
-	mux.HandleFunc("/shares/", h.requireAuth(h.handleRevokeShare))
-}
-
-func (h *Hub) handleShares(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost:
-		h.createShare(w, r)
-	case http.MethodGet:
-		h.listShares(w, r)
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
+	mux.HandleFunc("POST /shares", h.requireAuth(h.createShare))
+	mux.HandleFunc("GET /shares", h.requireAuth(h.listShares))
+	mux.HandleFunc("DELETE /shares/{share_id}", h.requireAuth(h.handleRevokeShare))
 }
 
 // relayClient is the shared HTTP client for relay proxy calls (10s timeout, same
@@ -171,11 +161,7 @@ func (h *Hub) listShares(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) handleRevokeShare(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	shareID := strings.TrimPrefix(r.URL.Path, "/shares/")
+	shareID := r.PathValue("share_id")
 	if shareID == "" {
 		writeError(w, http.StatusNotFound, "share id required")
 		return

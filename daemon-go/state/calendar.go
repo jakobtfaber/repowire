@@ -3,8 +3,8 @@ package state
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -47,7 +47,7 @@ func newCalendarID() string {
 // calendarNowISO mirrors work_store.now_iso(): datetime.now(timezone.utc).isoformat(),
 // e.g. "2026-06-29T12:34:56.789012+00:00".
 func calendarNowISO() string {
-	return time.Now().UTC().Format("2006-01-02T15:04:05.000000-07:00")
+	return nowISO()
 }
 
 // calendarColumns is the canonical column order for SELECT * round-trips.
@@ -64,42 +64,22 @@ func canonicalJSON(v map[string]any) (string, error) {
 	if v == nil {
 		return "{}", nil
 	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
+	return marshalJSON(v)
 }
 
 // jsonObject mirrors json_loads(raw, {}): empty/blank -> {}, non-object -> {}.
 func jsonObject(raw string) map[string]any {
-	if raw == "" {
-		return map[string]any{}
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil || m == nil {
-		return map[string]any{}
-	}
-	return m
+	return decodeJSONObject(raw)
 }
 
 // calendarParseISO mirrors calendar.py _parse_iso: parse an ISO-8601 timestamp, assume
 // UTC when no offset is present, return UTC.
 func calendarParseISO(value string) (time.Time, error) {
-	v := strings.Replace(value, "Z", "+00:00", 1)
-	layouts := []string{
-		"2006-01-02T15:04:05.999999999-07:00",
-		"2006-01-02T15:04:05-07:00",
-		"2006-01-02T15:04:05.999999999",
-		"2006-01-02T15:04:05",
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed.UTC(), nil
 	}
-	for i, layout := range layouts {
-		t, err := time.Parse(layout, v)
-		if err == nil {
-			// Layouts without an offset (index >= 2) parse as UTC already.
-			_ = i
-			return t.UTC(), nil
-		}
+	if parsed, err := time.ParseInLocation("2006-01-02T15:04:05.999999999", value, time.UTC); err == nil {
+		return parsed, nil
 	}
 	return time.Time{}, fmt.Errorf("unparseable ISO timestamp %q", value)
 }
@@ -185,8 +165,8 @@ func (s *Store) CreateCalendarEntry(ctx context.Context, e *CalendarEntry) (*Cal
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = s.db.ExecContext(ctx, q,
 		out.CalendarID, out.Title, out.Kind, out.State, out.Cron, out.NextDueAt,
-		ptrToAny(out.OwnerPeerID), ptrToAny(out.AssignedPeerID), ptrToAny(out.Circle), ptrToAny(out.CreatedByPeerID),
-		ptrToAny(out.SourceKind), ptrToAny(out.SourceID), ptrToAny(out.Scope), out.Visibility, requestJSON,
+		strOrNil(out.OwnerPeerID), strOrNil(out.AssignedPeerID), strOrNil(out.Circle), strOrNil(out.CreatedByPeerID),
+		strOrNil(out.SourceKind), strOrNil(out.SourceID), strOrNil(out.Scope), out.Visibility, requestJSON,
 		provJSON, nil, nil,
 		out.CreatedAt, out.UpdatedAt,
 	)
@@ -194,13 +174,6 @@ func (s *Store) CreateCalendarEntry(ctx context.Context, e *CalendarEntry) (*Cal
 		return nil, fmt.Errorf("insert calendar entry %s: %w", out.CalendarID, err)
 	}
 	return &out, nil
-}
-
-func ptrToAny(p *string) any {
-	if p == nil {
-		return nil
-	}
-	return *p
 }
 
 // GetCalendarEntry returns the entry by id, or (nil, nil) if absent.
@@ -363,9 +336,5 @@ func (s *Store) SecondsUntilNextDue(ctx context.Context, now time.Time) (*float6
 }
 
 func calendarCloneMap(m map[string]any) map[string]any {
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
+	return maps.Clone(m)
 }

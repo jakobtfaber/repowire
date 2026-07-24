@@ -58,41 +58,9 @@ func BuildResumeCommand(command string, backend proto.AgentType, runtimeSessionI
 	if runtimeSessionID == "" {
 		return "", fmt.Errorf("runtime_session_id is required for backend resume")
 	}
-	arg := resumeShellQuote(runtimeSessionID)
+	arg := shellQuote(runtimeSessionID)
 	if spec.subcommand != "" {
 		return strings.TrimSpace(command) + " " + spec.subcommand + " " + arg, nil
 	}
 	return strings.TrimSpace(command) + " " + spec.flag + " " + arg, nil
-}
-
-// ResumeCommand builds the launch command from the resume_plan_info map recorded
-// by the shared resolver. It intentionally accepts the untyped map because
-// SessionControl persists that map verbatim in operation attempts.
-func ResumeCommand(command string, backend proto.AgentType, plan map[string]any) (string, error) {
-	if plan == nil {
-		return command, nil
-	}
-	if pb, _ := plan["backend"].(string); pb != "" && pb != string(backend) {
-		return "", fmt.Errorf("resume backend mismatch: requested %s, plan %s", backend, pb)
-	}
-	runtimeSessionID, _ := plan["runtime_session_id"].(string)
-	return BuildResumeCommand(command, backend, runtimeSessionID)
-}
-
-func resumeShellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	safe := true
-	for _, r := range s {
-		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' ||
-			r == '_' || r == '-' || r == '.' || r == '/' || r == ':' || r == '@' || r == '%') {
-			safe = false
-			break
-		}
-	}
-	if safe {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }

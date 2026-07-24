@@ -251,12 +251,34 @@ func TestWorkRoutesCreateListStatus(t *testing.T) {
 		t.Fatalf("status work_id = %v, want %s", got["work_id"], workID)
 	}
 
+	// The legacy subtree dispatcher accepted a trailing slash on item routes.
+	trailing, _ := http.Get(srv.URL + "/work/" + workID + "/")
+	if trailing.StatusCode != http.StatusOK {
+		t.Fatalf("trailing-slash status = %d, want 200", trailing.StatusCode)
+	}
+	trailing.Body.Close()
+
 	// Unknown id → 404.
 	missing, _ := http.Get(srv.URL + "/work/work-nope/status")
 	if missing.StatusCode != http.StatusNotFound {
 		t.Fatalf("missing status = %d, want 404", missing.StatusCode)
 	}
 	missing.Body.Close()
+}
+
+func TestWorkRunAndRetryReturn503WithoutStore(t *testing.T) {
+	h := &Hub{work: &workRoutes{}}
+	mux := http.NewServeMux()
+	h.registerWorkRoutes(mux)
+
+	for _, path := range []string{"/work/work-1/run", "/jobs/work-1/retry"} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		res := httptest.NewRecorder()
+		mux.ServeHTTP(res, req)
+		if res.Code != http.StatusServiceUnavailable {
+			t.Errorf("POST %s status = %d, want 503", path, res.Code)
+		}
+	}
 }
 
 // TestJobRunnerDispatchSpawnsAndDelivers exercises the full dispatch path: a

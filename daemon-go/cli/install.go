@@ -117,15 +117,15 @@ func enableDaemonMCP(relay bool) error {
 			return fmt.Errorf("parse %s: %w", path, err)
 		}
 	}
-	daemon := childMap(data, "daemon")
-	mcp := childMap(daemon, "mcp_http")
+	daemon := mapChild(data, "daemon")
+	mcp := mapChild(daemon, "mcp_http")
 	mcp["enabled"] = true
 	mcp["bind"] = "localhost-only"
 	mcp["require_auth"] = true
 	if value, _ := daemon["auth_token"].(string); value == "" {
 		daemon["auth_token"] = randomToken()
 	}
-	commands := childMap(childMap(daemon, "spawn"), "commands")
+	commands := mapChild(mapChild(daemon, "spawn"), "commands")
 	for backend, spec := range map[string]struct{ binary, command string }{
 		"claude-code": {"claude", "claude --dangerously-skip-permissions"},
 		"codex":       {"codex", "codex --dangerously-bypass-approvals-and-sandbox"},
@@ -142,7 +142,7 @@ func enableDaemonMCP(relay bool) error {
 		}
 	}
 	if relay {
-		relayConfig := childMap(data, "relay")
+		relayConfig := mapChild(data, "relay")
 		relayConfig["enabled"] = true
 		if value, _ := relayConfig["api_key"].(string); value == "" {
 			relayConfig["api_key"] = "rw_" + randomToken()
@@ -166,7 +166,7 @@ func setUpdateChecks(enabled bool) error {
 			return fmt.Errorf("parse %s: %w", path, err)
 		}
 	}
-	childMap(data, "updates")["check_enabled"] = enabled
+	mapChild(data, "updates")["check_enabled"] = enabled
 	raw, err := yaml.Marshal(data)
 	if err != nil {
 		return err
@@ -174,14 +174,6 @@ func setUpdateChecks(enabled bool) error {
 	return os.WriteFile(path, raw, 0o600)
 }
 
-func childMap(parent map[string]any, key string) map[string]any {
-	if child, ok := parent[key].(map[string]any); ok {
-		return child
-	}
-	child := map[string]any{}
-	parent[key] = child
-	return child
-}
 func randomToken() string {
 	buf := make([]byte, 32)
 	_, _ = rand.Read(buf)
@@ -352,10 +344,7 @@ func disableChannel() error {
 func versionAtLeast(value string, want ...int) bool {
 	parts := strings.Split(value, ".")
 	for index, expected := range want {
-		actual := 0
-		if index < len(parts) {
-			actual, _ = strconv.Atoi(parts[index])
-		}
+		actual := versionPart(parts, index)
 		if actual != expected {
 			return actual > expected
 		}

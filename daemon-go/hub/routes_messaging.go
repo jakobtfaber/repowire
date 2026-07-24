@@ -73,8 +73,8 @@ func NewMessagingRoutes(delivery *service.PeerDelivery, reg lazyRepairer, traces
 // Register attaches the messaging endpoints to the mux, each wrapped by the
 // hub's auth middleware (the shared require_auth analogue).
 func (mr *MessagingRoutes) Register(mux *http.ServeMux, auth func(http.HandlerFunc) http.HandlerFunc) {
-	mux.HandleFunc("/notify", auth(mr.handleNotify))
-	mux.HandleFunc("/broadcast", auth(mr.handleBroadcast))
+	mux.HandleFunc("POST /notify", auth(mr.handleNotify))
+	mux.HandleFunc("POST /broadcast", auth(mr.handleBroadcast))
 }
 
 // ----------------------------------------------------------------------------
@@ -126,10 +126,6 @@ type broadcastResponse struct {
 // ----------------------------------------------------------------------------
 
 func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"detail": "method not allowed"})
-		return
-	}
 	var req notifyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"detail": "invalid JSON body: " + err.Error()})
@@ -244,10 +240,6 @@ func accessErrorBody(errStatus, deliveryState, reason, detail string, req notify
 // ----------------------------------------------------------------------------
 
 func (mr *MessagingRoutes) handleBroadcast(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"detail": "method not allowed"})
-		return
-	}
 	var req broadcastRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"detail": "invalid JSON body: " + err.Error()})

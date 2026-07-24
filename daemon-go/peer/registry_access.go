@@ -113,14 +113,14 @@ func (r *Registry) ResolvePeerStrict(identifier string, circle *string) ([]*prot
 }
 
 // UpdateModelByName updates a peer's observed runtime model in live + durable
-// state, addressed by peer_id or display_name (optional circle scope). Mirrors
+// state, addressed by peer_id or display_name. Mirrors
 // peer_registry.update_peer_model: unknown peer → (false,nil) no-op; ambiguous
 // name → (false,err). A no-op model match still returns found=true (the peer
 // exists), matching Python's early return.
-func (r *Registry) UpdateModelByName(ctx context.Context, identifier, model string, circle *string) (bool, error) {
+func (r *Registry) UpdateModelByName(ctx context.Context, identifier, model string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	p, err := r.resolvePeerLocked(identifier, circle)
+	p, err := r.resolvePeerLocked(identifier, nil)
 	if err != nil {
 		return false, err
 	}
@@ -143,14 +143,14 @@ func (r *Registry) UpdateModelByName(ctx context.Context, identifier, model stri
 }
 
 // UpdateMetadataByName merges metadata into a peer's live state, addressed by
-// peer_id or display_name (optional circle scope). Mirrors
+// peer_id or display_name. Mirrors
 // peer_registry.update_peer_metadata: unknown peer → (false,nil); ambiguous name
 // → (false,err). Metadata is a live-only field (not persisted in the mapping),
 // so no durable write — matching Python.
-func (r *Registry) UpdateMetadataByName(ctx context.Context, identifier string, metadata map[string]any, circle *string) (bool, error) {
+func (r *Registry) UpdateMetadataByName(ctx context.Context, identifier string, metadata map[string]any) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	p, err := r.resolvePeerLocked(identifier, circle)
+	p, err := r.resolvePeerLocked(identifier, nil)
 	if err != nil {
 		return false, err
 	}

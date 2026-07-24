@@ -152,42 +152,6 @@ func (realProcessProbe) PaneRootPID(paneID string) (int, bool) {
 }
 
 // ----------------------------------------------------------------------------
-// Registry seam adapters.
-//
-// Both the hub route groups and the service constructors depend on NARROW
-// registry interfaces (service's accessRegistry / controlRegistry, hub's
-// askRoutesRegistry / sessionRegistry, …) that were authored ahead of the
-// registry port. *peer.Registry satisfies most of those method sets directly,
-// but three method shapes diverge and need a thin shim:
-//
-//   - AddEvent: registry is AddEvent(typ, data) (no ctx); the seams want
-//     AddEvent(ctx, typ, data). We drop the ctx (the registry event log doesn't
-//     use it — it's a synchronous in-memory push).
-//   - UpdateModelByName / UpdateMetadataByName: registry carries an extra
-//     trailing `circle *string`; the sessionRegistry seam omits it. We thread
-//     nil (no circle scope), matching the Python by-name updaters' default.
-//
-// ponytail: this shim exists only because the seams predate the registry port.
-// When these seams are collapsed onto *peer.Registry's actual signatures (or
-// the registry methods are reshaped to match), delete regShim and pass `reg`
-// directly. Everything else below already takes the concrete *peer.Registry.
-// ----------------------------------------------------------------------------
-
-type regShim struct{ *peer.Registry }
-
-func (s regShim) AddEvent(_ context.Context, typ string, payload map[string]any) string {
-	return s.Registry.AddEvent(typ, payload)
-}
-
-func (s regShim) UpdateModelByName(ctx context.Context, identifier, model string) (bool, error) {
-	return s.Registry.UpdateModelByName(ctx, identifier, model, nil)
-}
-
-func (s regShim) UpdateMetadataByName(ctx context.Context, identifier string, metadata map[string]any) (bool, error) {
-	return s.Registry.UpdateMetadataByName(ctx, identifier, metadata, nil)
-}
-
-// ----------------------------------------------------------------------------
 // Reconciliation seam adapters.
 //
 // reg.WithReconciliation takes peer.AskTracker + peer.PeerDelivery interface
@@ -409,7 +373,6 @@ func runDaemon() {
 	// without the registry learning the tracker's shape. It also builds the
 	// QueryTracker + MessageRouter the delivery/session groups need.
 	h := hub.NewHubWithTransport(reg, transport, *authToken)
-	shim := regShim{reg}
 	selfMachine, _ := os.Hostname()
 
 	// (6) Application services. AskTracker is the in-memory open-ask store;
@@ -417,12 +380,12 @@ func runDaemon() {
 	// lifecycle + the durable queued-delivery fallback (store satisfies the
 	// queue seam). The router (WS-only) is the one the hub minted in step 5.
 	asks := service.NewAskTracker(time.Duration(cfg.Daemon.PruneMaxAgeHours * float64(time.Hour)))
-	delivery := service.NewPeerDelivery(shim, h.Router(), transport, asks, store).WithQueueConfig(cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer).WithOperationStore(store).WithOrchestratorRecall(cfg.Daemon.OrchestratorRecall)
+	delivery := service.NewPeerDelivery(reg, h.Router(), transport, asks, store).WithQueueConfig(cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer).WithOperationStore(store).WithOrchestratorRecall(cfg.Daemon.OrchestratorRecall)
 	if recovered := service.ReconcileACPInflight(ctx, store, cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer); recovered > 0 {
 		log.Printf("acp reconcile: closed %d ask(s) lost across restart", recovered)
 	}
 	transport.SetACPPermissionHandler(service.NewACPPermissionHandler(asks, func(kind string, data map[string]any) {
-		reg.AddEvent(kind, data)
+		reg.AddEvent(ctx, kind, data)
 	}))
 
 	// (7) Reconciliation seams. Inject AskTracker + PeerDelivery (via the shape
@@ -487,9 +450,9 @@ func runDaemon() {
 	// isn't registered here, so dispatch asks carry an empty `from`
 	// (accessRegistry treats an unresolved sender as allowed, mirroring Python
 	// notify behavior).
-	sessionControl := service.NewSessionControl(shim, spawnService, store).WithResume(service.NewLocalResumeResolver())
+	sessionControl := service.NewSessionControl(reg, spawnService, store).WithResume(service.LocalResumeResolver{})
 	jobRunner := service.NewJobRunner(store, delivery, sessionControl)
-	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, shim, delivery)
+	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, reg, delivery)
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
 	scheduler := service.NewScheduler(store, delivery)
 
@@ -516,12 +479,11 @@ func runDaemon() {
 	// *state.Store delivery-trace store.
 	h.WithReadDeps(asks, store).
 		WithMessaging(delivery, store).
-		WithAskLifecycle(asks, delivery, shim).
-		WithSessionRoutes(shim, store).
+		WithAskLifecycle(asks, delivery, reg).
+		WithSessionRoutes(reg, store).
 		WithSpawn(spawnService, reg, asks, selfMachine).
-		WithWork(jobRunner, store).
+		WithWork(jobRunner, store, reg).
 		WithJobCompletion(jobCompletion).
-		WithWorkRegistry(reg).
 		WithSchedules(store, scheduler).
 		WithShares(relayCfg).
 		// HTTP MCP (/mcp) — config-gated (cfg.Daemon.MCPHTTP.Enabled); reuses the

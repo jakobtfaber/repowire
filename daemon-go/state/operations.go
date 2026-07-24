@@ -5,22 +5,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 )
 
-// opISOLayout matches Python's datetime.now(timezone.utc).isoformat() (now_iso),
-// which is what operations.py stamps into created_at/updated_at/completed_at.
-// Both daemons sort these columns lexically, so the Go writer must emit the same
-// shape (microsecond precision, +00:00 offset) the Python store does.
-const opISOLayout = "2006-01-02T15:04:05.000000-07:00"
-
 // opNowISO renders the canonical Python isoformat (UTC) used by the operations store.
 func opNowISO() string {
-	return time.Now().UTC().Format(opISOLayout)
+	return nowISO()
 }
 
 // newOperationID mirrors operations.new_operation_id: "op-" + 12 hex chars.
@@ -39,28 +32,12 @@ func opHex12() string {
 
 // opJSONDumps mirrors work_store.json_dumps: compact, sorted keys.
 func opJSONDumps(v any) (string, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "", err
-	}
-	// json.Marshal already sorts map keys and uses no spaces, matching
-	// Python's sort_keys=True, separators=(",", ":").
-	return string(b), nil
+	return marshalJSON(v)
 }
 
 // opJSONLoadsObject mirrors json_loads(raw, {}) — returns a map, {} on empty/non-object.
 func opJSONLoadsObject(raw string) map[string]any {
-	if raw == "" {
-		return map[string]any{}
-	}
-	var v any
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		return map[string]any{}
-	}
-	if m, ok := v.(map[string]any); ok {
-		return m
-	}
-	return map[string]any{}
+	return decodeJSONObject(raw)
 }
 
 // opJSONLoadsArray mirrors json_loads(raw, []) — returns a slice, [] on empty/non-array.
@@ -393,8 +370,8 @@ func (s *Store) updateOperation(
 		    error_json = ?, updated_at = ?, completed_at = ?
 		WHERE operation_id = ?`
 	_, err = s.db.ExecContext(ctx, q,
-		state, opNullable(strategy), attemptsJSON, resultJSON,
-		errorJSON, now, opNullable(completedAt),
+		state, strOrNil(strategy), attemptsJSON, resultJSON,
+		errorJSON, now, strOrNil(completedAt),
 		op.OperationID,
 	)
 	if err != nil {
@@ -412,24 +389,7 @@ func opStrategyValue(s *string) any {
 	return *s
 }
 
-// opNullable yields a nil interface for a nil pointer so the driver binds SQL NULL.
-func opNullable(s *string) any {
-	if s == nil {
-		return nil
-	}
-	return *s
-}
-
 // opCloneMap shallow-copies a map so attempt mutation doesn't alias the decoded slice.
 func opCloneMap(m map[string]any) map[string]any {
-	out := make(map[string]any, len(m))
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		out[k] = m[k]
-	}
-	return out
+	return maps.Clone(m)
 }

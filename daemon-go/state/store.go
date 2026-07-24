@@ -29,6 +29,10 @@ const schemaVersion = 12
 // tsLayout is the exact format the Python daemon writes (strftime %Y-%m-%dT%H:%M:%fZ).
 const tsLayout = "2006-01-02T15:04:05.000Z"
 
+// isoLayout preserves the microsecond-precision datetime.isoformat shape used
+// by the Python-created work, calendar, operation, binding, and queue rows.
+const isoLayout = "2006-01-02T15:04:05.000000-07:00"
+
 // tsLayouts are accepted on read; Python writes %f-millisecond Z, but be liberal.
 var tsLayouts = []string{
 	tsLayout,
@@ -114,6 +118,32 @@ func parseTS(raw string) (time.Time, error) {
 func formatTS(t time.Time) string {
 	return t.UTC().Format(tsLayout)
 }
+
+func formatISO(t time.Time) string { return t.UTC().Format(isoLayout) }
+
+func nowISO() string { return formatISO(time.Now()) }
+
+func marshalJSON(v any) (string, error) {
+	b, err := json.Marshal(v)
+	return string(b), err
+}
+
+func decodeJSONObject(raw string) map[string]any {
+	var out map[string]any
+	if raw == "" || json.Unmarshal([]byte(raw), &out) != nil || out == nil {
+		return map[string]any{}
+	}
+	return out
+}
+
+func nullable[T any](value *T) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func strOrNil(value *string) any { return nullable(value) }
 
 // LoadMappings hydrates every peer_session_mappings row.
 func (s *Store) LoadMappings(ctx context.Context) ([]*proto.SessionMapping, error) {

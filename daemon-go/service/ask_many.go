@@ -23,7 +23,6 @@ type AskManyChild struct {
 
 type AskManyParent struct {
 	ParentID       string
-	FromPeerID     *string
 	FromPeerName   string
 	Text           string
 	Children       []AskManyChild
@@ -41,13 +40,12 @@ func NewAskManyTracker(asks *AskTracker) *AskManyTracker {
 	return &AskManyTracker{asks: asks, parents: map[string]*AskManyParent{}}
 }
 
-func (t *AskManyTracker) Create(fromPeerID *string, fromPeerName, text string, timeoutSeconds int) *AskManyParent {
+func (t *AskManyTracker) Create(fromPeerName, text string, timeoutSeconds int) *AskManyParent {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = DefaultAskManyTimeoutSeconds
 	}
 	parent := &AskManyParent{
 		ParentID:       "askm-" + hex8(),
-		FromPeerID:     fromPeerID,
 		FromPeerName:   fromPeerName,
 		Text:           text,
 		CreatedAt:      time.Now().UTC(),

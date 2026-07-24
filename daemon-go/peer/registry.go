@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -1022,13 +1023,7 @@ func clonePeer(p *proto.Peer) *proto.Peer {
 		return nil
 	}
 	cp := *p
-	if p.Metadata != nil {
-		m := make(map[string]any, len(p.Metadata))
-		for k, v := range p.Metadata {
-			m[k] = v
-		}
-		cp.Metadata = m
-	}
+	cp.Metadata = maps.Clone(p.Metadata)
 	return &cp
 }
 

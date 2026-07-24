@@ -278,11 +278,11 @@ type clientDetachedRequest struct {
 // LifecycleRoutes registers the tmux-lifecycle hook endpoints on the mux. All are
 // localhost-only.
 func (h *Hub) LifecycleRoutes(mux *http.ServeMux, lh *LifecycleHandler) {
-	mux.HandleFunc("/hooks/lifecycle/pane-died", localhostOnly(lh.servePaneDied))
-	mux.HandleFunc("/hooks/lifecycle/session-closed", localhostOnly(lh.serveSessionClosed))
-	mux.HandleFunc("/hooks/lifecycle/session-renamed", localhostOnly(lh.serveSessionRenamed))
-	mux.HandleFunc("/hooks/lifecycle/window-renamed", localhostOnly(lh.serveWindowRenamed))
-	mux.HandleFunc("/hooks/lifecycle/client-detached", localhostOnly(lh.serveClientDetached))
+	mux.HandleFunc("POST /hooks/lifecycle/pane-died", localhostOnly(lh.servePaneDied))
+	mux.HandleFunc("POST /hooks/lifecycle/session-closed", localhostOnly(lh.serveSessionClosed))
+	mux.HandleFunc("POST /hooks/lifecycle/session-renamed", localhostOnly(lh.serveSessionRenamed))
+	mux.HandleFunc("POST /hooks/lifecycle/window-renamed", localhostOnly(lh.serveWindowRenamed))
+	mux.HandleFunc("POST /hooks/lifecycle/client-detached", localhostOnly(lh.serveClientDetached))
 }
 
 func (lh *LifecycleHandler) servePaneDied(w http.ResponseWriter, r *http.Request) {
@@ -366,10 +366,6 @@ func isLocalhost(r *http.Request) bool {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return false
-	}
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return false

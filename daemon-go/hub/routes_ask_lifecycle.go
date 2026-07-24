@@ -81,20 +81,17 @@ const (
 )
 
 // registerAskLifecycleRoutes attaches the ask-lifecycle handlers to the mux. The
-// {correlation_id} path endpoints are served off the "/asks/" subtree prefix
-// handler so the stdlib ServeMux (pre-1.22 pattern semantics in this module)
-// can dispatch them by suffix without a router dependency.
+// Method-qualified patterns let ServeMux reject wrong methods before dispatch.
 func (h *Hub) registerAskLifecycleRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/ask", h.requireAuth(h.handleAsk))
-	mux.HandleFunc("/ack", h.requireAuth(h.handleAck))
-	mux.HandleFunc("/answer", h.requireAuth(h.handleAnswer))
-	mux.HandleFunc("/questions/ask-blocking", h.requireAuth(h.handleAskBlockingQuestion))
-	mux.HandleFunc("/query", h.requireAuth(h.handleQuery))
-	mux.HandleFunc("/ask-many", h.requireAuth(h.handleAskMany))
-	mux.HandleFunc("/ask-many/", h.requireAuth(h.handleAskManyResult))
-	mux.HandleFunc("/asks/pending", h.requireAuth(h.handlePendingAsks))
-	// /asks/{correlation_id}/wait
-	mux.HandleFunc("/asks/", h.requireAuth(h.handleAskSubpath))
+	mux.HandleFunc("POST /ask", h.requireAuth(h.handleAsk))
+	mux.HandleFunc("POST /ack", h.requireAuth(h.handleAck))
+	mux.HandleFunc("POST /answer", h.requireAuth(h.handleAnswer))
+	mux.HandleFunc("POST /questions/ask-blocking", h.requireAuth(h.handleAskBlockingQuestion))
+	mux.HandleFunc("POST /query", h.requireAuth(h.handleQuery))
+	mux.HandleFunc("POST /ask-many", h.requireAuth(h.handleAskMany))
+	mux.HandleFunc("GET /ask-many/{parent_id}", h.requireAuth(h.handleAskManyResult))
+	mux.HandleFunc("GET /asks/pending", h.requireAuth(h.handlePendingAsks))
+	mux.HandleFunc("POST /asks/{correlation_id}/wait", h.requireAuth(h.handleAskWait))
 }
 
 type askBlockingOption struct {
@@ -113,10 +110,6 @@ type askBlockingRequest struct {
 }
 
 func (h *Hub) handleAskBlockingQuestion(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
 	if !h.askReady(w) {
 		return
 	}
@@ -289,10 +282,6 @@ func (h *Hub) askOperationReady() error {
 // genuine TransportError → close send_failed + 503 (the peer is marked offline
 // inside DeliverAsk). reply_to closes the referenced prior ask on success.
 func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
 	if !h.askReady(w) {
 		return
 	}
@@ -424,10 +413,6 @@ type AckResponse struct {
 // is already closed (reply undeliverable), 503 if the reply can't be delivered
 // (ask stays open for retry). Mirrors AskService.ack.
 func (h *Hub) handleAck(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
 	if !h.askReady(w) {
 		return
 	}
@@ -559,10 +544,6 @@ type AnswerResponse struct {
 // answerDirect (resolving any blocking waiter), then best-effort notifies a
 // human-readable form back to the asker.
 func (h *Hub) handleAnswer(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
 	if !h.askReady(w) {
 		return
 	}
@@ -701,10 +682,6 @@ type QueryResponse struct {
 // and WaitForAnswer up to the timeout. Maps outcome → {text|error}. Mirrors
 // messages.py query_peer.
 func (h *Hub) handleQuery(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
 	if !h.askReady(w) {
 		return
 	}
@@ -853,10 +830,6 @@ type AskManyResponse struct {
 }
 
 func (h *Hub) handleAskMany(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
 	if !h.askReady(w) {
 		return
 	}
@@ -884,7 +857,7 @@ func (h *Hub) openAskMany(ctx context.Context, req AskManyRequest) (AskManyRespo
 		return AskManyResponse{}, routeErr(http.StatusUnprocessableEntity,
 			fmt.Sprintf("to_peers exceeds the %d-peer limit", service.MaxAskManyPeers))
 	}
-	parent := h.ask.askMany.Create(nil, req.FromPeer, req.Text, req.TimeoutSeconds)
+	parent := h.ask.askMany.Create(req.FromPeer, req.Text, req.TimeoutSeconds)
 	out := AskManyResponse{ParentID: parent.ParentID}
 	seenNames := map[string]struct{}{}
 	seenPeerIDs := map[proto.PeerID]struct{}{}
@@ -962,14 +935,10 @@ func (h *Hub) openAskMany(ctx context.Context, req AskManyRequest) (AskManyRespo
 }
 
 func (h *Hub) handleAskManyResult(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "GET only")
-		return
-	}
 	if !h.askReady(w) {
 		return
 	}
-	parentID := strings.TrimPrefix(r.URL.Path, "/ask-many/")
+	parentID := r.PathValue("parent_id")
 	if parentID == "" || strings.Contains(parentID, "/") {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
@@ -1020,10 +989,6 @@ type PendingAsksResponse struct {
 // exactly one of pane_id or peer_id (400 otherwise); 404 if the peer is unknown.
 // direction ∈ {inbound(default),outbound,both}. Mirrors asks.py pending_asks.
 func (h *Hub) handlePendingAsks(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "GET only")
-		return
-	}
 	if !h.askReady(w) {
 		return
 	}
@@ -1114,36 +1079,11 @@ type AskWaitResponse struct {
 	Attachments   []map[string]any `json:"attachments,omitempty"`
 }
 
-// handleAskSubpath dispatches the bounded wait_on_ack endpoint.
-func (h *Hub) handleAskSubpath(w http.ResponseWriter, r *http.Request) {
-	// Path is /asks/{cid}/{action}; trim the "/asks/" prefix and split.
-	rest := strings.TrimPrefix(r.URL.Path, "/asks/")
-	parts := strings.SplitN(rest, "/", 2)
-	if len(parts) != 2 || parts[0] == "" {
-		writeJSONError(w, http.StatusNotFound, "not found")
-		return
-	}
-	cid := parts[0]
-	action := parts[1]
-
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
-
-	switch action {
-	case "wait":
-		h.handleAskWait(w, r, cid)
-	default:
-		writeJSONError(w, http.StatusNotFound, "not found")
-	}
-}
-
 // handleAskWait blocks (bounded) until the ask resolves; pending on timeout. Only
 // the original asker may wait (waiting flips the ask to pull delivery): 404 if
 // the ask is unknown, 403 if peer_id is neither the asker's id nor name. Clamps
 // the wait to askWaitMaxSeconds. Mirrors asks.py wait_on_ask.
-func (h *Hub) handleAskWait(w http.ResponseWriter, r *http.Request, cid string) {
+func (h *Hub) handleAskWait(w http.ResponseWriter, r *http.Request) {
 	if !h.askReady(w) {
 		return
 	}
@@ -1151,7 +1091,7 @@ func (h *Hub) handleAskWait(w http.ResponseWriter, r *http.Request, cid string) 
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	result, err := h.waitOnAck(r.Context(), cid, req)
+	result, err := h.waitOnAck(r.Context(), r.PathValue("correlation_id"), req)
 	if err != nil {
 		writeRouteError(w, err)
 		return

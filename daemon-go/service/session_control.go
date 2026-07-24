@@ -191,7 +191,7 @@ func (c *SessionControl) AcquireExecutorForWork(ctx context.Context, work *state
 		return nil, &ExecutorAcquisitionUnavailableError{Reason: "spawn_failed", OperationID: op.OperationID, Status: "failed", Phase: "spawn", Err: errObj}
 	}
 	if resumePlan != nil {
-		command, cerr = ResumeCommand(command, backend, resumePlan)
+		command, cerr = BuildResumeCommand(command, backend, mapStr(resumePlan, "runtime_session_id"))
 		if cerr != nil {
 			errObj := map[string]any{"reason": "resume_command_unavailable", "message": cerr.Error()}
 			c.failOp(ctx, op.OperationID, strategy, errObj)

@@ -306,19 +306,9 @@ type reviewItem struct {
 // DELETE is served off the "/reviews/" subtree prefix so the stdlib mux dispatches
 // the path-encoded pr_url without a router dependency (the pr_url is URL-encoded).
 func (h *Hub) registerReviewRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/reviews", h.requireAuth(h.handleReviews))
-	mux.HandleFunc("/reviews/", h.requireAuth(h.handleDeleteReview))
-}
-
-func (h *Hub) handleReviews(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost:
-		h.markReviewed(w, r)
-	case http.MethodGet:
-		h.listReviews(w, r)
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
+	mux.HandleFunc("POST /reviews", h.requireAuth(h.markReviewed))
+	mux.HandleFunc("GET /reviews", h.requireAuth(h.listReviews))
+	mux.HandleFunc("DELETE /reviews/{pr_url}", h.requireAuth(h.handleDeleteReview))
 }
 
 func (h *Hub) markReviewed(w http.ResponseWriter, r *http.Request) {
@@ -371,9 +361,9 @@ func (h *Hub) listReviewsDirect(reviewer string) ([]reviewItem, error) {
 		info := fetchPRInfo(e.PRURL)
 		items = append(items, reviewItem{
 			PRURL:           e.PRURL,
-			LastReviewedSHA: reviewOptStr(e.LastReviewedSHA),
+			LastReviewedSHA: strPtr(e.LastReviewedSHA),
 			RecordedAt:      e.RecordedAt,
-			CurrentHeadSHA:  reviewOptStr(info.HeadSHA),
+			CurrentHeadSHA:  strPtr(info.HeadSHA),
 			State:           info.State,
 			MyAction:        deriveReviewAction(info.State, e.LastReviewedSHA, info.HeadSHA),
 		})
@@ -384,11 +374,7 @@ func (h *Hub) listReviewsDirect(reviewer string) ([]reviewItem, error) {
 }
 
 func (h *Hub) handleDeleteReview(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	encoded := strings.TrimPrefix(r.URL.Path, "/reviews/")
+	encoded := r.PathValue("pr_url")
 	prURL, err := url.PathUnescape(encoded)
 	if err != nil {
 		prURL = encoded // tolerate an already-decoded path
@@ -403,13 +389,4 @@ func (h *Hub) handleDeleteReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, okResponse{OK: true})
-}
-
-// reviewOptStr returns nil for the empty string so JSON renders `null`, matching the
-// Python Optional[str] fields (last_reviewed_sha / current_head_sha).
-func reviewOptStr(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
 }
