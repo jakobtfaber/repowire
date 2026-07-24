@@ -241,7 +241,7 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 		proto.DisplayName(params.ToPeer), params.Text, params.Attachments, params.DeliveryID,
 	)
 	if err != nil {
-		if errors.Is(err, ErrNotConnected) {
+		if errors.Is(err, ErrNotConnected) || errors.Is(err, ErrTransportUnavailable) {
 			return d.queueNotify(ctx, params, fromID, fromName, target, err)
 		}
 		return NotifyResult{}, err
@@ -387,7 +387,7 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 		if _, ok := AsDeliveryInjection(err); ok {
 			return AskResult{}, err
 		}
-		if errors.Is(err, ErrNotConnected) {
+		if errors.Is(err, ErrNotConnected) || errors.Is(err, ErrTransportUnavailable) {
 			d.markTransportUnreachable(ctx, target, "ask", err)
 		}
 		return AskResult{}, err
@@ -585,33 +585,6 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 	}
 	sent = append(sent, deferredNames...)
 	return sent, failures
-}
-
-// ----------------------------------------------------------------------------
-// Query (legacy blocking RPC)
-// ----------------------------------------------------------------------------
-
-// Query is the legacy blocking RPC: CheckAccess → seed-gate → router.SendQuery,
-// returning the Stop-hook response text. The /query HTTP route in the Python
-// daemon now wraps a blocking-question ask; this keeps the direct SendQuery path
-// (the route layer may wrap an ask shim on top).
-func (d *PeerDelivery) Query(ctx context.Context, fromPeer, toPeer, text string, timeout time.Duration, bypassCircle bool, circle *string) (string, error) {
-	from, target, err := d.reg.CheckAccess(ctx, fromPeer, toPeer, bypassCircle, circle)
-	if err != nil {
-		return "", err
-	}
-	fromName := proto.DisplayName(fromPeer)
-	if from != nil {
-		fromName = from.DisplayName
-	}
-	formatted := fmt.Sprintf(
-		"[Repowire Query from @%s]\n%s\n\n"+
-			"IMPORTANT: Respond directly in your message. Do NOT use ask() to reply - "+
-			"your response is automatically captured and returned to %s.",
-		fromPeer, text, fromPeer,
-	)
-	d.gateOnSeedSettled(ctx, target)
-	return d.router.SendQuery(ctx, fromName, target.PeerID, target.DisplayName, formatted, timeout)
 }
 
 // ----------------------------------------------------------------------------

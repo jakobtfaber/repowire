@@ -514,7 +514,7 @@ func runDaemon() {
 	h.WithReadDeps(asks, store).
 		WithMessaging(delivery, store).
 		WithAskLifecycle(asks, delivery, shim).
-		WithSessionRoutes(shim, h.Tracker(), store).
+		WithSessionRoutes(shim, store).
 		WithSpawn(spawnService, reg, asks, selfMachine).
 		WithWork(jobRunner, store).
 		WithJobCompletion(jobCompletion).

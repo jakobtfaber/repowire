@@ -85,8 +85,7 @@ func (h *Hub) spawnReady(w http.ResponseWriter) bool {
 // GET /spawn/config
 // ---------------------------------------------------------------------------
 
-// SpawnConfigResponse mirrors spawn.py SpawnConfigResponse. profiles is omitted
-// from the wire shape's content (always empty) until profiles are ported.
+// SpawnConfigResponse mirrors spawn.py SpawnConfigResponse.
 type SpawnConfigResponse struct {
 	Enabled         bool                       `json:"enabled"`
 	Commands        map[proto.AgentType]string `json:"commands"`
@@ -108,10 +107,18 @@ func (h *Hub) handleSpawnConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, SpawnConfigResponse{
 		Enabled:         svc.Enabled(),
 		Commands:        commands,
-		Profiles:        map[string]any{},
+		Profiles:        spawnProfiles(svc.Profiles()),
 		AllowedCommands: allowed,
 		AllowedPaths:    svc.AllowedPaths(),
 	})
+}
+
+func spawnProfiles(profiles map[proto.AgentType]map[string][]string) map[string]any {
+	out := map[string]any{}
+	for backend, items := range profiles {
+		out[string(backend)] = items
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +163,8 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Circle == "" {
-		req.Circle = "default"
+		writeJSONError(w, http.StatusUnprocessableEntity, "circle is required; run inside a tmux session or pass --circle")
+		return
 	}
 	if req.Role == "" {
 		req.Role = proto.RoleAgent
@@ -439,7 +447,8 @@ func (h *Hub) handleRestartPeer(w http.ResponseWriter, r *http.Request) {
 	}
 	spawnCircle := peerCopy.Circle
 	if spawnCircle == "" {
-		spawnCircle = "default"
+		writeJSONError(w, http.StatusConflict, "peer has no circle; cannot restart")
+		return
 	}
 
 	resumeCommand, _, rerr := h.restartResumeCommand(ctx, peerCopy, resolvedPath)
@@ -681,7 +690,8 @@ func (h *Hub) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 
 	spawnCircle := peerCopy.Circle
 	if spawnCircle == "" {
-		spawnCircle = "default"
+		writeJSONError(w, http.StatusConflict, "peer has no circle; cannot switch backend")
+		return
 	}
 
 	// Only kill daemon-owned panes (spawned-set), same rule as /kill-peer. If

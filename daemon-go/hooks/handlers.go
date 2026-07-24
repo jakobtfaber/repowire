@@ -85,7 +85,9 @@ func runSession(backend string) int {
 		circle, circleSource = stringValue(hint, "circle"), "spawn_hint"
 	}
 	if circle == "" {
-		circle, circleSource = "default", "fallback"
+		errf("session: no circle for %s; start in tmux or spawn with --circle", backend)
+		lock.Close()
+		return 0
 	}
 	agentPID := os.Getppid()
 	if isShell, known := commandIsShell(agentPID); known && isShell {
@@ -234,13 +236,6 @@ func runStop(backend string) int {
 	}
 	if assistant != "" {
 		postChatTurn(peer, "assistant", assistant, calls, paneID, payload.SessionID, turnID)
-		if paneID != "" {
-			response := map[string]any{"pane_id": paneID, "text": assistant}
-			if cid := popQueryCID(paneID); cid != "" {
-				response["correlation_id"] = cid
-			}
-			daemonPost("/response", response)
-		}
 	}
 	var blocks []string
 	if paneID != "" {

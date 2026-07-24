@@ -23,6 +23,10 @@ import (
 // ErrNotConnected is returned by Send when the target peer has no live socket.
 var ErrNotConnected = errors.New("hub: peer not connected")
 
+// ErrTransportUnavailable means a socket existed but could not accept a write.
+// Delivery treats it as unreachable, never as an authorization failure.
+var ErrTransportUnavailable = errors.New("hub: transport unavailable")
+
 // deliveryAckTimeout mirrors the Python transport's 0.75s best-effort window.
 const deliveryAckTimeout = 750 * time.Millisecond
 
@@ -131,7 +135,10 @@ func (t *WebSocketTransport) Send(ctx context.Context, id proto.PeerID, v any) e
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
 	defer cancel()
-	return wsjson.Write(writeCtx, info.WS, v)
+	if err := wsjson.Write(writeCtx, info.WS, v); err != nil {
+		return fmt.Errorf("%w: %v", ErrTransportUnavailable, err)
+	}
+	return nil
 }
 
 // SendAndWaitDeliveryAck sends a frame carrying a delivery_id and waits up to

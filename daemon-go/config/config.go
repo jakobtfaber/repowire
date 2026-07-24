@@ -42,11 +42,12 @@ type DaemonConfig struct {
 }
 
 type SpawnConfig struct {
-	Commands     map[string]string                  `yaml:"commands"`
-	AllowedPaths []string                           `yaml:"allowed_paths"`
-	Profiles     map[string]map[string]SpawnProfile `yaml:"profiles"`
-	EnvPath      []string                           `yaml:"env_path"`
-	Env          map[string]string                  `yaml:"env"`
+	Commands        map[string]string                  `yaml:"commands"`
+	AllowedCommands []string                           `yaml:"allowed_commands"`
+	AllowedPaths    []string                           `yaml:"allowed_paths"`
+	Profiles        map[string]map[string]SpawnProfile `yaml:"profiles"`
+	EnvPath         []string                           `yaml:"env_path"`
+	Env             map[string]string                  `yaml:"env"`
 }
 
 type SpawnProfile struct {
@@ -123,6 +124,27 @@ func Defaults() Config {
 	}
 }
 
+// legacySpawnCommands preserves the one-release allowed_commands migration.
+func legacySpawnCommands(commands []string) map[string]string {
+	out := map[string]string{}
+	for _, command := range commands {
+		fields := strings.Fields(command)
+		if len(fields) == 0 {
+			continue
+		}
+		backend := map[string]string{
+			"claude": "claude-code", "codex": "codex", "gemini": "gemini",
+			"opencode": "opencode", "agy": "antigravity", "pi": "pi",
+		}[fields[0]]
+		if backend != "" {
+			if _, exists := out[backend]; !exists {
+				out[backend] = command
+			}
+		}
+	}
+	return out
+}
+
 func Load() (Config, error) {
 	cfg := Defaults()
 	path := Path()
@@ -132,6 +154,9 @@ func Load() (Config, error) {
 		}
 	} else if !os.IsNotExist(err) {
 		return cfg, fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(cfg.Daemon.Spawn.Commands) == 0 {
+		cfg.Daemon.Spawn.Commands = legacySpawnCommands(cfg.Daemon.Spawn.AllowedCommands)
 	}
 	applyEnv(&cfg)
 	normalize(&cfg)

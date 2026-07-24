@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
-	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -103,10 +102,10 @@ func (s *fakeDrainStore) DrainDeliveries(ctx context.Context, peerID string, max
 
 // newSessionTestHub builds a hub with the session route group wired over fakes
 // plus the httptest server serving its mux.
-func newSessionTestHub(t *testing.T, reg sessionRegistry, tracker *service.QueryTracker, store queuedDrainStore) *httptest.Server {
+func newSessionTestHub(t *testing.T, reg sessionRegistry, _ any, store queuedDrainStore) *httptest.Server {
 	t.Helper()
 	h := &Hub{authToken: ""}
-	h.WithSessionRoutes(reg, tracker, store)
+	h.WithSessionRoutes(reg, store)
 	mux := http.NewServeMux()
 	h.registerSessionRoutes(mux)
 	srv := httptest.NewServer(mux)
@@ -172,48 +171,6 @@ func TestSessionUpdateUnknownPane(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown pane, got %d", resp.StatusCode)
-	}
-}
-
-// TestResponseResolvesOldestQuery: POST /response without a correlation_id
-// resolves the oldest pending query routed to the pane's peer, unblocking the
-// waiter with the response text.
-func TestResponseResolvesOldestQuery(t *testing.T) {
-	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
-	reg := newSessionFakeRegistry(beta)
-	reg.byPane["%7"] = beta
-	tracker := service.NewQueryTracker()
-	cid := tracker.RegisterQuery("alpha", beta.PeerID, "beta", "ping?")
-	future := tracker.Future(cid)
-
-	srv := newSessionTestHub(t, reg, tracker, nil)
-	resp := postJSON(t, srv.URL+"/response", ResponseDelivery{PaneID: "%7", Text: "pong!"})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-	select {
-	case res := <-future:
-		if res.Err != nil || res.Text != "pong!" {
-			t.Fatalf("query resolved wrong: text=%q err=%v", res.Text, res.Err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("oldest query was not resolved by /response")
-	}
-}
-
-// TestResponseNoPendingQueryIs200: a Stop hook firing with no pending query (the
-// common case — it fires every turn) is not an error.
-func TestResponseNoPendingQueryIs200(t *testing.T) {
-	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
-	reg := newSessionFakeRegistry(beta)
-	reg.byPane["%7"] = beta
-	srv := newSessionTestHub(t, reg, service.NewQueryTracker(), nil)
-
-	resp := postJSON(t, srv.URL+"/response", ResponseDelivery{PaneID: "%7", Text: "nothing pending"})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 with no pending query, got %d", resp.StatusCode)
 	}
 }
 

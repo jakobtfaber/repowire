@@ -269,7 +269,11 @@ func runPeer(argv []string) int {
 		return 0
 	case "register":
 		path := a.string("path", mustGetwd())
-		body := map[string]any{"name": a.string("name", filepath.Base(path)), "path": abs(path), "backend": a.string("backend", "claude-code"), "circle": a.string("circle", "default")}
+		circle := a.string("circle", "")
+		if circle == "" {
+			return usage("peer register requires --circle CIRCLE")
+		}
+		body := map[string]any{"name": a.string("name", filepath.Base(path)), "path": abs(path), "backend": a.string("backend", "claude-code"), "circle": circle}
 		result, err := c.request(http.MethodPost, "/peers", body)
 		if err != nil {
 			return fatal(err)

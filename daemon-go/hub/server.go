@@ -29,7 +29,6 @@ const schemaVersion = 12
 type Hub struct {
 	reg       *peer.Registry
 	transport *service.WebSocketTransport
-	tracker   *service.QueryTracker
 	router    *service.MessageRouter
 	authToken string
 
@@ -171,15 +170,12 @@ func NewHub(reg *peer.Registry, authToken string) *Hub {
 // registry — building the transport up front breaks the cycle). This is the
 // real wiring order in main.
 func NewHubWithTransport(reg *peer.Registry, transport *service.WebSocketTransport, authToken string) *Hub {
-	tracker := service.NewQueryTracker()
 	h := &Hub{
 		reg:       reg,
 		transport: transport,
-		tracker:   tracker,
-		router:    service.NewMessageRouter(transport, tracker, reg),
+		router:    service.NewMessageRouter(transport, reg),
 		authToken: authToken,
 	}
-	reg.OnOffline = tracker.CancelQueriesToPeer
 	return h
 }
 
@@ -189,11 +185,6 @@ func (h *Hub) Transport() *service.WebSocketTransport { return h.transport }
 
 // Router exposes the message router for HTTP routes built outside this package.
 func (h *Hub) Router() *service.MessageRouter { return h.router }
-
-// Tracker exposes the in-memory query tracker so main can wire it into the
-// session-routes group (the /response Stop-hook resolver shares the SAME
-// tracker the message router blocks on).
-func (h *Hub) Tracker() *service.QueryTracker { return h.tracker }
 
 // Routes registers the hub's HTTP handlers on the mux.
 func (h *Hub) Routes(mux *http.ServeMux) {

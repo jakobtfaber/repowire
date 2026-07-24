@@ -107,28 +107,6 @@ func TestRouterRoutesByPeerID(t *testing.T) {
 		t.Fatalf("both peers should be connected")
 	}
 
-	// Send a query to peer B only; peer B's socket must receive it, peer A must not.
-	go func() {
-		_, _ = h.router.SendQuery(context.Background(), "tester", idB, "beta", "ping?", 2*time.Second)
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	var q proto.QueryFrame
-	if err := wsjson.Read(ctx, cB, &q); err != nil {
-		t.Fatalf("peer B should receive the query: %v", err)
-	}
-	if q.Type != proto.FrameQuery || q.Text != "ping?" {
-		t.Fatalf("unexpected query frame on B: %+v", q)
-	}
-
-	// Peer A must NOT have received anything: a short read should time out.
-	shortCtx, shortCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer shortCancel()
-	var stray proto.QueryFrame
-	if err := wsjson.Read(shortCtx, cA, &stray); err == nil {
-		t.Fatalf("peer A must NOT receive a query routed to B, got %+v", stray)
-	}
 }
 
 // TestDisconnectIdentityChecked verifies the disconnect race guard: a stale
@@ -495,7 +473,7 @@ func (f *fakeTransport) ACPRoute(target *proto.Peer) (*service.ACPRouteDecision,
 
 func newRouterWithFake(f *fakeTransport) *service.MessageRouter {
 	// reg is unused by the send paths under test; nil is fine for unit coverage.
-	return service.NewMessageRouter(f, service.NewQueryTracker(), nil)
+	return service.NewMessageRouter(f, nil)
 }
 
 // fakeQueue satisfies the queuedDeliveryStore shape service.NewPeerDelivery

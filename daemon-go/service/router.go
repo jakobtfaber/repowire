@@ -96,54 +96,14 @@ func AsDeliveryInjection(err error) (*DeliveryInjectionError, bool) {
 // target; passing a DisplayName is a compile error, which is the whole point.
 type MessageRouter struct {
 	transport Transport
-	tracker   *QueryTracker
 	reg       *peer.Registry
 }
 
 // NewMessageRouter wires the router to the transport, tracker, and registry. The
 // transport is taken by interface so the real *WebSocketTransport and a test
 // fake are both accepted.
-func NewMessageRouter(transport Transport, tracker *QueryTracker, reg *peer.Registry) *MessageRouter {
-	return &MessageRouter{transport: transport, tracker: tracker, reg: reg}
-}
-
-// SendQuery routes a blocking query to a peer (the legacy /query RPC shape) and
-// waits up to timeout for the response. Registration happens before the send so
-// the future exists before any response could land. A disconnect resolves the
-// future with ErrPeerDisconnected via CancelQueriesToPeer.
-func (m *MessageRouter) SendQuery(ctx context.Context, from proto.DisplayName, to proto.PeerID, toName proto.DisplayName, text string, timeout time.Duration) (string, error) {
-	corrID := m.tracker.RegisterQuery(from, to, toName, text)
-	future := m.tracker.Future(corrID)
-
-	frame := proto.QueryFrame{
-		Type:          proto.FrameQuery,
-		CorrelationID: corrID,
-		FromPeer:      from,
-		Text:          text,
-	}
-	if err := m.transport.Send(ctx, to, frame); err != nil {
-		// Send failed up front; reap the pending query so it doesn't dangle.
-		m.tracker.ResolveQueryError(corrID, err)
-		return "", fmt.Errorf("send query to %s: %w", to, err)
-	}
-
-	if timeout <= 0 {
-		select {
-		case res := <-future:
-			return res.Text, res.Err
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-	}
-	select {
-	case res := <-future:
-		return res.Text, res.Err
-	case <-time.After(timeout):
-		m.tracker.ResolveQueryError(corrID, fmt.Errorf("query to %s timed out", toName))
-		return "", fmt.Errorf("query to %s timed out after %s", toName, timeout)
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
+func NewMessageRouter(transport Transport, reg *peer.Registry) *MessageRouter {
+	return &MessageRouter{transport: transport, reg: reg}
 }
 
 // SendNotification puts a fire-and-forget notify frame on the wire and waits up

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -183,9 +182,6 @@ type mcpJobCancelArgs struct {
 type mcpDescriptionArgs struct {
 	Description string `json:"description"`
 }
-type mcpClaimRoleArgs struct {
-	Force bool `json:"force,omitempty"`
-}
 type mcpSpawnArgs struct {
 	Path    string `json:"path"`
 	Backend string `json:"backend,omitempty"`
@@ -240,7 +236,9 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		}
 		body := map[string]any{"from_peer": caller, "to_peer": a.PeerName, "text": a.Query}
 		optional(body, "reply_to", a.ReplyTo)
-		optional(body, "circle", a.Circle)
+		if circle := h.mcpSendCircle(caller, a.Circle); circle != nil {
+			body["circle"] = *circle
+		}
 		if len(a.Attachments) > 0 {
 			body["attachments"] = a.Attachments
 		}
@@ -393,10 +391,6 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 	addMCPTool(srv, "set_description", "Update the caller's dashboard task description.", func(ctx context.Context, caller string, a mcpDescriptionArgs) (string, error) {
 		_, err := h.mcpLocal(ctx, http.MethodPost, "/peers/"+url.PathEscape(caller)+"/description", map[string]string{"description": a.Description})
 		return "description updated: " + a.Description, err
-	})
-	addMCPTool(srv, "claim_orchestrator_role", "Claim role=orchestrator for the calling peer.", func(ctx context.Context, caller string, a mcpClaimRoleArgs) (string, error) {
-		result, err := h.mcpLocal(ctx, http.MethodPost, "/peers/claim-role", map[string]any{"peer_name": caller, "role": "orchestrator", "force": a.Force})
-		return jsonResult(result), err
 	})
 	addMCPTool(srv, "spawn_peer", "Spawn a local tmux-backed coding peer.", func(ctx context.Context, caller string, a mcpSpawnArgs) (string, error) {
 		if err := requireMCPAdmin(h, cfg, caller, "spawn_peer"); err != nil {
@@ -635,5 +629,3 @@ func firstNonempty(values ...string) string {
 	}
 	return ""
 }
-
-var _ = strconv.Itoa

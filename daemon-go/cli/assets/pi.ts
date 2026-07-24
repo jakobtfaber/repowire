@@ -49,7 +49,7 @@ const SPAWN_HINT_TTL_MS = 300_000;
 
 // Module state (process-wide, not per-session).
 let projectPath: string = process.cwd();
-let circle: string = "default";
+let circle = "";
 let role: string | undefined = undefined;
 let tmuxSession: string | undefined = undefined;
 let tmuxPane: string | undefined = undefined;
@@ -861,6 +861,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
       message: Type.Optional(Type.String({ description: "Optional first-turn prompt for the spawned agent" })),
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
+      if (!params.circle && !circle) throw new Error("No current circle; run inside tmux or pass circle explicitly.");
       const body: Record<string, unknown> = {
         path: params.path,
         backend: params.backend,

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/repowire/repowire/daemon-go/config"
@@ -160,9 +162,10 @@ type mcpListPeersArgs struct {
 }
 
 type mcpNotifyPeerArgs struct {
-	PeerName string `json:"peer_name" jsonschema:"Target peer display_name or peer_id"`
-	Message  string `json:"message" jsonschema:"Message text to deliver"`
-	Circle   string `json:"circle,omitempty" jsonschema:"Optional circle scope for resolving peer_name"`
+	PeerName    string           `json:"peer_name" jsonschema:"Target peer display_name or peer_id"`
+	Message     string           `json:"message" jsonschema:"Message text to deliver"`
+	Circle      string           `json:"circle,omitempty" jsonschema:"Optional circle scope for resolving peer_name"`
+	Attachments []map[string]any `json:"attachments,omitempty"`
 }
 
 type mcpBroadcastArgs struct {
@@ -191,7 +194,7 @@ func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, c
 		Name:        "notify_peer",
 		Description: "Send a fire-and-forget message to a peer by name.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args mcpNotifyPeerArgs) (*mcp.CallToolResult, any, error) {
-		res, err := mcpNotifyPeer(ctx, delivery, args, callerIdentity(req))
+		res, err := h.mcpNotifyPeer(ctx, delivery, args, callerIdentity(req))
 		return res, nil, err
 	})
 
@@ -270,30 +273,37 @@ func mcpPeerTSV(peers []*proto.Peer) string {
 // mcpNotifyPeer dispatches to service.PeerDelivery.Notify. A non-nil error
 // return is auto-packed into an isError CallToolResult by the AddTool wrapper
 // (see toolForErr in the SDK) — no manual CallToolResult.SetError needed here.
-func mcpNotifyPeer(ctx context.Context, delivery *service.PeerDelivery, args mcpNotifyPeerArgs, fromPeer string) (*mcp.CallToolResult, error) {
+func (h *Hub) mcpNotifyPeer(ctx context.Context, delivery *service.PeerDelivery, args mcpNotifyPeerArgs, fromPeer string) (*mcp.CallToolResult, error) {
 	if args.PeerName == "" || args.Message == "" {
 		return nil, fmt.Errorf("peer_name and message are required")
 	}
 	if delivery == nil {
 		return nil, fmt.Errorf("notify_peer is not wired (no delivery service configured)")
 	}
-	var circle *string
-	if args.Circle != "" {
-		circle = &args.Circle
-	}
-	result, err := delivery.Notify(ctx, service.NotifyParams{
-		FromPeer: fromPeer,
-		ToPeer:   args.PeerName,
-		Text:     args.Message,
-		Circle:   circle,
+	circle := h.mcpSendCircle(fromPeer, args.Circle)
+	deliveryID := "notif-" + uuid.NewString()[:8]
+	_, err := delivery.Notify(ctx, service.NotifyParams{
+		FromPeer:    fromPeer,
+		ToPeer:      args.PeerName,
+		Text:        args.Message,
+		Circle:      circle,
+		Attachments: args.Attachments,
+		DeliveryID:  deliveryID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("notify failed: %w", err)
 	}
-	return textResult(fmt.Sprintf(
-		"status=%s delivery_state=%s to=%s delivery_id=%s",
-		result.Status, result.DeliveryState, result.ToPeerName, result.DeliveryID,
-	)), nil
+	return textResult(deliveryID), nil
+}
+
+func (h *Hub) mcpSendCircle(caller, requested string) *string {
+	if requested != "" {
+		return &requested
+	}
+	if peer, _ := h.reg.GetPeerByName(caller, nil); peer != nil && peer.Circle != "" {
+		return &peer.Circle
+	}
+	return nil
 }
 
 // mcpBroadcast dispatches to service.PeerDelivery.Broadcast.

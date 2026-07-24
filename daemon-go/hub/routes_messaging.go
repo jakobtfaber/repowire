@@ -327,7 +327,7 @@ func isTransportUnavailable(err error) bool {
 	if _, ok := service.AsDeliveryInjection(err); ok {
 		return false
 	}
-	return errors.Is(err, service.ErrNotConnected)
+	return errors.Is(err, service.ErrNotConnected) || errors.Is(err, service.ErrTransportUnavailable)
 }
 
 // strPtr is duplicated from service/session_control.go (which owns the

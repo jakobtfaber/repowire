@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
-	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -55,9 +54,8 @@ type sessionRegistry interface {
 // /deliveries/pending endpoint returns an empty list, matching the Python
 // getattr(state, "queued_delivery_store", None) is None early-return).
 type sessionDeps struct {
-	reg     sessionRegistry
-	tracker *service.QueryTracker
-	store   queuedDrainStore
+	reg   sessionRegistry
+	store queuedDrainStore
 }
 
 // queuedDrainStore is the drain seam for /deliveries/pending and the flush-on-
@@ -69,15 +67,14 @@ type queuedDrainStore interface {
 // WithSessionRoutes wires the session route group onto the hub. The concrete
 // *peer.Registry satisfies sessionRegistry once the by-name updaters land; until
 // then a test/fake registry is passed. store may be nil. Returns the receiver.
-func (h *Hub) WithSessionRoutes(reg sessionRegistry, tracker *service.QueryTracker, store queuedDrainStore) *Hub {
-	h.session = &sessionDeps{reg: reg, tracker: tracker, store: store}
+func (h *Hub) WithSessionRoutes(reg sessionRegistry, store queuedDrainStore) *Hub {
+	h.session = &sessionDeps{reg: reg, store: store}
 	return h
 }
 
 // registerSessionRoutes attaches the session endpoints, each behind requireAuth.
 func (h *Hub) registerSessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/session/update", h.requireAuth(h.handleSessionUpdate))
-	mux.HandleFunc("/response", h.requireAuth(h.handleResponse))
 	mux.HandleFunc("/deliveries/pending", h.requireAuth(h.handleDeliveriesPending))
 }
 
@@ -193,53 +190,6 @@ func (h *Hub) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-// ----------------------------------------------------------------------------
-// POST /response
-// ----------------------------------------------------------------------------
-
-// ResponseDelivery mirrors messages.py ResponseDelivery: the Stop hook delivering
-// a response that resolves a pending blocking query.
-type ResponseDelivery struct {
-	PaneID        string  `json:"pane_id"`
-	Text          string  `json:"text"`
-	CorrelationID *string `json:"correlation_id,omitempty"`
-}
-
-// handleResponse resolves a pending query from a Stop-hook response. The peer is
-// resolved by pane_id (404 if none). A correlation_id resolves that exact query;
-// otherwise the oldest query routed to the peer is resolved. No pending query is
-// NOT an error (the Stop hook fires every turn) → 200. Mirrors messages.py
-// deliver_response.
-func (h *Hub) handleResponse(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
-	if !h.sessionReady(w) {
-		return
-	}
-	var req ResponseDelivery
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-
-	peer, ok := h.session.reg.GetPeerByPane(req.PaneID)
-	if !ok {
-		writeJSONError(w, http.StatusNotFound, "No peer for pane: "+req.PaneID)
-		return
-	}
-
-	if h.session.tracker != nil {
-		if req.CorrelationID != nil && *req.CorrelationID != "" {
-			h.session.tracker.ResolveQuery(*req.CorrelationID, req.Text)
-		} else {
-			h.session.tracker.ResolveOldestQuery(peer.PeerID, req.Text)
-		}
-	}
-	// No pending query is not an error — the Stop hook fires on every turn.
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

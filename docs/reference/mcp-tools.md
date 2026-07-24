@@ -254,14 +254,6 @@ Update the free-form description visible in `list_peers`. Call this at the start
 set_description("rebuilding docs slice B")
 ```
 
-### `claim_orchestrator_role`
-
-```text
-claim_orchestrator_role(force: bool = False) -> str
-```
-
-Self-repair tool for the orchestrator workspace. Use it after a daemon restart when `list_peers(include_self=True)` shows the orchestrator session as `role=agent`. It targets the caller's current peer id, persists `role=orchestrator` into the session mapping, and refuses non-orchestrator workspace/session names. It can repair stale, offline, or mapping-only holders; a fresh online/busy orchestrator holder is never demoted by this tool.
-
 ### `orchestrator_status`
 
 ```text

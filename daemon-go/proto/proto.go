@@ -170,7 +170,6 @@ type FrameType string
 const (
 	// Client -> Daemon
 	FrameConnect           FrameType = "connect"
-	FrameResponse          FrameType = "response"
 	FrameStatus            FrameType = "status"
 	FrameSetCircle         FrameType = "set_circle"
 	FrameUpdateDisplayName FrameType = "update_display_name"
@@ -179,7 +178,6 @@ const (
 	FrameError             FrameType = "error"
 	// Daemon -> Client
 	FrameConnected FrameType = "connected"
-	FrameQuery     FrameType = "query"
 	FrameAsk       FrameType = "ask"
 	FrameNotify    FrameType = "notify"
 	FrameBroadcast FrameType = "broadcast"
@@ -217,13 +215,6 @@ type ConnectedFrame struct {
 	Type        FrameType   `json:"type"` // "connected"
 	SessionID   PeerID      `json:"session_id"`
 	DisplayName DisplayName `json:"display_name"`
-}
-
-// ResponseFrame replies to a query (client -> daemon).
-type ResponseFrame struct {
-	Type          FrameType `json:"type"` // "response"
-	CorrelationID string    `json:"correlation_id"`
-	Text          string    `json:"text"`
 }
 
 // StatusFrame reports liveness/turn (client -> daemon).

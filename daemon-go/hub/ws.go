@@ -61,7 +61,6 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		// IDENTITY-CHECKED teardown: only act if WE still own the stored socket.
 		if registered {
 			if removed := h.transport.Disconnect(ctx, sessionID, conn); removed {
-				h.tracker.CancelQueriesToPeer(sessionID)
 				_, _ = h.reg.MarkOffline(ctx, sessionID, false)
 			}
 		}
@@ -100,7 +99,9 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	// Validate circle.
 	circle := cf.Circle
 	if circle == "" {
-		circle = "default"
+		_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Circle is required; start in a named tmux session or use a spawn hint"})
+		_ = conn.Close(4002, "Missing circle")
+		return
 	}
 	if !isValidIdentifier(circle) {
 		_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Invalid circle format"})
@@ -339,18 +340,6 @@ func (h *Hub) dispatch(ctx context.Context, id proto.PeerID, raw []byte) {
 		return
 	}
 	switch ftype {
-	case proto.FrameResponse:
-		var f proto.ResponseFrame
-		if err := json.Unmarshal(raw, &f); err != nil {
-			log.Printf("ws: bad response frame from %s: %v", id, err)
-			return
-		}
-		if f.CorrelationID == "" {
-			log.Printf("ws: response from %s missing correlation_id, dropping", id)
-			return
-		}
-		h.tracker.ResolveQuery(f.CorrelationID, f.Text)
-
 	case proto.FrameStatus:
 		var f proto.StatusFrame
 		if err := json.Unmarshal(raw, &f); err != nil {
@@ -404,9 +393,6 @@ func (h *Hub) dispatch(ctx context.Context, id proto.PeerID, raw []byte) {
 		var f proto.ErrorFrame
 		_ = json.Unmarshal(raw, &f)
 		log.Printf("ws: client %s reported error: %s", id, f.Error)
-		if f.CorrelationID != nil && *f.CorrelationID != "" {
-			h.tracker.ResolveQueryError(*f.CorrelationID, errors.New(f.Error))
-		}
 
 	default:
 		log.Printf("ws: unknown message type from %s: %s", id, ftype)

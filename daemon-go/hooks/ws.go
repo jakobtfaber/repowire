@@ -164,7 +164,8 @@ func RunWS() int {
 	info := getTmuxInfo()
 	circle, source := info.SessionName, "tmux"
 	if circle == "" {
-		circle, source = "default", "fallback"
+		errf("ws-hook: no tmux circle; spawn the peer with --circle")
+		return 1
 	}
 	displayName := getDisplayName()
 	backend := firstNonempty(os.Getenv("REPOWIRE_BACKEND"), "claude-code")
@@ -338,7 +339,7 @@ func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]an
 		unsafeStrikes++
 		return unsafeStrikes >= paneUnsafeStrikeLimit, unsafeStrikes
 	}
-	if typ != "query" && typ != "ask" && typ != "notify" && typ != "broadcast" {
+	if typ != "ask" && typ != "notify" && typ != "broadcast" {
 		return false, unsafeStrikes
 	}
 	safe := paneSafe(paneID, expectedCommand)
@@ -348,7 +349,7 @@ func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]an
 			status, detail = "failed", "Pane "+paneID+" safety inconclusive; delivery not injected"
 		}
 		sendDeliveryAck(ctx, conn, data, status, detail)
-		if typ == "query" || typ == "ask" {
+		if typ == "ask" {
 			sendFrameError(ctx, conn, stringValue(data, "correlation_id"), detail)
 		}
 		return safe != nil && !*safe, unsafeStrikes
@@ -360,8 +361,6 @@ func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]an
 	}
 	var injected string
 	switch typ {
-	case "query":
-		injected = text
 	case "ask":
 		injected = "@" + from + toLabel + " [ask #" + stringValue(data, "correlation_id") + "]: " + text
 	case "notify":
@@ -370,16 +369,10 @@ func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]an
 		injected = "@" + from + " [broadcast]: " + text
 	}
 	if injectText(paneID, injected) {
-		if typ == "query" {
-			pushQueryCID(paneID, stringValue(data, "correlation_id"))
-		}
 		sendDeliveryAck(ctx, conn, data, "injected", "")
 	} else {
 		detail := "Failed to send keys to pane " + paneID
 		sendDeliveryAck(ctx, conn, data, "failed", detail)
-		if typ == "query" {
-			sendFrameError(ctx, conn, stringValue(data, "correlation_id"), detail)
-		}
 	}
 	return false, unsafeStrikes
 }

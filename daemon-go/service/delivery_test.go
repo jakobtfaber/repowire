@@ -455,36 +455,3 @@ func TestDeliveryClose_UnblocksSeedGate(t *testing.T) {
 		t.Fatalf("Close did not return within 3s; the deferred seed-gate goroutine was not unblocked")
 	}
 }
-
-// ----------------------------------------------------------------------------
-// Query
-// ----------------------------------------------------------------------------
-
-// TestQueryFormatsAndRoutes: Query wraps the text in the [Repowire Query]
-// envelope and routes by PeerID. The fake transport never answers, so the query
-// times out — we assert the frame was routed and formatted, which is the
-// delivery contract under test.
-func TestQueryFormatsAndRoutes(t *testing.T) {
-	target := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
-	reg := &fakeRegistry{peers: []*proto.Peer{target}}
-	f := &fakeTransport{}
-	d := NewPeerDelivery(reg, newRouterWithFake(f), f, nil, nil)
-
-	_, err := d.Query(context.Background(), "alpha", "beta", "are you there?", 50*time.Millisecond, false, nil)
-	if err == nil {
-		t.Fatalf("expected timeout (fake never answers)")
-	}
-	if f.lastTarget != target.PeerID {
-		t.Fatalf("query must route by PeerID, got %s", f.lastTarget)
-	}
-	frame, ok := f.lastFrame.(proto.QueryFrame)
-	if !ok {
-		t.Fatalf("expected a proto.QueryFrame on the wire, got %T", f.lastFrame)
-	}
-	if frame.FromPeer != "alpha" {
-		t.Fatalf("expected from alpha, got %s", frame.FromPeer)
-	}
-	if want := "[Repowire Query from @alpha]"; len(frame.Text) == 0 || frame.Text[:len(want)] != want {
-		t.Fatalf("expected formatted query envelope, got %q", frame.Text)
-	}
-}

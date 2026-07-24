@@ -142,6 +142,9 @@ func (s *SpawnService) Enabled() bool {
 // Commands returns the configured per-backend launch lines (for /spawn/config).
 func (s *SpawnService) Commands() map[proto.AgentType]string { return s.commands }
 
+// Profiles returns the configured launch profiles for spawn discovery.
+func (s *SpawnService) Profiles() map[proto.AgentType]map[string][]string { return s.profiles }
+
 // AllowedPaths returns the configured spawn allowlist roots (for /spawn/config).
 func (s *SpawnService) AllowedPaths() []string { return s.allowedPaths }
 
@@ -211,7 +214,7 @@ func (s *SpawnService) Spawn(cfg SpawnConfig) (SpawnResult, error) {
 		}
 	}
 	if cfg.Circle == "" {
-		cfg.Circle = "default"
+		return SpawnResult{}, &SpawnError{Status: 422, Detail: "Circle is required; run inside a tmux session or pass --circle"}
 	}
 	if cfg.Role == "" {
 		cfg.Role = proto.RoleAgent

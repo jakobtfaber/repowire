@@ -76,7 +76,7 @@ func (f *fakeTransport) ACPRoute(target *proto.Peer) (*ACPRouteDecision, bool) {
 
 func newRouterWithFake(f *fakeTransport) *MessageRouter {
 	// reg is unused by the send paths under test; nil is fine for unit coverage.
-	return NewMessageRouter(f, NewQueryTracker(), nil)
+	return NewMessageRouter(f, nil)
 }
 
 // TestSendAskReturnsHookReceiptWithinAckWindow exercises the happy delivery-ack
