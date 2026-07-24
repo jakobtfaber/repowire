@@ -182,21 +182,6 @@ func TestPendingAsksRequiresExactlyOneID(t *testing.T) {
 	}
 }
 
-// TestAskSubpathNoOps: picked_up / mark_reminded are deprecated 200 no-ops.
-func TestAskSubpathNoOps(t *testing.T) {
-	reg := newAskFakeRegistry()
-	f := &fakeTransport{}
-	srv, _ := newAskTestHub(t, reg, f)
-
-	for _, action := range []string{"picked_up", "mark_reminded"} {
-		resp := postJSON(t, srv.URL+"/asks/ask-xyz/"+action, map[string]any{"correlation_id": "ask-xyz"})
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("%s expected 200 no-op, got %d", action, resp.StatusCode)
-		}
-	}
-}
-
 // TestAskWaitRejectsNonAsker: /asks/{cid}/wait is 403 when peer_id is not the
 // original asker (waiting flips the ask to pull delivery — only the asker may).
 func TestAskWaitRejectsNonAsker(t *testing.T) {

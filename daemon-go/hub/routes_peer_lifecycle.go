@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/peer"
@@ -20,7 +21,6 @@ import (
 //	POST   /peers/{name}/offline
 //	POST   /peers/{name}/touch
 //	POST   /peers/{name}/description
-//	POST   /peers/circle
 //
 // Every handler is gated by requireAuth. The wire JSON shapes match the Python
 // daemon (daemon/routes/peers.py) exactly — clients depend on them. Identity-
@@ -40,7 +40,6 @@ func (h *Hub) registerPeerLifecycleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /peers/{name}/offline", h.requireAuth(h.handleMarkOffline))
 	mux.HandleFunc("POST /peers/{name}/touch", h.requireAuth(h.handleTouch))
 	mux.HandleFunc("POST /peers/{name}/description", h.requireAuth(h.handleSetDescription))
-	mux.HandleFunc("POST /peers/circle", h.requireAuth(h.handleSetCircle))
 }
 
 // ---------------------------------------------------------------------------
@@ -120,18 +119,14 @@ type SetDescriptionRequest struct {
 	Description string `json:"description"`
 }
 
-// SetCircleRequest is the POST /peers/circle body.
-type SetCircleRequest struct {
-	PeerName string `json:"peer_name"`
-	Circle   string `json:"circle"`
-}
-
 // ---------------------------------------------------------------------------
 // Shared impls.
 // ---------------------------------------------------------------------------
 
 // registerPeerImpl is the shared body for POST /peer/register and POST /peers.
-// It allocates/reclaims the identity through the registry FSM, applies the
+// Pane-backed bootstrap derives circle and role from live spawn ownership; a
+// pane-less CLI/admin registration supplies its own explicit circle. It then
+// allocates/reclaims the identity through the registry FSM, applies the
 // initial-OFFLINE rule (a pane-backed peer that already reported a runtime
 // session id registers OFFLINE — its ws-hook owns the ONLINE transition), then
 // persists a session-binding observation + mints a birth certificate (unless
@@ -144,7 +139,7 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 		return RegisterResponse{}, http.StatusUnprocessableEntity,
 			"name must match ^[a-zA-Z0-9._-]+$ and be <= 64 chars"
 	}
-	if req.Circle != nil && !isValidIdentifier(*req.Circle) {
+	if req.Circle != nil && *req.Circle != "" && !isValidIdentifier(*req.Circle) {
 		return RegisterResponse{}, http.StatusUnprocessableEntity,
 			"Circle must match ^[a-zA-Z0-9._-]+$ and be <= 64 chars"
 	}
@@ -153,13 +148,26 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 	if backend == "" {
 		backend = proto.AgentClaudeCode
 	}
-	role := req.Role
-	if role == "" {
-		role = proto.RoleAgent
-	}
-	circle := "global"
-	if req.Circle != nil && *req.Circle != "" {
+	role, circle := req.Role, ""
+	if req.PaneID != nil && *req.PaneID != "" {
+		var code int
+		var detail string
+		circle, role, code, detail = h.verifiedPaneIdentity(*req.PaneID, backend, derefString(req.Path), derefString(req.Circle), req.Role)
+		if code != http.StatusOK {
+			return RegisterResponse{}, code, detail
+		}
+	} else {
+		if req.Circle == nil || *req.Circle == "" {
+			return RegisterResponse{}, http.StatusUnprocessableEntity,
+				"Circle is required; choose a circle for pane-less registration"
+		}
 		circle = *req.Circle
+		if role == "" {
+			role = proto.RoleAgent
+		}
+	}
+	if !role.Valid() {
+		return RegisterResponse{}, http.StatusUnprocessableEntity, "Invalid role"
 	}
 	machine := "unknown"
 	if req.Machine != nil && *req.Machine != "" {
@@ -190,10 +198,6 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 		ParentPID:     req.ParentPID,
 		TurnState:     req.TurnState,
 	}
-	if req.CircleSource != nil {
-		params.CircleSource = *req.CircleSource
-	}
-
 	peerID, displayName, err := h.reg.AllocateAndRegister(ctx, params)
 	if err != nil {
 		// PaneHijack / PeerRetired guards are 409s (orphan ws-hook reclaim).
@@ -233,6 +237,37 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 	}, http.StatusOK, ""
 }
 
+func (h *Hub) verifiedPaneIdentity(paneID string, backend proto.AgentType, path, requestedCircle string, requestedRole proto.PeerRole) (string, proto.PeerRole, int, string) {
+	if h.spawn == nil || h.spawn.svc == nil {
+		return "", "", http.StatusForbidden, "pane-backed runtime registration requires live tmux evidence"
+	}
+	proof := h.spawn.svc.Ownership().ValidateBootstrap(paneID)
+	if !proof.OK || proof.Evidence == nil {
+		return "", "", http.StatusForbidden, "pane-backed runtime registration rejected: " + proof.Error
+	}
+	circle, _, _ := strings.Cut(proof.Evidence.TmuxSession, ":")
+	role := proto.RoleAgent
+	if proof.Record != nil {
+		if proof.Record.Backend != string(backend) || service.NormPath(proof.Record.Path) != service.NormPath(path) {
+			return "", "", http.StatusForbidden, "pane-backed runtime registration does not match spawn ownership"
+		}
+		circle, role = proof.Record.Circle, proto.PeerRole(proof.Record.Role)
+	}
+	if !isValidIdentifier(circle) || !role.Valid() {
+		return "", "", http.StatusConflict, "pane evidence has invalid circle or role"
+	}
+	if service.NormPath(proof.Evidence.CurrentPath) != service.NormPath(path) {
+		return "", "", http.StatusForbidden, "pane-backed runtime path contradicts live tmux evidence"
+	}
+	if requestedCircle != "" && requestedCircle != circle {
+		return "", "", http.StatusForbidden, "pane-backed runtime registration circle contradicts pane evidence"
+	}
+	if requestedRole != "" && requestedRole != role {
+		return "", "", http.StatusForbidden, "pane-backed runtime registration role contradicts pane evidence"
+	}
+	return circle, role, http.StatusOK, ""
+}
+
 // persistBinding records the session-binding observation and mints a birth
 // certificate. Best-effort, mirroring Python: any store error is logged-and-
 // swallowed (registration still succeeds; the cert is simply absent). Returns
@@ -256,6 +291,9 @@ func (h *Hub) persistBinding(
 		"runtime_session_id":  derefOrNil(runtimeSessionID),
 		"observed_by_peer_id": pid,
 	}
+	bindingMeta := bindingMetadata(req.Metadata)
+	bindingMeta["circle"] = circle
+	bindingMeta["role"] = string(role)
 	if _, err := h.store.UpsertObservation(ctx, state.Observation{
 		PeerID:           &pid,
 		Backend:          string(backend),
@@ -265,7 +303,7 @@ func (h *Hub) persistBinding(
 		Provenance:       provenance,
 		ResumeCapability: service.ResumeCapabilityForRegistration(backend, derefString(runtimeSessionID)),
 		Status:           state.BindingActive,
-		Metadata:         bindingMetadata(req.Metadata),
+		Metadata:         bindingMeta,
 	}); err != nil {
 		// Fail loud in the journal, not on the request: registration is durable
 		// in the registry regardless; the binding is observability/resume sugar.
@@ -275,13 +313,10 @@ func (h *Hub) persistBinding(
 		return nil
 	}
 
-	certMeta := bindingMetadata(req.Metadata)
-	certMeta["circle"] = circle
-	certMeta["role"] = string(role)
 	cert, err := h.store.MintBirthCertificate(
 		ctx, pid, string(displayName), string(backend),
 		req.Path, runtimeSessionID, req.PaneID, req.AgentPID, req.ParentPID,
-		certMeta, 0, // ttl 0 → DefaultCertificateTTL
+		bindingMeta, 0, // ttl 0 → DefaultCertificateTTL
 		time.Time{}, // zero issuedAt → MintBirthCertificate uses time.Now()
 	)
 	if err != nil {
@@ -351,10 +386,12 @@ func (h *Hub) handleValidateRuntimeIdentity(w http.ResponseWriter, r *http.Reque
 	peerID := proto.PeerID(cert.PeerID)
 	p, ok := h.reg.GetPeer(peerID)
 	if !ok {
-		circle, role := "default", proto.RoleAgent
-		if value, ok := cert.Metadata["circle"].(string); ok && value != "" {
-			circle = value
+		circle, _ := cert.Metadata["circle"].(string)
+		if circle == "" {
+			writeError(w, http.StatusConflict, "Runtime identity certificate has no circle")
+			return
 		}
+		role := proto.RoleAgent
 		if value, ok := cert.Metadata["role"].(string); ok && value != "" {
 			role = proto.PeerRole(value)
 		}
@@ -367,7 +404,6 @@ func (h *Hub) handleValidateRuntimeIdentity(w http.ResponseWriter, r *http.Reque
 			Circle: circle, Backend: proto.AgentType(cert.Backend), Path: &cert.ProjectPath,
 			PaneID: cert.PaneID, Machine: machine, Role: role, ClaimedPeerID: &peerID,
 			Metadata: metadata, AgentPID: cert.AgentPID, ParentPID: cert.ParentPID,
-			CircleSource: "fallback",
 		})
 		if allocErr != nil {
 			writeError(w, http.StatusConflict, "Runtime identity certificate could not rehydrate peer: "+allocErr.Error())
@@ -462,21 +498,6 @@ func (h *Hub) handleSetDescription(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Peer not found: "+name)
 		return
 	}
-	writeJSON(w, http.StatusOK, okResponse{OK: true})
-}
-
-func (h *Hub) handleSetCircle(w http.ResponseWriter, r *http.Request) {
-	var req SetCircleRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.PeerName == "" || req.Circle == "" {
-		writeError(w, http.StatusUnprocessableEntity, "peer_name and circle are required")
-		return
-	}
-	// Best-effort, mirroring set_peer_circle: an unknown peer is a no-op that
-	// still returns ok (the Python route does not 404 here).
-	h.reg.SetCircleByName(r.Context(), req.PeerName, req.Circle)
 	writeJSON(w, http.StatusOK, okResponse{OK: true})
 }
 

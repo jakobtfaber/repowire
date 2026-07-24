@@ -308,7 +308,7 @@ func (lh *LifecycleHandler) serveSessionRenamed(w http.ResponseWriter, r *http.R
 	if !decode(w, r, &req) {
 		return
 	}
-	if !validName(req.NewName) || !validNames(req.PaneIDs) {
+	if !isValidIdentifier(req.NewName) || !validNames(req.PaneIDs) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid field")
 		return
 	}

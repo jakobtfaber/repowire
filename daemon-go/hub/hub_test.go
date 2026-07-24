@@ -327,6 +327,28 @@ func TestHandleWSNormalizesPath(t *testing.T) {
 	}
 }
 
+func TestHandleWSRejectsFreshPanelessOrchestrator(t *testing.T) {
+	h := newTestHub(t)
+	ownership := service.NewFileOwnership("test-host", func(string) *service.TmuxPaneEvidence { return nil })
+	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host")
+	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	if err := wsjson.Write(ctx, c, proto.ConnectFrame{Type: proto.FrameConnect, DisplayName: "fake-orchestrator", Circle: "victim", Backend: proto.AgentCodex, Role: proto.RoleOrchestrator}); err != nil {
+		t.Fatal(err)
+	}
+	var frame proto.ErrorFrame
+	if err := wsjson.Read(ctx, c, &frame); err != nil || frame.Type != proto.FrameError {
+		t.Fatalf("pane-less elevation response = %+v, %v", frame, err)
+	}
+}
+
 // waitConnected blocks until the transport registers the peer's socket.
 func waitConnected(t *testing.T, h *Hub, id proto.PeerID) {
 	t.Helper()

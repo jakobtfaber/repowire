@@ -81,7 +81,7 @@ func runSession(backend string) int {
 
 	hint := consumeSpawnHint(cwd, backend)
 	circle, circleSource := info.SessionName, "tmux"
-	if circle == "" && hint != nil {
+	if circle == "" && info.PaneID != "" && hint != nil {
 		circle, circleSource = stringValue(hint, "circle"), "spawn_hint"
 	}
 	if circle == "" {
@@ -132,9 +132,9 @@ func runSession(backend string) int {
 		request["pane_id"] = info.PaneID
 	}
 	if hint != nil {
-		for _, key := range []string{"peer_id", "role"} {
-			if value := stringValue(hint, key); value != "" {
-				request[key] = value
+		if info.PaneID != "" {
+			if value := stringValue(hint, "peer_id"); value != "" {
+				request["peer_id"] = value
 			}
 		}
 		if boolValue(hint, "pending_first_turn") {
@@ -196,7 +196,7 @@ func runSession(backend string) int {
 
 	peers := peerList()
 	self := findPeer(peers, peerID, displayName)
-	sections := []string{formatSelfContext(displayName, peerID, circle, circleSource, backend, stringValue(hint, "role"), cwd, stringValue(metadata, "branch"), self)}
+	sections := []string{formatSelfContext(displayName, peerID, circle, circleSource, backend, stringValue(self, "role"), cwd, stringValue(metadata, "branch"), self)}
 	if context := formatPeersContext(peers, displayName); context != "" {
 		sections = append(sections, context)
 	}

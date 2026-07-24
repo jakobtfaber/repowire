@@ -287,11 +287,11 @@ func runOrchestrator(argv []string) int {
 		if err != nil {
 			return fatal(err)
 		}
-		body := map[string]any{
-			"path": workspace, "backend": backend,
-			"circle": first(stringAny(settings["circle"]), "default"),
-			"role":   "orchestrator",
+		circle := first(a.string("circle", ""), stringAny(settings["circle"]), currentTmuxCircle())
+		if circle == "" {
+			return fatal(fmt.Errorf("orchestrator start requires a circle in orchestrator.yaml or --circle"))
 		}
+		body := map[string]any{"path": workspace, "backend": backend, "circle": circle, "role": "orchestrator"}
 		if profile := first(a.string("profile", ""), stringAny(settings["profile"])); profile != "" {
 			body["profile"] = profile
 		}

@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
@@ -127,10 +126,6 @@ func wsHookPath(paneID, suffix string) string {
 	return filepath.Join(paneLogsDir(), "ws-hook-"+paneToken(paneID)+suffix)
 }
 
-func pendingQueryPath(paneID string) string {
-	return filepath.Join(paneLogsDir(), "pending-query-"+paneToken(paneID)+".json")
-}
-
 func readMetadata(paneID string) map[string]any {
 	var out map[string]any
 	raw, err := os.ReadFile(wsHookPath(paneID, ".meta.json"))
@@ -173,46 +168,6 @@ func clearRuntime(paneID string) {
 	for _, suffix := range []string{".pid", ".meta.json", ".cwd"} {
 		_ = os.Remove(wsHookPath(paneID, suffix))
 	}
-	_ = os.Remove(pendingQueryPath(paneID))
-}
-
-func mutateQueryFIFO(paneID string, mutate func([]string) ([]string, string)) string {
-	path := pendingQueryPath(paneID)
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return ""
-	}
-	defer lock.Close()
-	if syscall.Flock(int(lock.Fd()), syscall.LOCK_EX) != nil {
-		return ""
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
-	var items []string
-	if raw, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(raw, &items)
-	}
-	items, result := mutate(items)
-	if len(items) == 0 {
-		_ = os.Remove(path)
-	} else if raw, err := json.Marshal(items); err == nil {
-		_ = os.WriteFile(path, raw, 0o600)
-	}
-	return result
-}
-
-func pushQueryCID(paneID, cid string) {
-	mutateQueryFIFO(paneID, func(items []string) ([]string, string) {
-		return append(items, cid), ""
-	})
-}
-
-func popQueryCID(paneID string) string {
-	return mutateQueryFIFO(paneID, func(items []string) ([]string, string) {
-		if len(items) == 0 {
-			return nil, ""
-		}
-		return items[1:], items[0]
-	})
 }
 
 func daemonConnection() (string, string) {

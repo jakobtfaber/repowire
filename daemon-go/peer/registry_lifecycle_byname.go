@@ -83,24 +83,6 @@ func (r *Registry) MarkOfflineByNameWithReason(ctx context.Context, identifier s
 	return true, c, mErr
 }
 
-// SetCircleByName resolves an addressing string and moves the peer to circle,
-// keeping peer + durable mapping in sync under one lock. Returns true if found.
-// Mirrors PeerRegistry.set_peer_circle (best-effort: unknown peer is a no-op).
-func (r *Registry) SetCircleByName(ctx context.Context, identifier, circle string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	p, err := r.resolvePeerLocked(identifier, nil)
-	if err != nil || p == nil {
-		return false
-	}
-	p.Circle = circle
-	if m, ok := r.mappings[p.PeerID]; ok {
-		m.Circle = circle
-		m.UpdatedAt = time.Now().UTC()
-	}
-	return true
-}
-
 // TouchLastSeen refreshes a peer's last_seen WITHOUT touching transport status.
 // Outbound MCP traffic is process activity, not proof of inbound reachability —
 // WebSocket connect/disconnect owns ONLINE/OFFLINE; touch only feeds last_seen-
@@ -145,6 +127,7 @@ func (r *Registry) UpdateDescription(ctx context.Context, identifier, descriptio
 	if m, ok := r.mappings[p.PeerID]; ok && m.Description != description {
 		m.Description = description
 		m.UpdatedAt = now
+		r.markMappingsDirtyLocked()
 	}
 	return true, nil
 }

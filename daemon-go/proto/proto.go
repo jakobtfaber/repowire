@@ -171,7 +171,6 @@ const (
 	// Client -> Daemon
 	FrameConnect           FrameType = "connect"
 	FrameStatus            FrameType = "status"
-	FrameSetCircle         FrameType = "set_circle"
 	FrameUpdateDisplayName FrameType = "update_display_name"
 	FramePong              FrameType = "pong"
 	FrameDeliveryAck       FrameType = "delivery_ack"
@@ -222,12 +221,6 @@ type StatusFrame struct {
 	Type      FrameType  `json:"type"` // "status"
 	Status    PeerStatus `json:"status"`
 	TurnState *TurnState `json:"turn_state,omitempty"`
-}
-
-// SetCircleFrame moves the peer between circles (client -> daemon).
-type SetCircleFrame struct {
-	Type   FrameType `json:"type"` // "set_circle"
-	Circle string    `json:"circle"`
 }
 
 // UpdateDisplayNameFrame renames a peer (client -> daemon).

@@ -907,26 +907,4 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
-    name: "set_circle",
-    label: "Repowire: set circle",
-    description: "Join a named circle to communicate with peers in that circle. Applies to all sessions in this pi process (circle is process-wide so reconnects keep it).",
-    parameters: Type.Object({
-      circle: Type.String({ description: "Circle name to join (e.g., 'dev', 'frontend')" }),
-    }),
-    async execute(_id, params, _signal, _onUpdate, _ctx) {
-      circle = params.circle;
-      let sent = 0;
-      for (const conn of peerBySession.values()) {
-        if (conn.ws?.readyState === WebSocket.OPEN) {
-          conn.ws.send(JSON.stringify({ type: "set_circle", circle: params.circle }));
-          sent++;
-        }
-      }
-      const text = sent > 0
-        ? "Joined circle: " + params.circle + " (" + sent + " session peer" + (sent === 1 ? "" : "s") + ")"
-        : "Circle queued: " + params.circle + " (will apply on reconnect)";
-      return { content: [{ type: "text", text }], details: undefined };
-    },
-  });
 }

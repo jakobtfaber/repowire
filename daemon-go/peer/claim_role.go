@@ -104,6 +104,7 @@ func (r *Registry) ClaimSpecialRole(ctx context.Context, name string, role proto
 		if m, ok := r.mappings[p.PeerID]; ok && m.Role != proto.RoleAgent {
 			m.Role = proto.RoleAgent
 			m.UpdatedAt = now
+			r.markMappingsDirtyLocked()
 		}
 	}
 
@@ -113,6 +114,7 @@ func (r *Registry) ClaimSpecialRole(ctx context.Context, name string, role proto
 	if m, ok := r.mappings[target.PeerID]; ok {
 		m.Role = role
 		m.UpdatedAt = now
+		r.markMappingsDirtyLocked()
 	}
 
 	// Mapping-only holders (no live peer) also get demoted so restart hydration
@@ -124,9 +126,10 @@ func (r *Registry) ClaimSpecialRole(ctx context.Context, name string, role proto
 		previous = append(previous, string(sid))
 		m.Role = proto.RoleAgent
 		m.UpdatedAt = now
+		r.markMappingsDirtyLocked()
 	}
 
-	result := &ClaimResult{Peer: target, AlreadyHeld: alreadyHeld, PreviousHolders: previous}
+	result := &ClaimResult{Peer: clonePeer(target), AlreadyHeld: alreadyHeld, PreviousHolders: previous}
 	evName := target.DisplayName
 	pid := target.PeerID
 	r.mu.Unlock()

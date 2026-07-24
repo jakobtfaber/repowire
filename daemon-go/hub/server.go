@@ -61,7 +61,7 @@ type Hub struct {
 
 	// session holds the session-wiring route dependencies (registry + query
 	// tracker + queued-delivery store), wired via WithSessionRoutes. The
-	// /session/update·/response·/deliveries/pending handlers 503 while unwired.
+	// /session/update·/deliveries/pending handlers 503 while unwired.
 	session *sessionDeps
 
 	// reviews is the JSON-backed review-queue store behind the /reviews routes,

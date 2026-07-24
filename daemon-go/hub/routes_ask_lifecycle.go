@@ -10,8 +10,6 @@ package hub
 //	POST /answer                       answer a structured-question ask
 //	POST /query                        legacy blocking RPC (ask-based shim)
 //	GET  /asks/pending                 the Stop-hook reminder source
-//	POST /asks/{cid}/picked_up         deprecated no-op (transport compat)
-//	POST /asks/{cid}/mark_reminded     deprecated no-op (hook compat)
 //	POST /asks/{cid}/wait              bounded wait for resolution (wait_on_ack)
 //
 // Identity discipline: routing-sensitive lookups resolve to proto.PeerID via the
@@ -95,7 +93,7 @@ func (h *Hub) registerAskLifecycleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/ask-many", h.requireAuth(h.handleAskMany))
 	mux.HandleFunc("/ask-many/", h.requireAuth(h.handleAskManyResult))
 	mux.HandleFunc("/asks/pending", h.requireAuth(h.handlePendingAsks))
-	// /asks/{correlation_id}/{picked_up|mark_reminded|wait}
+	// /asks/{correlation_id}/wait
 	mux.HandleFunc("/asks/", h.requireAuth(h.handleAskSubpath))
 }
 
@@ -322,13 +320,15 @@ func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
 	// reply_to closes a PRIOR ask; it is NOT this ask's cid. Register with an
 	// empty CorrelationID so a fresh ask-<hex8> is minted.
 	cid, err := h.ask.asks.Register(ctx, service.RegisterAskParams{
-		FromPeerID:   fromID,
-		FromPeerName: fromName,
-		ToPeerID:     target.PeerID,
-		ToPeerName:   target.DisplayName,
-		Text:         req.Text,
-		ReplyTo:      req.ReplyTo,
-		Question:     req.Question,
+		FromPeerID:            fromID,
+		FromPeerName:          fromName,
+		ToPeerID:              target.PeerID,
+		ToPeerName:            target.DisplayName,
+		Text:                  req.Text,
+		ReplyTo:               req.ReplyTo,
+		FromRepowireSessionID: h.sessionIDForPeer(ctx, string(fromID)),
+		ToRepowireSessionID:   h.sessionIDForPeer(ctx, string(target.PeerID)),
+		Question:              req.Question,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrQuiesced) {
@@ -1042,7 +1042,7 @@ func (h *Hub) handlePendingAsks(w http.ResponseWriter, r *http.Request) {
 }
 
 // ----------------------------------------------------------------------------
-// /asks/{correlation_id}/{picked_up|mark_reminded|wait}
+// /asks/{correlation_id}/wait
 // ----------------------------------------------------------------------------
 
 // AskWaitRequest mirrors asks.py AskWaitRequest.
@@ -1064,9 +1064,7 @@ type AskWaitResponse struct {
 	Attachments   []map[string]any `json:"attachments,omitempty"`
 }
 
-// handleAskSubpath dispatches the /asks/{cid}/{action} endpoints. picked_up and
-// mark_reminded are deprecated silent no-op 200s (transport compat: the daemon
-// no longer tracks pickup state). wait is the bounded wait_on_ack primitive.
+// handleAskSubpath dispatches the bounded wait_on_ack endpoint.
 func (h *Hub) handleAskSubpath(w http.ResponseWriter, r *http.Request) {
 	// Path is /asks/{cid}/{action}; trim the "/asks/" prefix and split.
 	rest := strings.TrimPrefix(r.URL.Path, "/asks/")
@@ -1084,9 +1082,6 @@ func (h *Hub) handleAskSubpath(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch action {
-	case "picked_up", "mark_reminded":
-		// Deprecated no-op kept for one release so older transports don't 404.
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case "wait":
 		h.handleAskWait(w, r, cid)
 	default:
@@ -1177,16 +1172,31 @@ func (h *Hub) handleAskWait(w http.ResponseWriter, r *http.Request, cid string) 
 // ask (the acker is the ask recipient replying to the original asker).
 func (h *Hub) emitAckEvent(ctx context.Context, ask *service.Ask, reason string, delivered, hasMessage, hasAttachments bool) {
 	h.ask.reg.AddEvent(ctx, "ack", map[string]any{
-		"from":            string(ask.ToPeerName),
-		"to":              string(ask.FromPeerName),
-		"from_peer_id":    string(ask.ToPeerID),
-		"to_peer_id":      string(ask.FromPeerID),
-		"correlation_id":  ask.CorrelationID,
-		"status":          reason,
-		"delivered":       delivered,
-		"has_message":     hasMessage,
-		"has_attachments": hasAttachments,
+		"from":                     string(ask.ToPeerName),
+		"to":                       string(ask.FromPeerName),
+		"from_peer_id":             string(ask.ToPeerID),
+		"to_peer_id":               string(ask.FromPeerID),
+		"correlation_id":           ask.CorrelationID,
+		"status":                   reason,
+		"delivered":                delivered,
+		"has_message":              hasMessage,
+		"has_attachments":          hasAttachments,
+		"repowire_session_id":      ask.FromRepowireSessionID,
+		"from_repowire_session_id": ask.ToRepowireSessionID,
+		"to_repowire_session_id":   ask.FromRepowireSessionID,
 	})
+}
+
+func (h *Hub) sessionIDForPeer(ctx context.Context, peerID string) *string {
+	if h.store == nil || peerID == "" {
+		return nil
+	}
+	bindings, err := h.store.ListBindingsByPeer(ctx, peerID)
+	if err != nil || len(bindings) == 0 {
+		return nil
+	}
+	id := bindings[0].RepowireSessionID
+	return &id
 }
 
 func derefOr(p *string, fallback string) string {

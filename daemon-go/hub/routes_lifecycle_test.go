@@ -208,6 +208,11 @@ func TestSessionRenamedReCircles(t *testing.T) {
 	h.Routes(mux)
 
 	id := registerPanePeer(t, h.reg, "old-circle", "%3")
+	bad := postLifecycle(t, mux, "/hooks/lifecycle/session-renamed",
+		sessionRenamedRequest{NewName: "bad name", PaneIDs: []string{"%3"}})
+	if bad.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid circle status %d", bad.Code)
+	}
 
 	rec := postLifecycle(t, mux, "/hooks/lifecycle/session-renamed",
 		sessionRenamedRequest{NewName: "new-circle", PaneIDs: []string{"%3"}})

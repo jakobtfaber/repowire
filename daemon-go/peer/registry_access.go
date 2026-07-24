@@ -137,6 +137,7 @@ func (r *Registry) UpdateModelByName(ctx context.Context, identifier, model stri
 	if mp, ok := r.mappings[p.PeerID]; ok && (mp.Model == nil || *mp.Model != model) {
 		mp.Model = &m
 		mp.UpdatedAt = now
+		r.markMappingsDirtyLocked()
 	}
 	return true, nil
 }

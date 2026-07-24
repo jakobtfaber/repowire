@@ -24,11 +24,11 @@ func MCPIdentity() string {
 	hint := consumeSpawnHint(cwd, backend)
 	info := getTmuxInfo()
 	circle, source := info.SessionName, "tmux"
-	if circle == "" && hint != nil {
+	if circle == "" && paneID != "" && hint != nil {
 		circle, source = stringValue(hint, "circle"), "spawn_hint"
 	}
 	if circle == "" {
-		circle, source = "default", "fallback"
+		return filepath.Base(cwd)
 	}
 	body := map[string]any{
 		"name": filepath.Base(cwd), "path": cwd, "circle": circle,
@@ -41,9 +41,9 @@ func MCPIdentity() string {
 		body["peer_id"] = claimedPeerID
 	}
 	if hint != nil {
-		for _, key := range []string{"peer_id", "role"} {
-			if value := stringValue(hint, key); value != "" {
-				body[key] = value
+		if paneID != "" {
+			if value := stringValue(hint, "peer_id"); value != "" {
+				body["peer_id"] = value
 			}
 		}
 	}

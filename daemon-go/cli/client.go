@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -144,6 +145,17 @@ func first(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func currentTmuxCircle() string {
+	if os.Getenv("TMUX_PANE") == "" {
+		return ""
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "#{session_name}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 func anySlice(value any) []any { items, _ := value.([]any); return items }
 func addQuery(q url.Values, key, value string) {

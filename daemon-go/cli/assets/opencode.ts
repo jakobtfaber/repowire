@@ -882,26 +882,6 @@ ${me.peerId || ""}	${me.peerName}			not registered			`
           return `description updated: ${description}`
         },
       }),
-      set_circle: tool({
-        description: "Join a named circle to communicate with peers in that circle. Applies to all sessions in this opencode server (circle is server-wide so reconnects keep it).",
-        args: {
-          circle: tool.schema.string().describe("Circle name to join (e.g., 'dev', 'frontend')"),
-        },
-        async execute({ circle: target }, _ctx) {
-          // Update module state so reconnect carries the new circle.
-          circle = target
-          let sent = 0
-          for (const conn of peerBySession.values()) {
-            if (conn.ws?.readyState === WebSocket.OPEN) {
-              conn.ws.send(JSON.stringify({ type: "set_circle", circle: target }))
-              sent++
-            }
-          }
-          return sent > 0
-            ? `Joined circle: ${target} (${sent} session peer${sent === 1 ? "" : "s"})`
-            : `Circle queued: ${target} (will apply on reconnect)`
-        },
-      }),
     },
     // Per-session event routing. Every session/message event carries
     // sessionID, so dispatch to the matching PeerConn.

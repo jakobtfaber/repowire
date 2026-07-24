@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -68,11 +66,6 @@ type AllocateParams struct {
 	ClaimedPeerID *proto.PeerID
 	Metadata      map[string]any
 	AgentPID      *int
-	// CircleSource is the provenance of Circle ("tmux", "spawn_hint", "fallback",
-	// or "" when unknown). Only "" / "fallback" permit cross-circle mapping
-	// adoption: a real tmux session named "default" is intentional and must not be
-	// remapped to a peer's prior non-default circle.
-	CircleSource string
 	// TurnState, when supplied, is applied to the peer on both fresh registration
 	// and same-id reconnect (parity with the Python initial turn_state). nil leaves
 	// the peer's turn_state untouched on reconnect / zero on fresh.
@@ -107,10 +100,12 @@ type peerState struct {
 // DisplayName index for addressing, durable mappings, retirement records, and
 // demand-driven lazy_repair. All routing-sensitive lookups use PeerID.
 type Registry struct {
-	mu       sync.RWMutex
-	peers    map[proto.PeerID]*peerState
-	mappings map[proto.PeerID]*proto.SessionMapping
-	retired  map[proto.PeerID]time.Time
+	mu              sync.RWMutex
+	peers           map[proto.PeerID]*peerState
+	mappings        map[proto.PeerID]*proto.SessionMapping
+	mappingsDirty   bool
+	mappingsVersion uint64
+	retired         map[proto.PeerID]time.Time
 
 	store     Store
 	live      Liveness
@@ -189,6 +184,10 @@ func NewRegistry(ctx context.Context, store Store, live Liveness, transport Tran
 		heartbeatInterval: defaultHeartbeatInterval,
 		descriptionTTL:    15 * time.Minute,
 		descriptionSetAt:  make(map[proto.PeerID]time.Time),
+		rec: &reconcileState{
+			paneStrikes:   make(map[proto.PeerID]int),
+			contraEmitted: make(map[contraKey]struct{}),
+		},
 	}
 
 	mappings, err := store.LoadMappings(ctx)
@@ -238,6 +237,7 @@ func (r *Registry) applyDescriptionTTLLocked(peer *proto.Peer) {
 	if mapping := r.mappings[peer.PeerID]; mapping != nil {
 		mapping.Description = ""
 		mapping.UpdatedAt = time.Now().UTC()
+		r.markMappingsDirtyLocked()
 	}
 }
 
@@ -312,7 +312,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	// the (e) mapping-wins block restores those fields. Parity with
 	// PeerRegistry._find_or_allocate_mapping.
 	if id == "" {
-		if adopted, ok := r.findReusableMappingLocked(displayName, params.Circle, params.Backend, params.Path, params.CircleSource); ok {
+		if adopted, ok := r.findReusableMappingLocked(displayName, params.Circle, params.Backend); ok {
 			id = adopted
 		}
 	}
@@ -390,6 +390,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 			if params.AgentPID != nil {
 				m.AgentPID = params.AgentPID
 			}
+			r.markMappingsDirtyLocked()
 		}
 		r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: existing.peer.DisplayName, SessionID: id})
 		r.scheduleRedelivery(ctx, id)
@@ -427,11 +428,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		// (2) Sticky orchestrator: reuse the configured orchestrator workspace
 		// identity; otherwise do not displace and register pane-less.
 		if h := r.isFreshOrchestratorPaneLocked(pane, now); h != nil {
-			claimPath := ""
-			if params.Path != nil {
-				claimPath = *params.Path
-			}
-			if h.peer.Backend == params.Backend && h.peer.Circle == params.Circle && isOrchestratorPath(h.peer.Path) && isOrchestratorPath(claimPath) {
+			if h.peer.Backend == params.Backend && h.peer.Circle == params.Circle {
 				h.peer.LastSeen = &now
 				if params.Model != nil {
 					h.peer.Model = params.Model
@@ -529,20 +526,11 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 		Model:       model,
 		AgentPID:    params.AgentPID,
 	}
+	r.markMappingsDirtyLocked()
 
 	r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: displayName, SessionID: id})
 	r.scheduleRedelivery(ctx, id)
 	return id, displayName, nil
-}
-
-func isOrchestratorPath(path string) bool {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	want, _ := filepath.Abs(filepath.Join(home, ".repowire", "orchestrator"))
-	got, _ := filepath.Abs(path)
-	return filepath.Clean(got) == filepath.Clean(want)
 }
 
 // scheduleRedelivery drains any stashed replies owed to a just-(re)registered
@@ -603,6 +591,7 @@ func (r *Registry) Close() {
 	r.closed = true
 	r.closeMu.Unlock()
 	r.wg.Wait()
+	r.persistMappings(context.Background())
 }
 
 // claimRedelivery returns true if the caller won the single-flight slot for this
@@ -830,34 +819,13 @@ func (r *Registry) reclaimableOfflineLocked(name proto.DisplayName, circle strin
 	return "", false
 }
 
-// findReusableMappingLocked returns a persisted mapping's PeerID to adopt for an
-// incoming registration keyed on IDENTITY (not peer_id), so a restart-without-
-// peer_id preserves the peer's durable role/circle/description. Two passes mirror
-// PeerRegistry._find_or_allocate_mapping:
-//  1. exact match on (display_name, circle, backend);
-//  2. cross-circle adoption — only when the incoming circle is the "default"
-//     fallback (CircleSource "" or "fallback") and a path is present: match on
-//     (display_name, backend, path) ignoring circle, so a prior non-default circle
-//     survives a restart where the tmux session name didn't propagate.
-//
-// An explicit tmux/spawn "default" (CircleSource != "" and != "fallback") is
-// intentional and must NOT be remapped — hence the source gate.
-func (r *Registry) findReusableMappingLocked(name proto.DisplayName, circle string, backend proto.AgentType, path *string, circleSource string) (proto.PeerID, bool) {
+// findReusableMappingLocked adopts a persisted mapping only for the same
+// display name, circle, and backend. A missing circle must not silently restore
+// the peer into an older circle.
+func (r *Registry) findReusableMappingLocked(name proto.DisplayName, circle string, backend proto.AgentType) (proto.PeerID, bool) {
 	for sid, m := range r.mappings {
 		if m.DisplayName == name && m.Circle == circle && m.Backend == backend {
 			return sid, true
-		}
-	}
-	canCrossCircle := circleSource == "" || circleSource == "fallback"
-	if circle == "default" && path != nil && *path != "" && canCrossCircle {
-		for sid, m := range r.mappings {
-			mPath := ""
-			if m.Path != nil {
-				mPath = *m.Path
-			}
-			if m.DisplayName == name && m.Backend == backend && mPath == *path {
-				return sid, true
-			}
 		}
 	}
 	return "", false
@@ -953,9 +921,10 @@ func (r *Registry) UpdateStatus(ctx context.Context, id proto.PeerID, status pro
 		ps.peer.Status = s
 	}
 	ps.peer.LastSeen = &now
+	name := ps.peer.DisplayName
 	r.mu.Unlock()
 
-	r.appendEvent(ctx, Event{Type: "peer_status", Timestamp: now, PeerID: id, PeerName: ps.peer.DisplayName, SessionID: id, Payload: map[string]any{"status": string(status)}})
+	r.appendEvent(ctx, Event{Type: "peer_status", Timestamp: now, PeerID: id, PeerName: name, SessionID: id, Payload: map[string]any{"status": string(status)}})
 
 	// OFFLINE->(ONLINE|BUSY) drains any stashed replies owed to this asker.
 	// Redelivery is NOT ACP-specific (it was wrongly gated on the experiment flag,
@@ -1006,6 +975,7 @@ func (r *Registry) SetCircle(ctx context.Context, id proto.PeerID, circle string
 	if m, ok := r.mappings[id]; ok {
 		m.Circle = circle
 		m.UpdatedAt = time.Now().UTC()
+		r.markMappingsDirtyLocked()
 	}
 }
 
@@ -1037,6 +1007,7 @@ func (r *Registry) UpdateDisplayName(ctx context.Context, id proto.PeerID, name 
 	if m, ok := r.mappings[id]; ok {
 		m.DisplayName = name
 		m.UpdatedAt = time.Now().UTC()
+		r.markMappingsDirtyLocked()
 	}
 	return true, nil
 }
@@ -1356,19 +1327,38 @@ func (r *Registry) reapDangling(ctx context.Context) {
 	}
 }
 
-// persistMappings flushes every live mapping (deferred from mutation time).
+func (r *Registry) markMappingsDirtyLocked() {
+	r.mappingsDirty = true
+	r.mappingsVersion++
+}
+
+// persistMappings flushes changed mappings (deferred from mutation time).
 func (r *Registry) persistMappings(ctx context.Context) {
 	r.mu.RLock()
+	if !r.mappingsDirty {
+		r.mu.RUnlock()
+		return
+	}
+	version := r.mappingsVersion
 	snapshot := make([]*proto.SessionMapping, 0, len(r.mappings))
 	for _, m := range r.mappings {
 		cp := *m
 		snapshot = append(snapshot, &cp)
 	}
 	r.mu.RUnlock()
+	success := true
 	for _, m := range snapshot {
 		if err := r.store.UpsertMapping(ctx, m); err != nil {
 			log.Printf("repowire: mapping flush failed for %s: %v", m.SessionID, err)
+			success = false
 		}
+	}
+	if success {
+		r.mu.Lock()
+		if r.mappingsVersion == version {
+			r.mappingsDirty = false
+		}
+		r.mu.Unlock()
 	}
 }
 

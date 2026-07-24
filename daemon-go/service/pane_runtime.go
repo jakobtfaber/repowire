@@ -60,10 +60,7 @@ func ReadPaneRuntimeMetadata(paneID string) map[string]any {
 }
 
 // ClearPaneRuntimeState removes the transient pane-scoped hook files after a
-// verified kill/restart or pane death (parity with utils.clear_pane_runtime_state).
-// Best-effort: a missing file is not an error. ponytail: pending-query-cid files
-// are hook-owned and not cleared here; the meta/pid/cwd trio is what gates the
-// destructive proof and stale-pane reuse.
+// verified kill/restart or pane death. Best-effort: a missing file is not an error.
 func ClearPaneRuntimeState(paneID string) {
 	if paneID == "" {
 		return

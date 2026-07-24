@@ -47,6 +47,10 @@ repowire peer new ~/projects/project-a
 repowire peer new ~/projects/project-b --backend codex --profile fast
 ```
 
+Inside tmux, omitted `--circle` means the current tmux session. Outside tmux,
+pass `--circle`; there is no implicit `default` circle. The literal name
+`default` remains valid when you choose it explicitly.
+
 From an agent, use the `spawn_peer` MCP tool when the path is allowed.
 
 Verify registration:
@@ -75,6 +79,7 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 ## Limits
 
 - Spawning is disabled until `daemon.spawn.allowed_paths` and backend commands are configured.
+- The configured command must resolve to an executable on the daemon's configured `PATH` before a pane is opened.
 - A path outside the allowed roots is rejected.
 - Killing a tmux pane is allowed only when the daemon can prove the pane belongs to the target peer: Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target.
 - Externally attached peers without matching metadata cannot have their pane killed by Repowire.

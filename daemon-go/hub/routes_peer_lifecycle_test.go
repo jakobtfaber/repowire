@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
@@ -105,6 +106,121 @@ func TestRegisterPeerEndpoint(t *testing.T) {
 	}
 }
 
+func TestRegisterPeerRequiresCircleButAcceptsLiteralDefault(t *testing.T) {
+	h := newTestHub(t)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	missing := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{Name: "worker"})
+	if missing.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing circle: want 422, got %d (%s)", missing.Code, missing.Body.String())
+	}
+	explicit := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{Name: "worker", Circle: strptr("default")})
+	if explicit.Code != http.StatusOK {
+		t.Fatalf("explicit literal default: want 200, got %d (%s)", explicit.Code, explicit.Body.String())
+	}
+}
+
+func TestPaneRegistrationDerivesCircleAndRoleFromSpawnOwnership(t *testing.T) {
+	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
+	path, pane := t.TempDir(), "%77"
+	evidence := &service.TmuxPaneEvidence{PaneID: pane, TmuxSession: "trusted:worker", CurrentPath: path}
+	ownership := service.NewFileOwnership("test-host", func(id string) *service.TmuxPaneEvidence {
+		if id == pane {
+			return evidence
+		}
+		return nil
+	})
+	ownership.Record(service.OwnershipRecord{
+		PaneID: pane, Path: path, Backend: string(proto.AgentCodex), Circle: "trusted",
+		Role: string(proto.RoleAgent), TmuxSession: evidence.TmuxSession, Machine: "test-host",
+	})
+
+	h := newTestHub(t)
+	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host")
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	// No caller-selected circle or role: both come from the live ownership proof.
+	rec := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
+		Name: "worker", Path: &path, PaneID: &pane, Backend: proto.AgentCodex,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pane registration: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var registered RegisterResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &registered); err != nil {
+		t.Fatal(err)
+	}
+	p, ok := h.reg.GetPeer(proto.PeerID(registered.PeerID))
+	if !ok || p.Circle != "trusted" || p.Role != proto.RoleAgent {
+		t.Fatalf("pane peer = %+v, want trusted agent", p)
+	}
+}
+
+func TestManualPaneRegistrationUsesLiveTmuxCircleAndAgentRole(t *testing.T) {
+	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
+	path, pane := t.TempDir(), "%79"
+	ownership := service.NewFileOwnership("test-host", func(id string) *service.TmuxPaneEvidence {
+		if id == pane {
+			return &service.TmuxPaneEvidence{PaneID: pane, TmuxSession: "manual:window", CurrentPath: path}
+		}
+		return nil
+	})
+	h := newTestHub(t)
+	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host")
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{Name: "manual", Path: &path, PaneID: &pane})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("manual pane registration: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var registered RegisterResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &registered)
+	p, ok := h.reg.GetPeer(proto.PeerID(registered.PeerID))
+	if !ok || p.Circle != "manual" || p.Role != proto.RoleAgent {
+		t.Fatalf("manual pane peer = %+v, want manual agent", p)
+	}
+}
+
+func TestPaneRegistrationRejectsUnprovedOrContradictoryIdentity(t *testing.T) {
+	h := newTestHub(t)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	path, pane := t.TempDir(), "%88"
+	if rec := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
+		Name: "worker", Path: &path, PaneID: &pane, Circle: strptr("default"),
+	}); rec.Code != http.StatusForbidden {
+		t.Fatalf("unproved pane registration: want 403, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
+	evidence := &service.TmuxPaneEvidence{PaneID: pane, TmuxSession: "trusted:worker", CurrentPath: path}
+	ownership := service.NewFileOwnership("test-host", func(id string) *service.TmuxPaneEvidence {
+		if id == pane {
+			return evidence
+		}
+		return nil
+	})
+	ownership.Record(service.OwnershipRecord{
+		PaneID: pane, Path: path, Backend: string(proto.AgentClaudeCode), Circle: "trusted",
+		Role: string(proto.RoleAgent), TmuxSession: evidence.TmuxSession, Machine: "test-host",
+	})
+	h.WithSpawn(service.NewSpawnService(nil, ownership, nil, nil), nil, nil, "test-host")
+
+	if rec := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
+		Name: "worker", Path: &path, PaneID: &pane, Circle: strptr("other"),
+	}); rec.Code != http.StatusForbidden {
+		t.Fatalf("contradictory pane circle: want 403, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if rec := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
+		Name: "worker", Path: &path, PaneID: &pane, Role: proto.RoleOrchestrator,
+	}); rec.Code != http.StatusForbidden {
+		t.Fatalf("contradictory pane role: want 403, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
 // TestSetDescriptionUnknownPeer404 covers the description endpoint's 404 path:
 // an unknown name must not be papered over.
 func TestSetDescriptionUnknownPeer404(t *testing.T) {
@@ -117,35 +233,6 @@ func TestSetDescriptionUnknownPeer404(t *testing.T) {
 	})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("description for unknown peer: want 404, got %d (%s)", rec.Code, rec.Body.String())
-	}
-}
-
-// TestSetCircleMovesPeer verifies POST /peers/circle moves a peer between circles
-// (peer + durable mapping stay in sync via SetCircleByName).
-func TestSetCircleMovesPeer(t *testing.T) {
-	h := newTestHub(t)
-	mux := http.NewServeMux()
-	h.Routes(mux)
-
-	path := "/work/proj"
-	rec := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
-		Name:   "proj-claude-code",
-		Path:   &path,
-		Circle: strptr("alpha"),
-	})
-	var resp RegisterResponse
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-
-	cRec := postLifecycleJSON(t, mux, "/peers/circle", SetCircleRequest{
-		PeerName: resp.DisplayName,
-		Circle:   "beta",
-	})
-	if cRec.Code != http.StatusOK {
-		t.Fatalf("set circle: want 200, got %d (%s)", cRec.Code, cRec.Body.String())
-	}
-	p, ok := h.reg.GetPeer(proto.PeerID(resp.PeerID))
-	if !ok || p.Circle != "beta" {
-		t.Fatalf("peer must have moved to circle beta, got %+v ok=%v", p, ok)
 	}
 }
 

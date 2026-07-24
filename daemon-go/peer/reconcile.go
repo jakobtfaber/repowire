@@ -160,10 +160,8 @@ type contraKey struct {
 	code string
 }
 
-// WithReconciliation injects the lifecycle-reconciliation seams and TTLs onto an
-// already-constructed Registry. Called from main after NewRegistry, like the
-// OnOffline hook. All args are nil-safe: a nil asks/delivery/paneProbe leaves the
-// flag-off / test path with zero overhead.
+// WithReconciliation configures the lifecycle-reconciliation seams before the
+// registry begins serving requests. All args are nil-safe.
 func (r *Registry) WithReconciliation(
 	asks AskTracker,
 	delivery PeerDelivery,
@@ -171,28 +169,16 @@ func (r *Registry) WithReconciliation(
 	exp ExperimentsConfig,
 	staleBusyTTL, evictMaxAge time.Duration,
 ) {
-	r.rec = &reconcileState{
-		asks:          asks,
-		delivery:      delivery,
-		paneProbe:     paneProbe,
-		experiments:   exp,
-		staleBusyTTL:  staleBusyTTL,
-		evictMaxAge:   evictMaxAge,
-		paneStrikes:   make(map[proto.PeerID]int),
-		contraEmitted: make(map[contraKey]struct{}),
-	}
+	r.rec.asks = asks
+	r.rec.delivery = delivery
+	r.rec.paneProbe = paneProbe
+	r.rec.experiments = exp
+	r.rec.staleBusyTTL = staleBusyTTL
+	r.rec.evictMaxAge = evictMaxAge
 }
 
-// recOrZero returns the reconcile state, lazily zero-valued so the passes are
-// safe before WithReconciliation is called (tests that exercise only the
-// pre-existing passes never inject it).
+// recOrZero returns the reconciliation state initialized by NewRegistry.
 func (r *Registry) recOrZero() *reconcileState {
-	if r.rec == nil {
-		r.rec = &reconcileState{
-			paneStrikes:   make(map[proto.PeerID]int),
-			contraEmitted: make(map[contraKey]struct{}),
-		}
-	}
 	return r.rec
 }
 

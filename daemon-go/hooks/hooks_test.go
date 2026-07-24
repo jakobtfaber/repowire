@@ -1,6 +1,8 @@
 package hooks
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeBackendPayloads(t *testing.T) {
@@ -55,6 +58,16 @@ func TestMCPIdentityReregistersAfterCachedCertificateFails(t *testing.T) {
 	t.Setenv("REPOWIRE_BACKEND", "codex")
 	t.Setenv("REPOWIRE_PEER_ID", "")
 	t.Setenv("REPOWIRE_CONFIG", filepath.Join(homeDir, "missing-config.yaml"))
+	cwd := mustGetwd()
+	hash := sha256.Sum256([]byte(cwd + "::codex"))
+	hintPath := cachePath("spawn-hints", hex.EncodeToString(hash[:])[:16]+".json")
+	if err := os.MkdirAll(filepath.Dir(hintPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hint, _ := json.Marshal([]map[string]any{{"circle": "chosen", "role": "orchestrator", "ts": float64(time.Now().Unix())}})
+	if err := os.WriteFile(hintPath, hint, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	oldCert := map[string]any{"nonce": "expired", "peer_id": "repow-old"}
 	if err := writeMetadata("%999", map[string]any{
@@ -82,6 +95,11 @@ func TestMCPIdentityReregistersAfterCachedCertificateFails(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"peer": map[string]any{"peer_id": "repow-fresh", "display_name": "repowire-codex"}})
 		case "/peers":
 			registrations++
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["role"] != nil {
+				t.Errorf("unsigned hint role reached registration: %v", body["role"])
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"peer_id": "repow-fresh", "display_name": "repowire-codex",
 				"birth_certificate": map[string]any{"nonce": "fresh", "peer_id": "repow-fresh"},

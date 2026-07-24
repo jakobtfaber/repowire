@@ -87,6 +87,7 @@ type PaneOwnership interface {
 	Forget(paneID string)
 	MarkSpawned(paneID string)
 	IsSpawned(paneID string) bool
+	ValidateBootstrap(paneID string) OwnershipValidation
 	ValidateForPeer(p *proto.Peer) OwnershipValidation
 	BackfillPeerID(p *proto.Peer, v OwnershipValidation)
 	PruneDead() int
@@ -177,6 +178,31 @@ func (o *fileOwnership) Forget(paneID string) {
 		delete(records, paneID)
 		o.saveLocked(records)
 	}
+}
+
+// ValidateBootstrap returns live tmux evidence for initial registration. A
+// durable ownership record, when present, additionally proves the spawn role.
+func (o *fileOwnership) ValidateBootstrap(paneID string) OwnershipValidation {
+	if paneID == "" {
+		return OwnershipValidation{Error: "missing_ownership", Hint: "Pane-backed registration requires a pane id."}
+	}
+	ev := o.probe(paneID)
+	if ev == nil {
+		return OwnershipValidation{Error: "pane_not_live", Hint: "The pane is not visible in tmux."}
+	}
+	o.mu.Lock()
+	rec, ok := o.loadLocked()[paneID]
+	o.mu.Unlock()
+	if !ok {
+		return OwnershipValidation{OK: true, Evidence: ev}
+	}
+	if rec.Machine != "" && rec.Machine != o.selfMachine {
+		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "ownership_machine_mismatch", Hint: "Ownership proof was written on a different host."}
+	}
+	if ev.TmuxSession != rec.TmuxSession || NormPath(ev.CurrentPath) != NormPath(rec.Path) {
+		return OwnershipValidation{Record: &rec, Evidence: ev, Error: "pane_identity_mismatch", Hint: "Live tmux pane evidence does not match the ownership proof."}
+	}
+	return OwnershipValidation{OK: true, Record: &rec, Evidence: ev}
 }
 
 // ValidateForPeer ports _effective_ownership_validation: a direct valid pane
@@ -343,15 +369,11 @@ func (o *fileOwnership) PruneDead() int {
 	return len(dead)
 }
 
-// recordMatchesIdentity ports _record_matches_peer_identity: backend, circle
-// (default ""→"default"), role, and normalized path must all match.
+// recordMatchesIdentity ports _record_matches_peer_identity: backend, circle,
+// role, and normalized path must all match.
 func (o *fileOwnership) recordMatchesIdentity(rec OwnershipRecord, p *proto.Peer) bool {
-	circle := p.Circle
-	if circle == "" {
-		circle = "default"
-	}
 	return rec.Backend == string(p.Backend) &&
-		rec.Circle == circle &&
+		rec.Circle == p.Circle &&
 		rec.Role == string(p.Role) &&
 		NormPath(rec.Path) == NormPath(p.Path)
 }

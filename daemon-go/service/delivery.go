@@ -77,6 +77,7 @@ type PeerDelivery struct {
 	transport Transport
 	asks      *AskTracker
 	store     queuedDeliveryStore
+	ops       *state.Store
 
 	queueTTLSeconds float64
 	queueMax        int
@@ -119,6 +120,14 @@ func NewPeerDelivery(reg accessRegistry, router *MessageRouter, transport Transp
 func (d *PeerDelivery) WithQueueConfig(ttlSeconds float64, maxPerPeer int) *PeerDelivery {
 	d.queueTTLSeconds = ttlSeconds
 	d.queueMax = maxPerPeer
+	return d
+}
+
+// WithOperationStore enables durable ACP-ask recovery. The state store is already
+// the daemon's operation and queued-delivery owner, so no second persistence seam
+// is needed.
+func (d *PeerDelivery) WithOperationStore(store *state.Store) *PeerDelivery {
+	d.ops = store
 	return d
 }
 
@@ -214,6 +223,8 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 
 	d.gateOnSeedSettled(ctx, target)
 	params.Text = addOrchestratorRecall(params.Text, string(fromName), peerIDString(fromID), target, d.recall)
+	fromSessionID := d.sessionIDForPeer(ctx, fromID)
+	toSessionID := d.sessionIDForPeer(ctx, &target.PeerID)
 
 	if decision, ok := d.transport.ACPRoute(target); ok && decision != nil {
 		if err := decision.Prompt(params.Text, func(_ ACPPromptResult, err error) {
@@ -224,15 +235,18 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 			return NotifyResult{}, err
 		}
 		return NotifyResult{
-			Status:        "sent",
-			DeliveryState: "delivered",
-			Reason:        "broker_accepted",
-			FromPeerID:    fromID,
-			FromPeerName:  fromName,
-			ToPeerID:      target.PeerID,
-			ToPeerName:    target.DisplayName,
-			DeliveryID:    params.DeliveryID,
-			Transport:     "acp",
+			Status:                "sent",
+			DeliveryState:         "delivered",
+			Reason:                "broker_accepted",
+			FromPeerID:            fromID,
+			FromPeerName:          fromName,
+			ToPeerID:              target.PeerID,
+			ToPeerName:            target.DisplayName,
+			DeliveryID:            params.DeliveryID,
+			Transport:             "acp",
+			RepowireSessionID:     toSessionID,
+			FromRepowireSessionID: fromSessionID,
+			ToRepowireSessionID:   toSessionID,
 		}, nil
 	}
 
@@ -248,16 +262,19 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (NotifyR
 	}
 
 	return NotifyResult{
-		Status:        "sent",
-		DeliveryState: "delivered",
-		Reason:        "transport_delivered",
-		FromPeerID:    fromID,
-		FromPeerName:  fromName,
-		ToPeerID:      target.PeerID,
-		ToPeerName:    target.DisplayName,
-		HookDelivery:  hookDelivery,
-		DeliveryID:    params.DeliveryID,
-		Transport:     "ws",
+		Status:                "sent",
+		DeliveryState:         "delivered",
+		Reason:                "transport_delivered",
+		FromPeerID:            fromID,
+		FromPeerName:          fromName,
+		ToPeerID:              target.PeerID,
+		ToPeerName:            target.DisplayName,
+		HookDelivery:          hookDelivery,
+		DeliveryID:            params.DeliveryID,
+		Transport:             "ws",
+		RepowireSessionID:     toSessionID,
+		FromRepowireSessionID: fromSessionID,
+		ToRepowireSessionID:   toSessionID,
 	}, nil
 }
 
@@ -288,13 +305,14 @@ func (d *PeerDelivery) queueNotify(
 		attachments = []map[string]any{}
 	}
 	queued, err := d.store.EnqueueDelivery(ctx, state.QueuedDelivery{
-		PeerID:       string(target.PeerID),
-		Kind:         state.DeliveryNotify,
-		FromPeerID:   fromIDStr,
-		FromPeerName: string(fromName),
-		ToPeerName:   string(target.DisplayName),
-		Text:         params.Text,
-		Attachments:  attachments,
+		PeerID:            string(target.PeerID),
+		RepowireSessionID: d.sessionIDForPeer(ctx, &target.PeerID),
+		Kind:              state.DeliveryNotify,
+		FromPeerID:        fromIDStr,
+		FromPeerName:      string(fromName),
+		ToPeerName:        string(target.DisplayName),
+		Text:              params.Text,
+		Attachments:       attachments,
 	}, d.queueTTLSeconds, d.queueMax, time.Time{})
 	if err != nil {
 		return NotifyResult{}, err
@@ -317,15 +335,30 @@ func (d *PeerDelivery) queueNotify(
 	})
 
 	return NotifyResult{
-		Status:        "queued",
-		DeliveryState: "queued",
-		Reason:        "queued_delivery",
-		FromPeerID:    fromID,
-		FromPeerName:  fromName,
-		ToPeerID:      target.PeerID,
-		ToPeerName:    target.DisplayName,
-		DeliveryID:    params.DeliveryID,
+		Status:                "queued",
+		DeliveryState:         "queued",
+		Reason:                "queued_delivery",
+		FromPeerID:            fromID,
+		FromPeerName:          fromName,
+		ToPeerID:              target.PeerID,
+		ToPeerName:            target.DisplayName,
+		DeliveryID:            params.DeliveryID,
+		RepowireSessionID:     d.sessionIDForPeer(ctx, &target.PeerID),
+		FromRepowireSessionID: d.sessionIDForPeer(ctx, fromID),
+		ToRepowireSessionID:   d.sessionIDForPeer(ctx, &target.PeerID),
 	}, nil
+}
+
+func (d *PeerDelivery) sessionIDForPeer(ctx context.Context, peerID *proto.PeerID) *string {
+	if d.ops == nil || peerID == nil || *peerID == "" {
+		return nil
+	}
+	bindings, err := d.ops.ListBindingsByPeer(ctx, string(*peerID))
+	if err != nil || len(bindings) == 0 {
+		return nil
+	}
+	id := bindings[0].RepowireSessionID
+	return &id
 }
 
 // ----------------------------------------------------------------------------
@@ -353,11 +386,15 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 	params.Text = addOrchestratorRecall(params.Text, string(fromName), stringValuePeer(from), target, d.recall)
 
 	if decision, ok := d.transport.ACPRoute(target); ok && decision != nil {
+		opID, err := d.recordACPAsk(ctx, params.CorrelationID, params.FromPeer, from, target)
+		if err != nil {
+			return AskResult{}, err
+		}
 		callback := params.OnACPComplete
 		if callback == nil {
 			callback = d.completeACPAsk
 		}
-		err := decision.Prompt(params.Text, func(result ACPPromptResult, promptErr error) {
+		err = decision.Prompt(params.Text, func(result ACPPromptResult, promptErr error) {
 			var reply, errText *string
 			if promptErr != nil {
 				text := promptErr.Error()
@@ -370,8 +407,11 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 				reply = &text
 			}
 			callback(context.Background(), params.CorrelationID, reply, errText)
+			d.settleACPAsk(context.Background(), opID, errText)
 		})
 		if err != nil {
+			detail := err.Error()
+			d.settleACPAsk(ctx, opID, &detail)
 			return AskResult{}, err
 		}
 		return AskResult{Transport: "acp"}, nil

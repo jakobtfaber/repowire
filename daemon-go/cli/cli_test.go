@@ -17,6 +17,14 @@ func TestParseFlagsAfterPositionals(t *testing.T) {
 	}
 }
 
+func TestEmbeddedRuntimesDoNotOfferCircleMutation(t *testing.T) {
+	for name, asset := range map[string]string{"pi": piPlugin, "opencode": opencodePlugin} {
+		if strings.Contains(asset, "set_circle") {
+			t.Fatalf("%s still exposes removed set_circle protocol", name)
+		}
+	}
+}
+
 func TestSubcommandHelpDoesNotRunCommand(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	t.Setenv("REPOWIRE_CONFIG", path)

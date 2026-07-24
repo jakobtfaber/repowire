@@ -417,7 +417,10 @@ func runDaemon() {
 	// lifecycle + the durable queued-delivery fallback (store satisfies the
 	// queue seam). The router (WS-only) is the one the hub minted in step 5.
 	asks := service.NewAskTracker(time.Duration(cfg.Daemon.PruneMaxAgeHours * float64(time.Hour)))
-	delivery := service.NewPeerDelivery(shim, h.Router(), transport, asks, store).WithQueueConfig(cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer).WithOrchestratorRecall(cfg.Daemon.OrchestratorRecall)
+	delivery := service.NewPeerDelivery(shim, h.Router(), transport, asks, store).WithQueueConfig(cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer).WithOperationStore(store).WithOrchestratorRecall(cfg.Daemon.OrchestratorRecall)
+	if recovered := service.ReconcileACPInflight(ctx, store, cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer); recovered > 0 {
+		log.Printf("acp reconcile: closed %d ask(s) lost across restart", recovered)
+	}
 	transport.SetACPPermissionHandler(service.NewACPPermissionHandler(asks, func(kind string, data map[string]any) {
 		reg.AddEvent(kind, data)
 	}))

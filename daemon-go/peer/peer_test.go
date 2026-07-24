@@ -16,6 +16,7 @@ import (
 type memStore struct {
 	mu       sync.Mutex
 	mappings map[proto.PeerID]*proto.SessionMapping
+	upserts  int
 	retired  map[proto.PeerID]time.Time
 	events   []Event
 }
@@ -32,14 +33,17 @@ func (s *memStore) LoadMappings(context.Context) ([]*proto.SessionMapping, error
 	defer s.mu.Unlock()
 	out := make([]*proto.SessionMapping, 0, len(s.mappings))
 	for _, m := range s.mappings {
-		out = append(out, m)
+		copy := *m
+		out = append(out, &copy)
 	}
 	return out, nil
 }
 func (s *memStore) UpsertMapping(_ context.Context, m *proto.SessionMapping) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.mappings[m.SessionID] = m
+	copy := *m
+	s.mappings[m.SessionID] = &copy
+	s.upserts++
 	return nil
 }
 func (s *memStore) DeleteMapping(_ context.Context, id proto.PeerID) error {
@@ -270,11 +274,9 @@ func TestReclaim_MappingAdoptedByIdentity(t *testing.T) {
 	}
 }
 
-// TestReclaim_CrossCircleAdoptionRespectsSource proves the default-circle
-// cross-adoption only fires for an unset/"fallback" circle_source. An explicit
-// source (e.g. "tmux") must NOT pull the peer into an older non-default mapping
-// with the same name/backend/path — that would move it to the wrong circle.
-func TestReclaim_CrossCircleAdoptionRespectsSource(t *testing.T) {
+// TestReclaim_DoesNotCrossAdoptMappings proves registration never silently
+// restores a peer to a mapping in another circle.
+func TestReclaim_DoesNotCrossAdoptMappings(t *testing.T) {
 	ctx := context.Background()
 
 	seed := func() (*Registry, *memStore, proto.PeerID) {
@@ -290,33 +292,17 @@ func TestReclaim_CrossCircleAdoptionRespectsSource(t *testing.T) {
 		return r, s, id
 	}
 
-	// Explicit source "tmux" in circle "default" → must NOT adopt the "ops" mapping.
+	// A default-circle registration must not adopt the old ops mapping.
 	r, _, seedID := seed()
 	got, _, err := r.AllocateAndRegister(ctx, AllocateParams{
-		Circle: "default", CircleSource: "tmux", Backend: proto.AgentClaudeCode,
+		Circle: "default", Backend: proto.AgentClaudeCode,
 		Path: ptr("/work/x"), Machine: "m", Role: proto.RoleAgent,
 	})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if got == seedID {
-		t.Fatalf("explicit source=tmux cross-adopted mapping %s — must mint fresh", seedID)
-	}
-
-	// "fallback" source in circle "default" → SHOULD adopt (identity preserved).
-	r2, _, seedID2 := seed()
-	got2, _, err := r2.AllocateAndRegister(ctx, AllocateParams{
-		Circle: "default", CircleSource: "fallback", Backend: proto.AgentClaudeCode,
-		Path: ptr("/work/x"), Machine: "m", Role: proto.RoleAgent,
-	})
-	if err != nil {
-		t.Fatalf("register fallback: %v", err)
-	}
-	if got2 != seedID2 {
-		t.Fatalf("fallback source minted %s, want adoption of %s", got2, seedID2)
-	}
-	if p, _ := r2.GetPeer(got2); p.Role != proto.RoleOrchestrator || p.Circle != "ops" {
-		t.Fatalf("adopted peer lost identity: role=%q circle=%q", p.Role, p.Circle)
+		t.Fatalf("cross-adopted mapping %s — must mint fresh", seedID)
 	}
 }
 

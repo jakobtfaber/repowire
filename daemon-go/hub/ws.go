@@ -144,7 +144,8 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate role.
-	role := cf.Role
+	requestedRole := cf.Role
+	role := requestedRole
 	if role == "" {
 		role = proto.RoleAgent
 	}
@@ -171,6 +172,31 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		path = &normalized
 	}
+	if cf.PaneID != nil && *cf.PaneID != "" {
+		verifiedCircle, verifiedRole, code, detail := h.verifiedPaneIdentity(*cf.PaneID, backend, derefString(path), circle, requestedRole)
+		if code != http.StatusOK {
+			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: detail})
+			_ = conn.Close(4003, "Unverified pane identity")
+			return
+		}
+		circle, role = verifiedCircle, verifiedRole
+	} else if h.spawn != nil && !isDaemonMobilePeer(cf.DisplayName, path, role) {
+		if cf.PeerID == nil {
+			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Pane-less WebSocket registration requires an existing peer identity"})
+			_ = conn.Close(4003, "Unverified pane-less identity")
+			return
+		}
+		mapping, ok := h.reg.GetMapping(*cf.PeerID)
+		mappingPath := ""
+		if ok && mapping.Path != nil {
+			mappingPath = *mapping.Path
+		}
+		if !ok || mapping.DisplayName != cf.DisplayName || mapping.Backend != backend || mapping.Circle != circle || mapping.Role != role || service.NormPath(mappingPath) != service.NormPath(derefString(path)) {
+			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Pane-less WebSocket identity does not match its durable mapping"})
+			_ = conn.Close(4003, "Pane-less identity mismatch")
+			return
+		}
+	}
 
 	machine, _ := os.Hostname()
 	params := peer.AllocateParams{
@@ -184,12 +210,6 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		Role:          role,
 		ClaimedPeerID: cf.PeerID,
 		AgentPID:      cf.AgentPID,
-	}
-	// Thread circle_source: cross-circle mapping adoption is only permitted for an
-	// unset/"fallback" source. Without this an explicit source (e.g. "tmux") would
-	// be seen as fallback and could wrongly adopt an older non-default mapping.
-	if cf.CircleSource != nil {
-		params.CircleSource = *cf.CircleSource
 	}
 	if len(cf.ModelDetails) > 0 || len(cf.Capabilities) > 0 || cf.HookVersion != nil {
 		md := map[string]any{}
@@ -266,6 +286,14 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		h.dispatch(ctx, sessionID, raw)
 	}
+}
+
+func isDaemonMobilePeer(name proto.DisplayName, path *string, role proto.PeerRole) bool {
+	if role != proto.RoleService || path == nil {
+		return false
+	}
+	value := string(name)
+	return (value == "telegram" || value == "slack") && *path == "/"+value
 }
 
 // flushQueuedDeliveries replays the durable queued-delivery queue for the freshly
@@ -349,18 +377,6 @@ func (h *Hub) dispatch(ctx context.Context, id proto.PeerID, raw []byte) {
 		_ = h.reg.UpdateStatus(ctx, id, normalizeStatus(f.Status))
 		if f.TurnState != nil && validTurnState(*f.TurnState) {
 			h.reg.UpdateTurnState(ctx, id, *f.TurnState)
-		}
-
-	case proto.FrameSetCircle:
-		var f proto.SetCircleFrame
-		if err := json.Unmarshal(raw, &f); err != nil {
-			log.Printf("ws: bad set_circle frame from %s: %v", id, err)
-			return
-		}
-		if f.Circle != "" && isValidIdentifier(f.Circle) {
-			h.reg.SetCircle(ctx, id, f.Circle)
-		} else {
-			log.Printf("ws: set_circle from %s invalid circle %q", id, f.Circle)
 		}
 
 	case proto.FrameUpdateDisplayName:

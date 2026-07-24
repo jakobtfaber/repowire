@@ -25,6 +25,17 @@ func (r *Registry) HeartbeatTolerance() time.Duration {
 	return r.heartbeatInterval * 2
 }
 
+func (r *Registry) GetMapping(id proto.PeerID) (*proto.SessionMapping, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	m, ok := r.mappings[id]
+	if !ok {
+		return nil, false
+	}
+	copy := *m
+	return &copy, true
+}
+
 // ResolvePeer resolves an addressing string (peer_id OR display_name), optionally
 // scoped to a circle, to the canonical peer. Unlike events.go's best-effort
 // ResolveByIdentifier, this is the FAIL-LOUD resolver the route group uses: an

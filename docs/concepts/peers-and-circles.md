@@ -17,7 +17,7 @@ Peer state lives in the local daemon at `127.0.0.1:8377`. It is not synced anywh
 
 ## Circles
 
-A circle is a logical subnet. Peers can only message peers in the same circle unless you pass an explicit `circle=` argument that targets a different one. Circles map to tmux sessions by default, so opening agents in the same tmux session puts them in the same circle.
+A circle is a logical subnet. Peers can only message peers in the same circle unless you pass an explicit `circle=` argument that targets a different one. Circles map to tmux sessions by default, so opening agents in the same tmux session puts them in the same circle. A runtime cannot move itself to another circle; rename/move the tmux session or choose the target from the CLI/orchestrator spawn surface.
 
 Use circles to keep work-domain peers from talking to home-project peers when you don't want them to. They are scoping, not authorization — a peer with knowledge of a name and circle can reach it.
 

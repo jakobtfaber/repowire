@@ -255,8 +255,12 @@ func runPeer(argv []string) int {
 		if len(a.pos) < 1 {
 			return usage("peer new PATH --backend BACKEND")
 		}
-		body := map[string]any{"path": abs(a.pos[0]), "backend": a.string("backend", "claude-code")}
-		for _, key := range []string{"profile", "circle", "command", "message"} {
+		circle := first(a.string("circle", ""), currentTmuxCircle())
+		if circle == "" {
+			return usage("peer new PATH --circle CIRCLE [--backend BACKEND]")
+		}
+		body := map[string]any{"path": abs(a.pos[0]), "backend": a.string("backend", "claude-code"), "circle": circle}
+		for _, key := range []string{"profile", "command", "message"} {
 			if value := a.string(key, ""); value != "" {
 				body[key] = value
 			}
@@ -269,9 +273,9 @@ func runPeer(argv []string) int {
 		return 0
 	case "register":
 		path := a.string("path", mustGetwd())
-		circle := a.string("circle", "")
+		circle := first(a.string("circle", ""), currentTmuxCircle())
 		if circle == "" {
-			return usage("peer register requires --circle CIRCLE")
+			return usage("peer register requires --circle CIRCLE outside tmux")
 		}
 		body := map[string]any{"name": a.string("name", filepath.Base(path)), "path": abs(path), "backend": a.string("backend", "claude-code"), "circle": circle}
 		result, err := c.request(http.MethodPost, "/peers", body)
@@ -412,10 +416,11 @@ func runPeer(argv []string) int {
 				return usage("peer whoami --register --backend BACKEND")
 			}
 			path := abs(a.string("path", mustGetwd()))
-			body := map[string]any{"name": a.string("name", filepath.Base(path)), "path": path, "backend": backend, "metadata": map[string]any{"repowire_cli_fallback": true}}
-			if circle := a.string("circle", ""); circle != "" {
-				body["circle"] = circle
+			circle := first(a.string("circle", ""), currentTmuxCircle())
+			if circle == "" {
+				return usage("peer whoami --register --backend BACKEND --circle CIRCLE")
 			}
+			body := map[string]any{"name": a.string("name", filepath.Base(path)), "path": path, "backend": backend, "circle": circle, "metadata": map[string]any{"repowire_cli_fallback": true}}
 			if pane := os.Getenv("TMUX_PANE"); pane != "" {
 				body["pane_id"] = pane
 			}

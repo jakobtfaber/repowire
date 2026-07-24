@@ -127,18 +127,22 @@ func (h *Hub) handleLinkPane(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, map[string]any{"error": "pane_not_found", "hint": fmt.Sprintf("No live tmux pane %s to resolve a working directory from.", paneID)})
 		return
 	}
-	circle, circleSource := "default", "fallback"
+	circle := ""
 	if request.Circle != nil && *request.Circle != "" {
 		circle = *request.Circle
 	} else if pane != nil && pane.Session != "" {
-		circle, circleSource = pane.Session, "tmux"
+		circle = pane.Session
+	}
+	if circle == "" {
+		writeJSONError(w, http.StatusUnprocessableEntity, "circle is required when the pane has no tmux session")
+		return
 	}
 	machine, _ := os.Hostname()
 	pid := 0
 	if pane != nil {
 		pid = pane.PID
 	}
-	id, displayName, err := h.reg.AllocateAndRegister(r.Context(), peer.AllocateParams{Circle: circle, CircleSource: circleSource, Backend: request.Backend, Path: &cwd, PaneID: &paneID, TmuxSession: strPtrValue(pane, func(value *localPane) string { return value.Session }), Machine: machine, Role: proto.RoleAgent, AgentPID: intPtrNonzero(pid)})
+	id, displayName, err := h.reg.AllocateAndRegister(r.Context(), peer.AllocateParams{Circle: circle, Backend: request.Backend, Path: &cwd, PaneID: &paneID, TmuxSession: strPtrValue(pane, func(value *localPane) string { return value.Session }), Machine: machine, Role: proto.RoleAgent, AgentPID: intPtrNonzero(pid)})
 	if err != nil {
 		writeJSONError(w, http.StatusConflict, err.Error())
 		return

@@ -193,7 +193,94 @@ func (s *SpawnService) ResolveCommand(b proto.AgentType, profile *string) (strin
 			command += " " + shellQuote(arg)
 		}
 	}
+	if err := s.validateCommandHead(command); err != nil {
+		return "", err
+	}
 	return command, nil
+}
+
+func (s *SpawnService) validateCommandHead(command string) error {
+	head := ""
+	for rest := strings.TrimSpace(command); rest != ""; {
+		word, next, ok := firstShellWord(rest)
+		if !ok {
+			return &SpawnError{Status: 422, Detail: "configured spawn command has unmatched quotes"}
+		}
+		rest = strings.TrimSpace(next)
+		if word == "env" || strings.Contains(word, "=") {
+			continue
+		}
+		head = word
+		break
+	}
+	if head == "" {
+		return &SpawnError{Status: 422, Detail: "configured spawn command is empty"}
+	}
+	pathValue := s.env["PATH"]
+	if pathValue == "" {
+		pathValue = os.Getenv("PATH")
+	}
+	if commandExists(head, pathValue) {
+		return nil
+	}
+	return &SpawnError{Status: 422, Detail: map[string]any{
+		"error": "command_unavailable",
+		"hint":  fmt.Sprintf("Configured spawn command %q is not executable on PATH.", head),
+	}}
+}
+
+func firstShellWord(input string) (string, string, bool) {
+	var word strings.Builder
+	quote := rune(0)
+	escaped := false
+	for i, r := range input {
+		if escaped {
+			word.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			} else {
+				word.WriteRune(r)
+			}
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+			continue
+		}
+		if r == ' ' || r == '\t' || r == '\n' {
+			return word.String(), input[i+1:], true
+		}
+		word.WriteRune(r)
+	}
+	if quote != 0 || escaped {
+		return "", "", false
+	}
+	return word.String(), "", true
+}
+
+func commandExists(command, pathValue string) bool {
+	if strings.ContainsRune(command, os.PathSeparator) {
+		info, err := os.Stat(command)
+		return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
+	}
+	for _, dir := range filepath.SplitList(pathValue) {
+		if dir == "" {
+			dir = "."
+		}
+		info, err := os.Stat(filepath.Join(dir, command))
+		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Spawn ports SpawnService.spawn: validate the path, resolve the command, hand

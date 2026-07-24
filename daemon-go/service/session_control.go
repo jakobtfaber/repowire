@@ -145,7 +145,11 @@ func (c *SessionControl) AcquireExecutorForWork(ctx context.Context, work *state
 		return nil, &ExecutorAcquisitionUnavailableError{Reason: "invalid_backend", OperationID: op.OperationID}
 	}
 
-	circle := strOrDefault(work.Circle, "default")
+	circle := strOrEmpty(work.Circle)
+	if circle == "" {
+		c.failOp(ctx, op.OperationID, "", map[string]any{"reason": "missing_circle"})
+		return nil, &ExecutorAcquisitionUnavailableError{Reason: "missing_circle", OperationID: op.OperationID}
+	}
 	if policy.ProcessScope != "per_fire" {
 		if reusable := c.findLivePeer(path, backend, circle); reusable != nil {
 			binding := c.recordRuntimeBinding(ctx, work, reusable, "reused_peer", "", "", "")
@@ -440,7 +444,10 @@ func (c *SessionControl) resumePlanFor(work *state.TrackedWork, path string, bac
 	if normalizePath(mapStr(binding, "path")) != normalizePath(path) {
 		return nil
 	}
-	circle := strOrDefault(work.Circle, "default")
+	circle := strOrEmpty(work.Circle)
+	if circle == "" {
+		return nil
+	}
 	if bc, _ := binding["circle"].(string); bc != "" && bc != circle {
 		return nil
 	}
@@ -713,13 +720,6 @@ func cloneAny(m map[string]any) map[string]any {
 func strOrEmpty(p *string) string {
 	if p == nil {
 		return ""
-	}
-	return *p
-}
-
-func strOrDefault(p *string, def string) string {
-	if p == nil || *p == "" {
-		return def
 	}
 	return *p
 }

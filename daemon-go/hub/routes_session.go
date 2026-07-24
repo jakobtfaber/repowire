@@ -4,7 +4,6 @@ package hub
 // that close the messaging-wiring gaps left after the ask/notify ports.
 //
 //	POST /session/update      report status / turn_state / model / metadata
-//	POST /response            deliver a Stop-hook response, resolving a query
 //	GET  /deliveries/pending  drain the durable queued-delivery queue
 //
 // Port of repowire/daemon/routes/messages.py (update_session, deliver_response)
@@ -14,8 +13,7 @@ package hub
 // Identity discipline: routing-sensitive state resolves to proto.PeerID via the
 // registry; status/turn_state are applied by peer_id (resolve first), model and
 // metadata via the by-name updaters. Fail loud over silent degrade — a missing
-// required field is a 400, an unknown peer a 404, a bad status a 400. A Stop hook
-// that fires with no pending query is NOT an error (it fires every turn).
+// required field is a 400, an unknown peer a 404, a bad status a 400.
 
 import (
 	"context"

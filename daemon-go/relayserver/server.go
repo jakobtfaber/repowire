@@ -32,7 +32,7 @@ var tunnelRoots = []string{
 	"/ack", "/acp", "/answer", "/ask", "/ask-many", "/asks", "/attachments",
 	"/broadcast", "/circles", "/deliveries", "/events", "/health", "/hooks",
 	"/jobs", "/kill-peer", "/notify", "/panes", "/peer", "/peers", "/query",
-	"/questions", "/response", "/reviews", "/schedules", "/session", "/sessions",
+	"/questions", "/reviews", "/schedules", "/session", "/sessions",
 	"/shares", "/spawn", "/traces", "/work", "/ws",
 }
 

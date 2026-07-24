@@ -88,7 +88,7 @@ repowire peer deliveries [--peer-id ID | --pane-id PANE | --peer NAME] [--json]
 repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 ```
 
-`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../use/features/connect-antigravity.md)). They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard.
+`peer whoami`, `peer asks`, `peer deliveries`, and `peer ack` are the shellable mesh primitives intended for agents whose hooks don't fire today (notably [Antigravity `agy`](../use/features/connect-antigravity.md)). They wrap daemon HTTP endpoints (`/peers`, `/peers/by-pane`, `/asks/pending`, `/deliveries/pending`, `/ack`) and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`. Use `peer whoami --register --backend antigravity` once at session start to self-onboard; it uses the current tmux session or requires `--circle` outside tmux.
 
 `peer deliveries` drains one-shot queued deliveries for a peer. Draining deletes the queued rows to avoid duplicate paste/replay. For queued asks, `peer deliveries` shows the original ask text once, while `peer asks` continues to show the open ask until the agent closes it with `peer ack` or the MCP `ack` tool.
 
@@ -276,15 +276,16 @@ depend on the daemon's current directory.
 ```bash
 repowire orchestrator init [--force]
 repowire orchestrator diff
-repowire orchestrator start [--runtime RUNTIME] [--profile PROFILE]
+repowire orchestrator start [--runtime RUNTIME] [--profile PROFILE] [--circle CIRCLE]
 ```
 
 `init` renders the orchestrator workspace and skill pack embedded in the Go
 binary; `--force` first moves the current workspace to a timestamped backup.
 `diff` reports Repowire-owned template files that differ or are missing.
 `start` selects an installed runtime (Pi first when its Repowire extension is
-installed), preserves the configured/default circle, and spawns with
-`role=orchestrator`.
+installed), uses `--circle`, the configured circle, or the current tmux session
+in that order, and spawns with `role=orchestrator`. Outside tmux, a circle must
+be chosen explicitly or configured; Repowire never invents one.
 
 ## `repowire orchestrator persona`
 

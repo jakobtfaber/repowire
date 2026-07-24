@@ -97,7 +97,17 @@ func (h *Hub) resumeSession(w http.ResponseWriter, r *http.Request, id string, r
 		id := proto.PeerID(*binding.PeerID)
 		peerID = &id
 	}
-	spawned, err := h.spawn.svc.Spawn(service.SpawnConfig{Path: binding.ProjectPath, Backend: backend, Command: command, Circle: "default", Message: req.Message, Role: role, PeerID: peerID})
+	circle, _ := binding.Metadata["circle"].(string)
+	if circle == "" && peerID != nil {
+		if boundPeer, ok := h.reg.GetPeer(*peerID); ok {
+			circle = boundPeer.Circle
+		}
+	}
+	if circle == "" {
+		writeJSONError(w, http.StatusUnprocessableEntity, "circle_unavailable: session has no recorded circle")
+		return
+	}
+	spawned, err := h.spawn.svc.Spawn(service.SpawnConfig{Path: binding.ProjectPath, Backend: backend, Command: command, Circle: circle, Message: req.Message, Role: role, PeerID: peerID})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
