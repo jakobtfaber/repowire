@@ -327,9 +327,16 @@ func (h *Hub) markReviewed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "malformed request: "+err.Error())
 		return
 	}
-	if req.Reviewer == "" || req.PRURL == "" {
-		writeError(w, http.StatusUnprocessableEntity, "reviewer and pr_url are required")
+	if err := h.markReviewedDirect(req); err != nil {
+		writeRouteError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, okResponse{OK: true})
+}
+
+func (h *Hub) markReviewedDirect(req markReviewedRequest) error {
+	if req.Reviewer == "" || req.PRURL == "" {
+		return routeErr(http.StatusUnprocessableEntity, "reviewer and pr_url are required")
 	}
 	sha := ""
 	if req.LastReviewedSHA != nil {
@@ -341,14 +348,22 @@ func (h *Hub) markReviewed(w http.ResponseWriter, r *http.Request) {
 		sha = fetchPRInfo(req.PRURL).HeadSHA
 	}
 	h.reviews.Upsert(req.Reviewer, req.PRURL, sha)
-	writeJSON(w, http.StatusOK, okResponse{OK: true})
+	return nil
 }
 
 func (h *Hub) listReviews(w http.ResponseWriter, r *http.Request) {
 	reviewer := r.URL.Query().Get("reviewer")
-	if reviewer == "" {
-		writeError(w, http.StatusUnprocessableEntity, "reviewer query parameter is required")
+	items, err := h.listReviewsDirect(reviewer)
+	if err != nil {
+		writeRouteError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reviews": items})
+}
+
+func (h *Hub) listReviewsDirect(reviewer string) ([]reviewItem, error) {
+	if reviewer == "" {
+		return nil, routeErr(http.StatusUnprocessableEntity, "reviewer query parameter is required")
 	}
 	entries := h.reviews.ListFor(reviewer)
 	items := make([]reviewItem, 0, len(entries))
@@ -365,7 +380,7 @@ func (h *Hub) listReviews(w http.ResponseWriter, r *http.Request) {
 	}
 	// Stable order so the dashboard list doesn't jitter between reads.
 	sort.SliceStable(items, func(i, j int) bool { return items[i].RecordedAt < items[j].RecordedAt })
-	writeJSON(w, http.StatusOK, map[string]any{"reviews": items})
+	return items, nil
 }
 
 func (h *Hub) handleDeleteReview(w http.ResponseWriter, r *http.Request) {

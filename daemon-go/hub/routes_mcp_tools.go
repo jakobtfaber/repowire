@@ -1,13 +1,9 @@
 package hub
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"strings"
 	"time"
 
@@ -25,37 +21,6 @@ func addMCPTool[T any](srv *mcp.Server, name, description string, fn func(contex
 		}
 		return textResult(text), nil, nil
 	})
-}
-
-func (h *Hub) mcpLocal(ctx context.Context, method, path string, body any) (map[string]any, error) {
-	var encoded []byte
-	if body != nil {
-		encoded, _ = json.Marshal(body)
-	}
-	req := httptest.NewRequest(method, path, bytes.NewReader(encoded)).WithContext(ctx)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if h.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+h.authToken)
-	}
-	recorder := httptest.NewRecorder()
-	mux := http.NewServeMux()
-	h.Routes(mux)
-	mux.ServeHTTP(recorder, req)
-	var result map[string]any
-	_ = json.Unmarshal(recorder.Body.Bytes(), &result)
-	if recorder.Code < 200 || recorder.Code >= 300 {
-		detail := any(recorder.Body.String())
-		if result != nil && result["detail"] != nil {
-			detail = result["detail"]
-		}
-		return nil, fmt.Errorf("%s %s failed (%d): %v", method, path, recorder.Code, detail)
-	}
-	if result == nil {
-		result = map[string]any{}
-	}
-	return result, nil
 }
 
 func jsonResult(value any) string {
@@ -234,16 +199,8 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := requireFields("peer_name", a.PeerName, "query", a.Query); err != nil {
 			return "", err
 		}
-		body := map[string]any{"from_peer": caller, "to_peer": a.PeerName, "text": a.Query}
-		optional(body, "reply_to", a.ReplyTo)
-		if circle := h.mcpSendCircle(caller, a.Circle); circle != nil {
-			body["circle"] = *circle
-		}
-		if len(a.Attachments) > 0 {
-			body["attachments"] = a.Attachments
-		}
-		result, err := h.mcpLocal(ctx, http.MethodPost, "/ask", body)
-		return stringValue(result, "correlation_id"), err
+		result, err := h.openAsk(ctx, AskRequest{FromPeer: caller, ToPeer: a.PeerName, Text: a.Query, ReplyTo: stringPtr(a.ReplyTo), Circle: h.mcpSendCircle(caller, a.Circle), Attachments: a.Attachments})
+		return result.CorrelationID, err
 	})
 	addMCPTool(srv, "wait_on_ack", "Wait for a tracked ask to resolve.", func(ctx context.Context, caller string, a mcpWaitArgs) (string, error) {
 		if err := required("correlation_id", a.CorrelationID); err != nil {
@@ -256,11 +213,12 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 		for time.Now().Before(deadline) {
 			remaining := time.Until(deadline).Seconds()
-			result, err := h.mcpLocal(ctx, http.MethodPost, "/asks/"+url.PathEscape(a.CorrelationID)+"/wait", map[string]any{"peer_id": caller, "timeout_seconds": min(remaining, 45)})
+			wait := min(remaining, 45)
+			result, err := h.waitOnAck(ctx, a.CorrelationID, AskWaitRequest{PeerID: caller, TimeoutSeconds: &wait})
 			if err != nil {
 				return "", err
 			}
-			if stringValue(result, "status") == "resolved" {
+			if result.Status == "resolved" {
 				return jsonResult(result), nil
 			}
 		}
@@ -273,33 +231,24 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := required("query", a.Query); err != nil {
 			return "", err
 		}
-		body := map[string]any{"from_peer": caller, "to_peers": a.PeerNames, "text": a.Query, "timeout_seconds": defaultInt(a.TimeoutSeconds, 300)}
-		optional(body, "circle", a.Circle)
-		result, err := h.mcpLocal(ctx, http.MethodPost, "/ask-many", body)
+		result, err := h.openAskMany(ctx, AskManyRequest{FromPeer: caller, ToPeers: a.PeerNames, Text: a.Query, Circle: stringPtr(a.Circle), TimeoutSeconds: defaultInt(a.TimeoutSeconds, 300)})
 		if err != nil {
 			return "", err
 		}
-		return stringValue(result, "parent_id"), nil
+		return result.ParentID, nil
 	})
 	addMCPTool(srv, "ask_many_result", "Return the current result of an ask-many fanout.", func(ctx context.Context, _ string, a mcpIDArgs) (string, error) {
 		if err := required("parent_id", a.ParentID); err != nil {
 			return "", err
 		}
-		result, err := h.mcpLocal(ctx, http.MethodGet, "/ask-many/"+url.PathEscape(a.ParentID), nil)
+		result, err := h.askManyResult(a.ParentID)
 		return jsonResult(result), err
 	})
 	addMCPTool(srv, "ack", "Close an ask, optionally replying to its asker.", func(ctx context.Context, caller string, a mcpAckArgs) (string, error) {
 		if err := required("correlation_id", a.CorrelationID); err != nil {
 			return "", err
 		}
-		body := map[string]any{"correlation_id": a.CorrelationID, "from_peer": caller}
-		if a.Message != nil {
-			body["message"] = *a.Message
-		}
-		if len(a.Attachments) > 0 {
-			body["attachments"] = a.Attachments
-		}
-		_, err := h.mcpLocal(ctx, http.MethodPost, "/ack", body)
+		_, err := h.ackDirect(ctx, AckRequest{CorrelationID: a.CorrelationID, FromPeer: &caller, Message: a.Message, Attachments: a.Attachments})
 		if err != nil {
 			return "", err
 		}
@@ -316,14 +265,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if a.OptionID == nil && a.Text == nil {
 			return "", fmt.Errorf("option_id or text is required")
 		}
-		body := map[string]any{"correlation_id": a.CorrelationID, "from_peer": caller}
-		if a.OptionID != nil {
-			body["option_id"] = *a.OptionID
-		}
-		if a.Text != nil {
-			body["text"] = *a.Text
-		}
-		_, err := h.mcpLocal(ctx, http.MethodPost, "/answer", body)
+		_, err := h.answerDirect(ctx, AnswerRequest{CorrelationID: a.CorrelationID, OptionID: a.OptionID, Text: a.Text})
 		return "answered #" + a.CorrelationID, err
 	})
 
@@ -331,35 +273,24 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := required("title", a.Title); err != nil {
 			return "", err
 		}
-		body := structMap(a)
-		body["created_by_peer_id"] = caller
-		if body["kind"] == nil {
-			body["kind"] = "general"
-		}
-		if body["visibility"] == nil {
-			body["visibility"] = "circle"
-		}
-		if body["request"] == nil {
-			body["request"] = map[string]any{}
-		}
-		result, err := h.mcpLocal(ctx, http.MethodPost, "/jobs", body)
+		result, err := h.jobCreate(ctx, workCreateRequest{
+			Title: a.Title, Kind: firstNonempty(a.Kind, "general"), CreatedByPeerID: &caller,
+			AssignedPeerID: stringPtr(a.AssignedPeerID), OwnerPeerID: stringPtr(a.OwnerPeerID), RepowireSessionID: stringPtr(a.RepowireSessionID), CorrelationID: stringPtr(a.CorrelationID), Circle: stringPtr(a.Circle),
+			SourceKind: stringPtr(a.SourceKind), SourceID: stringPtr(a.SourceID), Scope: stringPtr(a.Scope), Visibility: firstNonempty(a.Visibility, "circle"), DeadlineAt: stringPtr(a.DeadlineAt), ExpiresAt: stringPtr(a.ExpiresAt),
+			Prompt: stringPtr(a.Prompt), Path: stringPtr(a.Path), Backend: stringPtr(a.Backend), Profile: stringPtr(a.Profile), DueAt: stringPtr(a.DueAt), Cron: stringPtr(a.Cron), ResultSurface: stringPtr(a.ResultSurface), ProcessScope: stringPtr(a.ProcessScope), Continuity: stringPtr(a.Continuity),
+			Request: firstNonNilMap(a.Request), Provenance: a.Provenance,
+		})
 		return jsonResult(result), err
 	})
 	addMCPTool(srv, "job_list", "List durable jobs as JSON.", func(ctx context.Context, _ string, a mcpJobListArgs) (string, error) {
-		q := url.Values{}
-		addQuery(q, "state", a.State)
-		addQuery(q, "owner_peer_id", a.OwnerPeerID)
-		addQuery(q, "created_by_peer_id", a.CreatedByPeerID)
-		addQuery(q, "repowire_session_id", a.RepowireSessionID)
-		addQuery(q, "circle", a.Circle)
-		result, err := h.mcpLocal(ctx, http.MethodGet, withQuery("/jobs", q), nil)
+		result, err := h.jobList(ctx, workListRequest{State: stringPtr(a.State), OwnerPeerID: stringPtr(a.OwnerPeerID), CreatedByPeerID: stringPtr(a.CreatedByPeerID), RepowireSessionID: stringPtr(a.RepowireSessionID), Circle: stringPtr(a.Circle)})
 		return jsonResult(result), err
 	})
 	jobStatus := func(ctx context.Context, _ string, a mcpIDArgs) (string, error) {
 		if err := required("job_id", a.JobID); err != nil {
 			return "", err
 		}
-		result, err := h.mcpLocal(ctx, http.MethodGet, "/jobs/"+url.PathEscape(a.JobID)+"/status", nil)
+		result, err := h.jobStatus(ctx, a.JobID)
 		return jsonResult(result), err
 	}
 	addMCPTool(srv, "job_status", "Return one job status as JSON.", jobStatus)
@@ -368,28 +299,29 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := requireFields("job_id", a.JobID, "state", a.State); err != nil {
 			return "", err
 		}
-		body := structMap(a)
-		delete(body, "job_id")
-		result, err := h.mcpLocal(ctx, http.MethodPatch, "/jobs/"+url.PathEscape(a.JobID), body)
+		result, err := h.jobUpdate(ctx, a.JobID, workUpdateRequest{State: a.State, StateReason: stringPtr(a.StateReason), Phase: stringPtr(a.Phase), ProgressNote: stringPtr(a.ProgressNote), ResultSummary: stringPtr(a.ResultSummary), AttemptID: stringPtr(a.AttemptID), Progress: a.Progress, ResultData: a.ResultData, Error: a.Error, Provenance: a.Provenance, Artifacts: a.Artifacts})
 		return jsonResult(result), err
 	})
 	addMCPTool(srv, "job_result", "Return a tracked job result as JSON.", func(ctx context.Context, _ string, a mcpIDArgs) (string, error) {
 		if err := required("job_id", a.JobID); err != nil {
 			return "", err
 		}
-		result, err := h.mcpLocal(ctx, http.MethodGet, "/jobs/"+url.PathEscape(a.JobID)+"/result", nil)
+		result, err := h.jobResult(ctx, a.JobID)
 		return jsonResult(result), err
 	})
 	addMCPTool(srv, "job_cancel", "Request cancellation for a tracked job.", func(ctx context.Context, caller string, a mcpJobCancelArgs) (string, error) {
 		if err := required("job_id", a.JobID); err != nil {
 			return "", err
 		}
-		result, err := h.mcpLocal(ctx, http.MethodPost, "/jobs/"+url.PathEscape(a.JobID)+"/cancel", map[string]any{"requested_by_peer_id": caller, "reason": firstNonempty(a.Reason, "cancel_requested")})
+		result, err := h.jobCancel(ctx, a.JobID, workCancelRequest{RequestedByPeerID: &caller, Reason: firstNonempty(a.Reason, "cancel_requested")})
 		return jsonResult(result), err
 	})
 
 	addMCPTool(srv, "set_description", "Update the caller's dashboard task description.", func(ctx context.Context, caller string, a mcpDescriptionArgs) (string, error) {
-		_, err := h.mcpLocal(ctx, http.MethodPost, "/peers/"+url.PathEscape(caller)+"/description", map[string]string{"description": a.Description})
+		found, err := h.reg.UpdateDescription(ctx, caller, a.Description, nil)
+		if err == nil && !found {
+			err = fmt.Errorf("peer not found: %s", caller)
+		}
 		return "description updated: " + a.Description, err
 	})
 	addMCPTool(srv, "spawn_peer", "Spawn a local tmux-backed coding peer.", func(ctx context.Context, caller string, a mcpSpawnArgs) (string, error) {
@@ -403,13 +335,16 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err != nil {
 			return "", err
 		}
-		body := structMap(a)
-		body["circle"] = circle
-		result, err := h.mcpLocal(ctx, http.MethodPost, "/spawn", body)
+		var backend *proto.AgentType
+		if a.Backend != "" {
+			value := proto.AgentType(a.Backend)
+			backend = &value
+		}
+		result, err := h.spawnPeer(ctx, SpawnRequest{Path: a.Path, Backend: backend, Profile: stringPtr(a.Profile), Command: stringPtr(a.Command), Circle: circle, Message: stringPtr(a.Message)})
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Spawned %s (tmux: %s) peer_id=%s registration_state=%s", stringValue(result, "display_name"), stringValue(result, "tmux_session"), stringValue(result, "peer_id"), stringValue(result, "registration_state")), nil
+		return fmt.Sprintf("Spawned %s (tmux: %s) peer_id=%s registration_state=%s", result.DisplayName, result.TmuxSession, deref(result.PeerID), result.RegistrationState), nil
 	})
 	addMCPTool(srv, "orchestrator_status", "Check whether a live orchestrator is present in a circle.", func(ctx context.Context, caller string, a mcpCircleArgs) (string, error) {
 		circle := a.Circle
@@ -420,8 +355,12 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 				circle = "global"
 			}
 		}
-		result, err := h.mcpLocal(ctx, http.MethodGet, "/circles/"+url.PathEscape(circle)+"/orchestrator", nil)
-		return jsonResult(result), err
+		resp := OrchestratorStatusResponse{Circle: circle, StaleAfterSeconds: int(h.reg.HeartbeatTolerance().Seconds())}
+		if orch, ok := h.reg.GetOrchestrator(circle); ok {
+			peerID, peerName := string(orch.PeerID), string(orch.DisplayName)
+			resp.Present, resp.PeerID, resp.PeerName, resp.LastSeen = true, &peerID, &peerName, isoOrNil(orch.LastSeen)
+		}
+		return jsonResult(resp), nil
 	})
 	addMCPTool(srv, "kill_peer", "Deregister a peer and kill its pane only with destructive proof.", func(ctx context.Context, caller string, a mcpKillArgs) (string, error) {
 		if err := requireMCPAdmin(h, cfg, caller, "kill_peer"); err != nil {
@@ -430,31 +369,24 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := required("peer_identifier", a.PeerIdentifier); err != nil {
 			return "", err
 		}
-		body := map[string]any{"peer_identifier": a.PeerIdentifier, "from_peer": caller}
-		optional(body, "circle", a.Circle)
-		result, err := h.mcpLocal(ctx, http.MethodPost, "/kill-peer", body)
+		result, err := h.killPeer(ctx, KillPeerRequest{PeerIdentifier: a.PeerIdentifier, Circle: stringPtr(a.Circle), FromPeer: &caller})
 		return jsonResult(result), err
 	})
 	addMCPTool(srv, "mark_reviewed", "Record that the caller reviewed a pull request.", func(ctx context.Context, caller string, a mcpMarkReviewArgs) (string, error) {
 		if err := required("pr_url", a.PRURL); err != nil {
 			return "", err
 		}
-		body := map[string]any{"reviewer": caller, "pr_url": a.PRURL}
-		if a.LastReviewedSHA != nil {
-			body["last_reviewed_sha"] = *a.LastReviewedSHA
-		}
-		_, err := h.mcpLocal(ctx, http.MethodPost, "/reviews", body)
+		err := h.markReviewedDirect(markReviewedRequest{Reviewer: caller, PRURL: a.PRURL, LastReviewedSHA: a.LastReviewedSHA})
 		return "marked reviewed: " + a.PRURL, err
 	})
 	addMCPTool(srv, "review_queue", "List pull requests awaiting review.", func(ctx context.Context, caller string, a mcpReviewArgs) (string, error) {
-		result, err := h.mcpLocal(ctx, http.MethodGet, "/reviews?reviewer="+url.QueryEscape(firstNonempty(a.PeerName, caller)), nil)
+		items, err := h.listReviewsDirect(firstNonempty(a.PeerName, caller))
 		if err != nil {
 			return "", err
 		}
 		lines := []string{"pr_url\tlast_reviewed_sha\tcurrent_head_sha\tstate\tmy_action"}
-		for _, raw := range anySlice(result["reviews"]) {
-			item, _ := raw.(map[string]any)
-			lines = append(lines, strings.Join([]string{stringValue(item, "pr_url"), stringValue(item, "last_reviewed_sha"), stringValue(item, "current_head_sha"), stringValue(item, "state"), stringValue(item, "my_action")}, "\t"))
+		for _, item := range items {
+			lines = append(lines, strings.Join([]string{item.PRURL, deref(item.LastReviewedSHA), deref(item.CurrentHeadSHA), item.State, item.MyAction}, "\t"))
 		}
 		return strings.Join(lines, "\n"), nil
 	})
@@ -471,19 +403,15 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if (a.FireAt == "") == (a.Cron == "") {
 			return "", fmt.Errorf("provide exactly one of fire_at or cron")
 		}
-		body := map[string]any{"from_peer": caller, "to_peer": caller, "text": a.Text, "kind": firstNonempty(a.Kind, "notify")}
-		optional(body, "fire_at", a.FireAt)
-		optional(body, "cron", a.Cron)
-		optional(body, "circle", a.Circle)
-		result, err := h.mcpLocal(ctx, http.MethodPost, "/schedules", body)
-		return stringValue(result, "schedule_id"), err
+		result, err := h.schedules.create(ctx, scheduleCreateRequest{FromPeer: caller, ToPeer: caller, Text: a.Text, FireAt: stringPtr(a.FireAt), Cron: stringPtr(a.Cron), Kind: firstNonempty(a.Kind, "notify"), Circle: stringPtr(a.Circle)})
+		return result.ScheduleID, err
 	})
 	addMCPTool(srv, "schedule_list", "List pending scheduled messages.", func(ctx context.Context, caller string, a mcpScheduleListArgs) (string, error) {
-		path := "/schedules"
+		var fromPeer *string
 		if a.MineOnly == nil || *a.MineOnly {
-			path += "?from_peer=" + url.QueryEscape(caller)
+			fromPeer = &caller
 		}
-		result, err := h.mcpLocal(ctx, http.MethodGet, path, nil)
+		result, err := h.schedules.list(ctx, fromPeer)
 		if err != nil {
 			return "", err
 		}
@@ -492,11 +420,10 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 			header += "\tcron"
 		}
 		lines := []string{header}
-		for _, raw := range anySlice(result["schedules"]) {
-			item, _ := raw.(map[string]any)
-			fields := []string{stringValue(item, "schedule_id"), stringValue(item, "from_peer"), stringValue(item, "to_peer"), stringValue(item, "kind"), stringValue(item, "fire_at"), strings.NewReplacer("\t", " ", "\n", " ").Replace(stringValue(item, "text"))}
+		for _, item := range result.Schedules {
+			fields := []string{item.ScheduleID, item.FromPeer, item.ToPeer, item.Kind, item.FireAt, strings.NewReplacer("\t", " ", "\n", " ").Replace(item.Text)}
 			if a.IncludeCron {
-				fields = append(fields, stringValue(item, "cron"))
+				fields = append(fields, deref(item.Cron))
 			}
 			lines = append(lines, strings.Join(fields, "\t"))
 		}
@@ -509,13 +436,12 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := required("schedule_id", a.ScheduleID); err != nil {
 			return "", err
 		}
-		_, err := h.mcpLocal(ctx, http.MethodDelete, "/schedules/"+url.PathEscape(a.ScheduleID), nil)
+		err := h.schedules.delete(ctx, a.ScheduleID)
 		return "deleted schedule " + a.ScheduleID, err
 	})
 	addMCPTool(srv, "share_session", "Generate a relay share link for a peer.", func(ctx context.Context, caller string, a mcpShareArgs) (string, error) {
 		target := firstNonempty(a.PeerName, caller)
-		body := map[string]any{"peer_name": target, "permissions": firstNonempty(a.Permissions, "ro"), "ttl_secs": a.TTLSeconds}
-		result, err := h.mcpLocal(ctx, http.MethodPost, "/shares", body)
+		result, err := h.createShareDirect(ctx, shareRequest{PeerName: target, Permissions: firstNonempty(a.Permissions, "ro"), TTLSecs: a.TTLSeconds})
 		if err != nil {
 			return "", err
 		}
@@ -529,7 +455,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err := required("share_id", a.ShareID); err != nil {
 			return "", err
 		}
-		_, err := h.mcpLocal(ctx, http.MethodDelete, "/shares/"+url.PathEscape(a.ShareID), nil)
+		_, err := h.revokeShareDirect(ctx, a.ShareID)
 		return "revoked share " + a.ShareID, err
 	})
 }
@@ -552,13 +478,30 @@ func scheduleTool(h *Hub, cfg config.MCPHTTPConfig, cron bool) func(context.Cont
 		if !cron && a.FireAt == "" {
 			return "", fmt.Errorf("fire_at is required")
 		}
-		body := map[string]any{"from_peer": caller, "to_peer": a.ToPeer, "text": a.Text, "kind": firstNonempty(a.Kind, "notify")}
-		optional(body, "fire_at", a.FireAt)
-		optional(body, "cron", a.Cron)
-		optional(body, "circle", a.Circle)
-		result, err := h.mcpLocal(ctx, http.MethodPost, "/schedules", body)
-		return stringValue(result, "schedule_id"), err
+		result, err := h.schedules.create(ctx, scheduleCreateRequest{FromPeer: caller, ToPeer: a.ToPeer, Text: a.Text, FireAt: stringPtr(a.FireAt), Cron: stringPtr(a.Cron), Kind: firstNonempty(a.Kind, "notify"), Circle: stringPtr(a.Circle)})
+		return result.ScheduleID, err
 	}
+}
+
+func stringPtr(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func deref(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func firstNonNilMap(value map[string]any) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	return value
 }
 
 func optional(body map[string]any, key, value string) {
@@ -586,33 +529,6 @@ func defaultInt(value, fallback int) int {
 		return value
 	}
 	return fallback
-}
-func addQuery(q url.Values, key, value string) {
-	if value != "" {
-		q.Set(key, value)
-	}
-}
-func withQuery(path string, q url.Values) string {
-	if len(q) == 0 {
-		return path
-	}
-	return path + "?" + q.Encode()
-}
-func structMap(value any) map[string]any {
-	raw, _ := json.Marshal(value)
-	var out map[string]any
-	_ = json.Unmarshal(raw, &out)
-	for key, value := range out {
-		switch value := value.(type) {
-		case string:
-			if value == "" {
-				delete(out, key)
-			}
-		case nil:
-			delete(out, key)
-		}
-	}
-	return out
 }
 func stringValue(m map[string]any, key string) string {
 	if m == nil {

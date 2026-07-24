@@ -275,6 +275,13 @@ type AskResponse struct {
 	Error         *string `json:"error,omitempty"`
 }
 
+func (h *Hub) askOperationReady() error {
+	if h.ask == nil || h.ask.asks == nil || h.ask.delivery == nil || h.ask.reg == nil {
+		return routeErr(http.StatusServiceUnavailable, "ask lifecycle not configured")
+	}
+	return nil
+}
+
 // handleAsk opens a non-blocking ask: resolve+authorize via CheckAccess (inside
 // DeliverAsk), register in the service.AskTracker (minting ask-<hex8> or reusing the
 // caller-supplied cid), then deliver. On service.ErrQuiesced → 409; on a
@@ -293,7 +300,19 @@ func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx := r.Context()
+	result, err := h.openAsk(r.Context(), req)
+	if err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// openAsk is the typed ask operation shared by HTTP and MCP callers.
+func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) {
+	if err := h.askOperationReady(); err != nil {
+		return AskResponse{}, err
+	}
 
 	// Resolve the target FIRST so the service.AskTracker entry is keyed on the canonical
 	// peer_id (display names collide; PendingForPeer / reply routing are
@@ -301,12 +320,10 @@ func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
 	// register. An ambiguous name is a 409; an unknown one a 404.
 	target, terr := h.ask.reg.GetPeerByName(req.ToPeer, req.Circle)
 	if terr != nil {
-		writeJSONError(w, http.StatusConflict, terr.Error())
-		return
+		return AskResponse{}, routeErr(http.StatusConflict, terr.Error())
 	}
 	if target == nil {
-		writeJSONError(w, http.StatusNotFound, "Unknown peer: "+req.ToPeer)
-		return
+		return AskResponse{}, routeErr(http.StatusNotFound, "Unknown peer: "+req.ToPeer)
 	}
 	// Best-effort sender resolution (preferring the target's circle); an
 	// unresolved sender still proceeds (the from fields stay as supplied).
@@ -332,14 +349,12 @@ func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrQuiesced) {
-			writeJSONError(w, http.StatusConflict, map[string]any{
+			return AskResponse{}, routeErr(http.StatusConflict, map[string]any{
 				"error": "peer_switching",
 				"hint":  fmt.Sprintf("Peer %s is mid-switch; retry shortly.", req.ToPeer),
 			})
-			return
 		}
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
+		return AskResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
 
 	_, err = h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
@@ -362,30 +377,27 @@ func (h *Hub) handleAsk(w http.ResponseWriter, r *http.Request) {
 				"status": "fail", "detail": di.Detail, "hook_delivery": di.HookDelivery,
 			})
 			_, _ = h.ask.asks.Close(ctx, cid, "send_failed")
-			writeJSONError(w, http.StatusServiceUnavailable, map[string]any{
+			return AskResponse{}, routeErr(http.StatusServiceUnavailable, map[string]any{
 				"error":          "injection_failed",
 				"hint":           fmt.Sprintf("Ask injection failed for %s: %s", req.ToPeer, di.Error()),
 				"correlation_id": cid,
 			})
-			return
 		}
 		// Unknown target / circle violation surfaced by CheckAccess, or a genuine
 		// no-connection TransportError. Either way the ask cannot stand: close it.
 		_, _ = h.ask.asks.Close(ctx, cid, "send_failed")
 		if errors.Is(err, service.ErrNotConnected) {
-			writeJSONError(w, http.StatusServiceUnavailable,
+			return AskResponse{}, routeErr(http.StatusServiceUnavailable,
 				fmt.Sprintf("Peer %s has no live connection: %s", req.ToPeer, err))
-			return
 		}
-		writeJSONError(w, http.StatusNotFound, err.Error())
-		return
+		return AskResponse{}, routeErr(http.StatusNotFound, err.Error())
 	}
 
 	// reply_to: close the referenced prior ask now that the new one landed.
 	if req.ReplyTo != nil {
 		_, _ = h.ask.asks.Close(ctx, *req.ReplyTo, "reply_to")
 	}
-	writeJSON(w, http.StatusOK, AskResponse{CorrelationID: cid})
+	return AskResponse{CorrelationID: cid}, nil
 }
 
 // ----------------------------------------------------------------------------
@@ -401,8 +413,12 @@ type AckRequest struct {
 	FromPeer      *string          `json:"from_peer,omitempty"`
 }
 
+type AckResponse struct {
+	OK bool `json:"ok"`
+}
+
 // handleAck closes an ask. Bare ack → Close(ack), idempotent re-ack of a closed
-// ask → 200. A structured-question ask delegates to /answer. Ack-with-message
+// ask → 200. A structured-question ask delegates to /answer. ack-with-message
 // delivers the reply to the ORIGINAL asker first (framed "[ack #cid from
 // @<recipient>] <msg>") and only closes ack_with_msg on success: 410 if the ask
 // is already closed (reply undeliverable), 503 if the reply can't be delivered
@@ -419,13 +435,23 @@ func (h *Hub) handleAck(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx := r.Context()
+	result, err := h.ackDirect(r.Context(), req)
+	if err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// ackDirect is the typed ack operation shared by HTTP and MCP callers.
+func (h *Hub) ackDirect(ctx context.Context, req AckRequest) (AckResponse, error) {
+	if err := h.askOperationReady(); err != nil {
+		return AckResponse{}, err
+	}
 
 	existing, ok := h.ask.asks.Get(req.CorrelationID)
 	if !ok {
-		writeJSONError(w, http.StatusNotFound,
-			"No open ask with correlation_id: "+req.CorrelationID)
-		return
+		return AckResponse{}, routeErr(http.StatusNotFound, "No open ask with correlation_id: "+req.CorrelationID)
 	}
 
 	hasBody := (req.Message != nil && *req.Message != "") || len(req.Attachments) > 0
@@ -436,26 +462,26 @@ func (h *Hub) handleAck(w http.ResponseWriter, r *http.Request) {
 		if hasBody {
 			outcome = "answered"
 		}
-		h.answerInternal(w, r, AnswerRequest{
+		if _, err := h.answerDirect(ctx, AnswerRequest{
 			CorrelationID: req.CorrelationID,
 			Text:          req.Message,
 			Outcome:       outcome,
 			Attachments:   req.Attachments,
-		})
-		return
+		}); err != nil {
+			return AckResponse{}, err
+		}
+		return AckResponse{OK: true}, nil
 	}
 
 	// Already closed: a reply can no longer be delivered.
 	if existing.Closed {
 		if hasBody {
-			writeJSONError(w, http.StatusGone, fmt.Sprintf(
+			return AckResponse{}, routeErr(http.StatusGone, fmt.Sprintf(
 				"Ask %s is already closed; reply message was not delivered. "+
 					"Send a new notify/ask instead.", req.CorrelationID))
-			return
 		}
 		// Idempotent bare re-ack.
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		return
+		return AckResponse{OK: true}, nil
 	}
 
 	// Pull delivery (asker blocked in wait_on_ack): retain the reply on the ask
@@ -465,8 +491,7 @@ func (h *Hub) handleAck(w http.ResponseWriter, r *http.Request) {
 		h.ask.asks.CaptureReply(ctx, req.CorrelationID, derefOr(req.Message, ""), req.Attachments)
 		_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack_with_msg")
 		h.emitAckEvent(ctx, existing, "ack_with_msg", true, true, len(req.Attachments) > 0)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		return
+		return AckResponse{OK: true}, nil
 	}
 
 	if hasBody {
@@ -483,36 +508,32 @@ func (h *Hub) handleAck(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			if errors.Is(err, service.ErrNotConnected) {
 				// Asker has no live WS: keep the ask OPEN for retry, 503.
-				writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf(
+				return AckResponse{}, routeErr(http.StatusServiceUnavailable, fmt.Sprintf(
 					"Reply delivery failed for %s: %s. Ask remains open; retry when "+
 						"the asker reconnects.", existing.FromPeerName, err))
-				return
 			}
 			// CheckAccess failure (asker evicted): close without delivery.
 			_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack_with_msg")
 			h.emitAckEvent(ctx, existing, "ack_with_msg", false, true, len(req.Attachments) > 0)
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-			return
+			return AckResponse{OK: true}, nil
 		}
 		if !res.Delivered() {
 			// Queued / not delivered → fail loud, leave the ask open for retry.
-			writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf(
+			return AckResponse{}, routeErr(http.StatusServiceUnavailable, fmt.Sprintf(
 				"Reply delivery failed for %s: %s. Ask remains open; retry when "+
 					"the asker reconnects.", existing.FromPeerName, res.Reason))
-			return
 		}
 		if req.Message != nil {
 			h.ask.asks.CaptureReply(ctx, req.CorrelationID, *req.Message, nil)
 		}
 		_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack_with_msg")
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		return
+		return AckResponse{OK: true}, nil
 	}
 
 	// Bare ack.
 	h.emitAckEvent(ctx, existing, "ack", false, false, false)
 	_, _ = h.ask.asks.Close(ctx, req.CorrelationID, "ack")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	return AckResponse{OK: true}, nil
 }
 
 // ----------------------------------------------------------------------------
@@ -529,9 +550,13 @@ type AnswerRequest struct {
 	Attachments   []map[string]any `json:"attachments,omitempty"`
 }
 
+type AnswerResponse struct {
+	OK bool `json:"ok"`
+}
+
 // handleAnswer answers a structured-question ask: 404 unknown, 422 plain ask
 // (use /ack) or invalid option, 410 already answered/closed. Records the typed
-// Answer (resolving any blocking waiter), then best-effort notifies a
+// answerDirect (resolving any blocking waiter), then best-effort notifies a
 // human-readable form back to the asker.
 func (h *Hub) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -545,22 +570,26 @@ func (h *Hub) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	h.answerInternal(w, r, req)
-}
-
-// answerInternal is the shared /answer body, reused by /ack's question delegation.
-func (h *Hub) answerInternal(w http.ResponseWriter, r *http.Request, req AnswerRequest) {
-	ctx := r.Context()
-	existing, ok := h.ask.asks.Get(req.CorrelationID)
-	if !ok {
-		writeJSONError(w, http.StatusNotFound,
-			"No open ask with correlation_id: "+req.CorrelationID)
+	result, err := h.answerDirect(r.Context(), req)
+	if err != nil {
+		writeRouteError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// answerDirect is the typed structured-answer operation shared by HTTP and MCP callers.
+func (h *Hub) answerDirect(ctx context.Context, req AnswerRequest) (AnswerResponse, error) {
+	if err := h.askOperationReady(); err != nil {
+		return AnswerResponse{}, err
+	}
+	existing, ok := h.ask.asks.Get(req.CorrelationID)
+	if !ok {
+		return AnswerResponse{}, routeErr(http.StatusNotFound, "No open ask with correlation_id: "+req.CorrelationID)
+	}
 	if existing.Question == nil {
-		writeJSONError(w, http.StatusUnprocessableEntity, fmt.Sprintf(
+		return AnswerResponse{}, routeErr(http.StatusUnprocessableEntity, fmt.Sprintf(
 			"Ask %s is not a structured question; use /ack.", req.CorrelationID))
-		return
 	}
 	outcome := req.Outcome
 	if outcome == "" {
@@ -575,18 +604,15 @@ func (h *Hub) answerInternal(w http.ResponseWriter, r *http.Request, req AnswerR
 	recorded, err := h.ask.asks.Answer(ctx, req.CorrelationID, ans)
 	if err != nil {
 		if errors.Is(err, service.ErrAlreadyAnswered) {
-			writeJSONError(w, http.StatusGone, fmt.Sprintf(
+			return AnswerResponse{}, routeErr(http.StatusGone, fmt.Sprintf(
 				"Ask %s is already answered/closed.", req.CorrelationID))
-			return
 		}
 		if errors.Is(err, service.ErrAskNotFound) {
-			writeJSONError(w, http.StatusNotFound,
+			return AnswerResponse{}, routeErr(http.StatusNotFound,
 				"No open ask with correlation_id: "+req.CorrelationID)
-			return
 		}
 		// Validation error (e.g. unknown option_id, choice w/o option).
-		writeJSONError(w, http.StatusUnprocessableEntity, err.Error())
-		return
+		return AnswerResponse{}, routeErr(http.StatusUnprocessableEntity, err.Error())
 	}
 
 	// Best-effort deliver a human-readable form back to the asker. tool_permission
@@ -617,7 +643,7 @@ func (h *Hub) answerInternal(w http.ResponseWriter, r *http.Request, req AnswerR
 		delivered = derr == nil && res.Delivered()
 	}
 	h.emitAckEvent(ctx, existing, "answered", delivered, body != "", len(req.Attachments) > 0)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	return AnswerResponse{OK: true}, nil
 }
 
 // answerReplyText resolves the human-readable reply body for an answer: explicit
@@ -838,17 +864,26 @@ func (h *Hub) handleAskMany(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if len(req.ToPeers) == 0 {
-		writeJSONError(w, http.StatusUnprocessableEntity, "to_peers must not be empty")
+	out, err := h.openAskMany(r.Context(), req)
+	if err != nil {
+		writeRouteError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// openAskMany is the typed fan-out operation shared by HTTP and MCP callers.
+func (h *Hub) openAskMany(ctx context.Context, req AskManyRequest) (AskManyResponse, error) {
+	if err := h.askOperationReady(); err != nil {
+		return AskManyResponse{}, err
+	}
+	if len(req.ToPeers) == 0 {
+		return AskManyResponse{}, routeErr(http.StatusUnprocessableEntity, "to_peers must not be empty")
 	}
 	if len(req.ToPeers) > service.MaxAskManyPeers {
-		writeJSONError(w, http.StatusUnprocessableEntity,
+		return AskManyResponse{}, routeErr(http.StatusUnprocessableEntity,
 			fmt.Sprintf("to_peers exceeds the %d-peer limit", service.MaxAskManyPeers))
-		return
 	}
-
-	ctx := r.Context()
 	parent := h.ask.askMany.Create(nil, req.FromPeer, req.Text, req.TimeoutSeconds)
 	out := AskManyResponse{ParentID: parent.ParentID}
 	seenNames := map[string]struct{}{}
@@ -923,7 +958,7 @@ func (h *Hub) handleAskMany(w http.ResponseWriter, r *http.Request) {
 			Peer: string(target.DisplayName), CorrelationID: &cid, Delivered: delivered, Error: errText,
 		})
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 func (h *Hub) handleAskManyResult(w http.ResponseWriter, r *http.Request) {
@@ -939,12 +974,27 @@ func (h *Hub) handleAskManyResult(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	out, ok := h.ask.askMany.Status(parentID, time.Time{})
-	if !ok {
-		writeJSONError(w, http.StatusNotFound, "ask-many "+parentID+" not found")
+	out, err := h.askManyResult(parentID)
+	if err != nil {
+		writeRouteError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// askManyResult returns the typed fan-out status for HTTP and MCP callers.
+func (h *Hub) askManyResult(parentID string) (map[string]any, error) {
+	if err := h.askOperationReady(); err != nil {
+		return nil, err
+	}
+	if parentID == "" || strings.Contains(parentID, "/") {
+		return nil, routeErr(http.StatusNotFound, "not found")
+	}
+	out, ok := h.ask.askMany.Status(parentID, time.Time{})
+	if !ok {
+		return nil, routeErr(http.StatusNotFound, "ask-many "+parentID+" not found")
+	}
+	return out, nil
 }
 
 // ----------------------------------------------------------------------------
@@ -1101,20 +1151,30 @@ func (h *Hub) handleAskWait(w http.ResponseWriter, r *http.Request, cid string) 
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx := r.Context()
-
-	existing, ok := h.ask.asks.Get(cid)
-	if !ok {
-		writeJSONError(w, http.StatusNotFound, "No ask with correlation_id: "+cid)
+	result, err := h.waitOnAck(r.Context(), cid, req)
+	if err != nil {
+		writeRouteError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// waitOnAck blocks for a tracked ask using the same bounded pull-delivery
+// semantics as the HTTP endpoint.
+func (h *Hub) waitOnAck(ctx context.Context, cid string, req AskWaitRequest) (AskWaitResponse, error) {
+	if err := h.askOperationReady(); err != nil {
+		return AskWaitResponse{}, err
+	}
+	existing, ok := h.ask.asks.Get(cid)
+	if !ok {
+		return AskWaitResponse{}, routeErr(http.StatusNotFound, "No ask with correlation_id: "+cid)
+	}
 	if req.PeerID != string(existing.FromPeerID) && req.PeerID != string(existing.FromPeerName) {
-		writeJSONError(w, http.StatusForbidden, map[string]any{
+		return AskWaitResponse{}, routeErr(http.StatusForbidden, map[string]any{
 			"error":          "not_the_asker",
 			"correlation_id": cid,
 			"asker":          string(existing.FromPeerName),
 		})
-		return
 	}
 
 	timeout := askWaitDefaultSeconds
@@ -1131,15 +1191,12 @@ func (h *Hub) handleAskWait(w http.ResponseWriter, r *http.Request, cid string) 
 	ask, err := h.ask.asks.WaitForResolution(ctx, cid, timeout, true)
 	if err != nil {
 		if errors.Is(err, service.ErrAskNotFound) {
-			writeJSONError(w, http.StatusNotFound, "No ask with correlation_id: "+cid)
-			return
+			return AskWaitResponse{}, routeErr(http.StatusNotFound, "No ask with correlation_id: "+cid)
 		}
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
+		return AskWaitResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	if ask == nil {
-		writeJSON(w, http.StatusOK, AskWaitResponse{CorrelationID: cid, Status: "pending"})
-		return
+		return AskWaitResponse{CorrelationID: cid, Status: "pending"}, nil
 	}
 
 	resp := AskWaitResponse{
@@ -1160,7 +1217,7 @@ func (h *Hub) handleAskWait(w http.ResponseWriter, r *http.Request, cid string) 
 		resp.OptionID = ask.Answer.OptionID
 		resp.Message = ask.Answer.Message
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp, nil
 }
 
 // ----------------------------------------------------------------------------

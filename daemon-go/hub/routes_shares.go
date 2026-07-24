@@ -17,6 +17,7 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -82,15 +83,23 @@ func (h *Hub) handleShares(w http.ResponseWriter, r *http.Request) {
 var relayClient = &http.Client{Timeout: 10 * time.Second}
 
 func (h *Hub) createShare(w http.ResponseWriter, r *http.Request) {
-	base, apiKey, ok := h.relayHTTPAndKey()
-	if !ok {
-		writeError(w, http.StatusServiceUnavailable, "Relay not configured. Run `repowire setup --relay` first.")
-		return
-	}
 	var req shareRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "malformed request: "+err.Error())
 		return
+	}
+	data, err := h.createShareDirect(r.Context(), req)
+	if err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
+}
+
+func (h *Hub) createShareDirect(ctx context.Context, req shareRequest) (map[string]any, error) {
+	base, apiKey, ok := h.relayHTTPAndKey()
+	if !ok {
+		return nil, routeErr(http.StatusServiceUnavailable, "Relay not configured. Run `repowire setup --relay` first.")
 	}
 	if req.Permissions == "" {
 		req.Permissions = "ro"
@@ -100,33 +109,29 @@ func (h *Hub) createShare(w http.ResponseWriter, r *http.Request) {
 		"permissions": req.Permissions,
 		"ttl_secs":    req.TTLSecs,
 	})
-	upstream, err := http.NewRequest(http.MethodPost, base+"/api/v1/share", bytes.NewReader(body))
+	upstream, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/share", bytes.NewReader(body))
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "relay request build failed: "+err.Error())
-		return
+		return nil, routeErr(http.StatusBadGateway, "relay request build failed: "+err.Error())
 	}
 	upstream.Header.Set("x-api-key", apiKey)
 	upstream.Header.Set("Content-Type", "application/json")
 	resp, err := relayClient.Do(upstream)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "relay unreachable: "+err.Error())
-		return
+		return nil, routeErr(http.StatusBadGateway, "relay unreachable: "+err.Error())
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		writeError(w, resp.StatusCode, string(raw))
-		return
+		return nil, routeErr(resp.StatusCode, string(raw))
 	}
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {
-		writeError(w, http.StatusBadGateway, "malformed relay response")
-		return
+		return nil, routeErr(http.StatusBadGateway, "malformed relay response")
 	}
 	if shareID, sok := data["share_id"].(string); sok {
 		data["url"] = base + "/s/" + shareID
 	}
-	writeJSON(w, http.StatusOK, data)
+	return data, nil
 }
 
 func (h *Hub) listShares(w http.ResponseWriter, r *http.Request) {
@@ -175,34 +180,38 @@ func (h *Hub) handleRevokeShare(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "share id required")
 		return
 	}
-	base, apiKey, ok := h.relayHTTPAndKey()
-	if !ok {
-		writeError(w, http.StatusServiceUnavailable, "Relay not configured")
+	data, err := h.revokeShareDirect(r.Context(), shareID)
+	if err != nil {
+		writeRouteError(w, err)
 		return
 	}
-	upstream, err := http.NewRequest(http.MethodDelete, base+"/api/v1/share/"+shareID, nil)
+	writeJSON(w, http.StatusOK, data)
+}
+
+func (h *Hub) revokeShareDirect(ctx context.Context, shareID string) (map[string]any, error) {
+	base, apiKey, ok := h.relayHTTPAndKey()
+	if !ok {
+		return nil, routeErr(http.StatusServiceUnavailable, "Relay not configured")
+	}
+	upstream, err := http.NewRequestWithContext(ctx, http.MethodDelete, base+"/api/v1/share/"+shareID, nil)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "relay request build failed: "+err.Error())
-		return
+		return nil, routeErr(http.StatusBadGateway, "relay request build failed: "+err.Error())
 	}
 	upstream.Header.Set("x-api-key", apiKey)
 	resp, err := relayClient.Do(upstream)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "relay unreachable: "+err.Error())
-		return
+		return nil, routeErr(http.StatusBadGateway, "relay unreachable: "+err.Error())
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
-		writeError(w, resp.StatusCode, string(raw))
-		return
+		return nil, routeErr(resp.StatusCode, string(raw))
 	}
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {
 		// Relay returned a non-JSON 200/404; pass through an empty object rather
 		// than erroring (revoke is idempotent).
-		writeJSON(w, http.StatusOK, map[string]any{})
-		return
+		return map[string]any{}, nil
 	}
-	writeJSON(w, http.StatusOK, data)
+	return data, nil
 }

@@ -133,6 +133,22 @@ type workUpdateRequest struct {
 	Provenance    map[string]any `json:"provenance"`
 }
 
+type workListRequest struct {
+	State             *string
+	OwnerPeerID       *string
+	CreatedByPeerID   *string
+	RepowireSessionID *string
+	Circle            *string
+	View              string
+}
+
+func (h *Hub) workRouteReady() error {
+	if h.work == nil || h.work.store == nil {
+		return routeErr(http.StatusServiceUnavailable, "work store not configured")
+	}
+	return nil
+}
+
 // ----------------------------------------------------------------------------
 // Collection: POST /work|/jobs (create), GET /work|/jobs (list)
 // ----------------------------------------------------------------------------
@@ -156,32 +172,40 @@ func (h *Hub) handleCreateWork(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx := r.Context()
-	if req.DueAt != nil && req.Cron != nil {
-		writeError(w, http.StatusBadRequest, "provide due_at or cron, not both")
+	result, err := h.jobCreate(r.Context(), req)
+	if err != nil {
+		writeRouteError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// jobCreate creates one tracked or recurring job and returns the HTTP response
+// body without depending on an HTTP request. MCP uses this same path.
+func (h *Hub) jobCreate(ctx context.Context, req workCreateRequest) (map[string]any, error) {
+	if err := h.workRouteReady(); err != nil {
+		return nil, err
+	}
+	if req.DueAt != nil && req.Cron != nil {
+		return nil, routeErr(http.StatusBadRequest, "provide due_at or cron, not both")
 	}
 	assigned, code, detail := h.canonicalAssignedPeer(req.AssignedPeerID, req.Circle)
 	if code != 0 {
-		writeJSONError(w, code, detail)
-		return
+		return nil, routeErr(code, detail)
 	}
 	merged, code, detail := mergeExecutionRequest(&req, assigned)
 	if code != 0 {
-		writeJSONError(w, code, detail)
-		return
+		return nil, routeErr(code, detail)
 	}
 
 	if req.Cron != nil {
 		norm, err := service.ValidateCron(*req.Cron)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return nil, routeErr(http.StatusBadRequest, err.Error())
 		}
 		next, err := service.NextFireAfter(norm, time.Now().UTC())
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return nil, routeErr(http.StatusBadRequest, err.Error())
 		}
 		entry, err := h.work.store.CreateCalendarEntry(ctx, &state.CalendarEntry{
 			Title:           req.Title,
@@ -200,16 +224,14 @@ func (h *Hub) handleCreateWork(w http.ResponseWriter, r *http.Request) {
 			Provenance:      req.Provenance,
 		})
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, routeErr(http.StatusInternalServerError, err.Error())
 		}
 		h.wakeRunner()
-		writeJSON(w, http.StatusOK, map[string]any{
+		return map[string]any{
 			"calendar_id":  entry.CalendarID,
 			"recurring_id": entry.CalendarID,
 			"calendar":     entry.Status(),
-		})
-		return
+		}, nil
 	}
 
 	work, err := h.work.store.CreateWork(ctx, state.WorkCreate{
@@ -231,53 +253,61 @@ func (h *Hub) handleCreateWork(w http.ResponseWriter, r *http.Request) {
 		Provenance:        req.Provenance,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	h.wakeRunner()
-	writeJSON(w, http.StatusOK, map[string]any{
+	return map[string]any{
 		"job_id":  work.WorkID,
 		"work_id": work.WorkID,
 		"status":  work.Status(),
-	})
+	}, nil
 }
 
 func (h *Hub) handleListWork(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	view := q.Get("view")
-	if view != "" && view != "full" && view != "summary" {
-		writeError(w, http.StatusBadRequest, "view must be one of: full, summary")
-		return
-	}
-	filter := state.WorkFilter{
+	result, err := h.jobList(r.Context(), workListRequest{
 		State:             optQuery(q, "state"),
 		OwnerPeerID:       optQuery(q, "owner_peer_id"),
 		CreatedByPeerID:   optQuery(q, "created_by_peer_id"),
 		RepowireSessionID: optQuery(q, "repowire_session_id"),
 		Circle:            optQuery(q, "circle"),
-	}
-	items, err := h.work.store.ListWork(r.Context(), filter)
+		View:              q.Get("view"),
+	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeRouteError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// jobList returns the HTTP list response without parsing query parameters.
+func (h *Hub) jobList(ctx context.Context, req workListRequest) (map[string]any, error) {
+	if err := h.workRouteReady(); err != nil {
+		return nil, err
+	}
+	if req.View != "" && req.View != "full" && req.View != "summary" {
+		return nil, routeErr(http.StatusBadRequest, "view must be one of: full, summary")
+	}
+	items, storeErr := h.work.store.ListWork(ctx, state.WorkFilter{
+		State: req.State, OwnerPeerID: req.OwnerPeerID, CreatedByPeerID: req.CreatedByPeerID,
+		RepowireSessionID: req.RepowireSessionID, Circle: req.Circle,
+	})
+	if storeErr != nil {
+		return nil, routeErr(http.StatusBadRequest, storeErr.Error())
 	}
 
 	var recurring []*state.CalendarEntry
-	stateFilter := q.Get("state")
+	stateFilter := derefString(req.State)
 	if stateFilter == "" || stateFilter == "active" || stateFilter == "paused" || stateFilter == "cancelled" {
-		recurring, err = h.work.store.ListCalendarEntries(r.Context(), state.CalendarFilter{
-			State:           optQuery(q, "state"),
-			OwnerPeerID:     optQuery(q, "owner_peer_id"),
-			CreatedByPeerID: optQuery(q, "created_by_peer_id"),
-			Circle:          optQuery(q, "circle"),
+		recurring, storeErr = h.work.store.ListCalendarEntries(ctx, state.CalendarFilter{
+			State: req.State, OwnerPeerID: req.OwnerPeerID, CreatedByPeerID: req.CreatedByPeerID, Circle: req.Circle,
 		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+		if storeErr != nil {
+			return nil, routeErr(http.StatusInternalServerError, storeErr.Error())
 		}
 	}
 
-	summarize := view == "summary"
+	summarize := req.View == "summary"
 	workOut := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		s := item.Status()
@@ -294,7 +324,7 @@ func (h *Hub) handleListWork(w http.ResponseWriter, r *http.Request) {
 		}
 		recurringOut = append(recurringOut, s)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"work": workOut, "recurring": recurringOut})
+	return map[string]any{"work": workOut, "recurring": recurringOut}, nil
 }
 
 // ----------------------------------------------------------------------------
@@ -345,57 +375,73 @@ func (h *Hub) handleWorkItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) handleWorkStatus(w http.ResponseWriter, r *http.Request, workID string) {
+	result, err := h.jobStatus(r.Context(), workID)
+	if err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// jobStatus returns one job's HTTP status response without an HTTP request.
+func (h *Hub) jobStatus(ctx context.Context, workID string) (map[string]any, error) {
+	if err := h.workRouteReady(); err != nil {
+		return nil, err
+	}
 	if strings.HasPrefix(workID, "cal-") {
-		entry, err := h.work.store.GetCalendarEntry(r.Context(), workID)
+		entry, err := h.work.store.GetCalendarEntry(ctx, workID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, routeErr(http.StatusInternalServerError, err.Error())
 		}
 		if entry == nil {
-			writeError(w, http.StatusNotFound, "No recurring job: "+workID)
-			return
+			return nil, routeErr(http.StatusNotFound, "No recurring job: "+workID)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"status": entry.Status()})
-		return
+		return map[string]any{"status": entry.Status()}, nil
 	}
-	work, err := h.work.store.GetWork(r.Context(), workID)
+	work, err := h.work.store.GetWork(ctx, workID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	if work == nil {
-		writeError(w, http.StatusNotFound, "No work: "+workID)
-		return
+		return nil, routeErr(http.StatusNotFound, "No work: "+workID)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": work.Status()})
+	return map[string]any{"status": work.Status()}, nil
 }
 
 func (h *Hub) handleWorkResult(w http.ResponseWriter, r *http.Request, workID string) {
+	result, err := h.jobResult(r.Context(), workID)
+	if err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// jobResult returns one job's HTTP result response without an HTTP request.
+func (h *Hub) jobResult(ctx context.Context, workID string) (map[string]any, error) {
+	if err := h.workRouteReady(); err != nil {
+		return nil, err
+	}
 	if strings.HasPrefix(workID, "cal-") {
-		entry, err := h.work.store.GetCalendarEntry(r.Context(), workID)
+		entry, err := h.work.store.GetCalendarEntry(ctx, workID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, routeErr(http.StatusInternalServerError, err.Error())
 		}
 		if entry == nil {
-			writeError(w, http.StatusNotFound, "No recurring job: "+workID)
-			return
+			return nil, routeErr(http.StatusNotFound, "No recurring job: "+workID)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		return map[string]any{
 			"result": map[string]any{"result_state": "recurring_template", "calendar": entry.Status()},
-		})
-		return
+		}, nil
 	}
-	work, err := h.work.store.GetWork(r.Context(), workID)
+	work, err := h.work.store.GetWork(ctx, workID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	if work == nil {
-		writeError(w, http.StatusNotFound, "No work: "+workID)
-		return
+		return nil, routeErr(http.StatusNotFound, "No work: "+workID)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"result": work.Result()})
+	return map[string]any{"result": work.Result()}, nil
 }
 
 func (h *Hub) handleWorkUpdate(w http.ResponseWriter, r *http.Request, workID string) {
@@ -403,7 +449,19 @@ func (h *Hub) handleWorkUpdate(w http.ResponseWriter, r *http.Request, workID st
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx := r.Context()
+	result, err := h.jobUpdate(r.Context(), workID, req)
+	if err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// jobUpdate applies one lifecycle update and returns the HTTP response body.
+func (h *Hub) jobUpdate(ctx context.Context, workID string, req workUpdateRequest) (map[string]any, error) {
+	if err := h.workRouteReady(); err != nil {
+		return nil, err
+	}
 	work, err := h.work.store.UpdateWorkState(ctx, workID, state.WorkUpdate{
 		State:         req.State,
 		StateReason:   req.StateReason,
@@ -420,23 +478,20 @@ func (h *Hub) handleWorkUpdate(w http.ResponseWriter, r *http.Request, workID st
 	if err != nil {
 		switch {
 		case err == state.ErrStaleAttempt:
-			writeError(w, http.StatusConflict, "stale attempt_id")
+			return nil, routeErr(http.StatusConflict, "stale attempt_id")
 		case err == state.ErrAttemptIDRequired:
-			writeError(w, http.StatusBadRequest, err.Error())
+			return nil, routeErr(http.StatusBadRequest, err.Error())
 		default:
-			// validate_state ValueError or terminal-immutability → 400.
-			writeError(w, http.StatusBadRequest, err.Error())
+			return nil, routeErr(http.StatusBadRequest, err.Error())
 		}
-		return
 	}
 	if work == nil {
-		writeError(w, http.StatusNotFound, "No work: "+workID)
-		return
+		return nil, routeErr(http.StatusNotFound, "No work: "+workID)
 	}
 	if work.Terminal() {
 		work = h.releaseIfTerminal(ctx, work, work.State, req.AttemptID)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": work.Status()})
+	return map[string]any{"status": work.Status()}, nil
 }
 
 func (h *Hub) handleWorkRun(w http.ResponseWriter, r *http.Request, workID string) {
@@ -488,34 +543,40 @@ func (h *Hub) handleWorkCancel(w http.ResponseWriter, r *http.Request, workID st
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx := r.Context()
+	result, err := h.jobCancel(r.Context(), workID, req)
+	if err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// jobCancel cancels one job and returns the HTTP response body.
+func (h *Hub) jobCancel(ctx context.Context, workID string, req workCancelRequest) (map[string]any, error) {
+	if err := h.workRouteReady(); err != nil {
+		return nil, err
+	}
 	if strings.HasPrefix(workID, "cal-") {
 		entry, err := h.work.store.CancelCalendarEntry(ctx, workID, req.Reason)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, routeErr(http.StatusInternalServerError, err.Error())
 		}
 		if entry == nil {
-			writeError(w, http.StatusNotFound, "No recurring job: "+workID)
-			return
+			return nil, routeErr(http.StatusNotFound, "No recurring job: "+workID)
 		}
 		h.wakeRunner()
-		writeJSON(w, http.StatusOK, map[string]any{"status": entry.Status()})
-		return
+		return map[string]any{"status": entry.Status()}, nil
 	}
 	existing, err := h.work.store.GetWork(ctx, workID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	work, err := h.work.store.CancelWork(ctx, workID, req.RequestedByPeerID, req.Reason)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	if work == nil {
-		writeError(w, http.StatusNotFound, "No work: "+workID)
-		return
+		return nil, routeErr(http.StatusNotFound, "No work: "+workID)
 	}
 	// In-flight (non-terminal, past-queued) cancel: best-effort terminal release.
 	// ponytail: the ACP protocol-cancel branch (work.py _attempt_protocol_cancel)
@@ -547,7 +608,7 @@ func (h *Hub) handleWorkCancel(w http.ResponseWriter, r *http.Request, workID st
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": work.Status()})
+	return map[string]any{"status": work.Status()}, nil
 }
 
 // ----------------------------------------------------------------------------

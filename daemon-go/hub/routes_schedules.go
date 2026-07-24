@@ -120,11 +120,22 @@ func (sr *ScheduleRoutes) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	resp, err := sr.create(r.Context(), req)
+	if err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (sr *ScheduleRoutes) create(ctx context.Context, req scheduleCreateRequest) (scheduleResponse, error) {
+	if sr == nil || sr.store == nil || sr.scheduler == nil {
+		return scheduleResponse{}, routeErr(http.StatusServiceUnavailable, "schedules not configured")
+	}
 
 	// Exactly one of fire_at|cron. (nil == nil) and (set && set) both rejected.
 	if (req.FireAt == nil) == (req.Cron == nil) {
-		writeError(w, http.StatusBadRequest, "provide exactly one of fire_at or cron")
-		return
+		return scheduleResponse{}, routeErr(http.StatusBadRequest, "provide exactly one of fire_at or cron")
 	}
 
 	kind := req.Kind
@@ -141,37 +152,33 @@ func (sr *ScheduleRoutes) handleCreate(w http.ResponseWriter, r *http.Request) {
 		// next_fire_after. Store the normalized cron so reschedule reparses cleanly.
 		norm, err := service.ValidateCron(*req.Cron)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return scheduleResponse{}, routeErr(http.StatusBadRequest, err.Error())
 		}
 		next, err := service.NextFireAfter(norm, time.Now().UTC())
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return scheduleResponse{}, routeErr(http.StatusBadRequest, err.Error())
 		}
 		fireAt = next
 		cron = &norm
 	} else {
 		parsed, err := parseFireAt(*req.FireAt)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return scheduleResponse{}, routeErr(http.StatusBadRequest, err.Error())
 		}
 		fireAt = parsed
 	}
 
 	sched, err := sr.store.CreateSchedule(
-		r.Context(), req.FromPeer, req.ToPeer, req.Text, fireAt, kind, req.Circle, cron,
+		ctx, req.FromPeer, req.ToPeer, req.Text, fireAt, kind, req.Circle, cron,
 	)
 	if err != nil {
 		// Invalid kind (and any other store-side validation) → 400, matching the
 		// Python ValueError → HTTPException(400) mapping.
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return scheduleResponse{}, routeErr(http.StatusBadRequest, err.Error())
 	}
 
 	sr.scheduler.Wake()
-	writeJSON(w, http.StatusOK, scheduleToResponse(sched))
+	return scheduleToResponse(sched), nil
 }
 
 func (sr *ScheduleRoutes) handleList(w http.ResponseWriter, r *http.Request) {
@@ -179,16 +186,27 @@ func (sr *ScheduleRoutes) handleList(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("from_peer"); v != "" {
 		fromPeer = &v
 	}
-	scheds, err := sr.store.ListSchedules(r.Context(), fromPeer)
+	out, err := sr.list(r.Context(), fromPeer)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeRouteError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (sr *ScheduleRoutes) list(ctx context.Context, fromPeer *string) (scheduleListResponse, error) {
+	if sr == nil || sr.store == nil {
+		return scheduleListResponse{}, routeErr(http.StatusServiceUnavailable, "schedules not configured")
+	}
+	scheds, err := sr.store.ListSchedules(ctx, fromPeer)
+	if err != nil {
+		return scheduleListResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
 	out := scheduleListResponse{Schedules: make([]scheduleResponse, 0, len(scheds))}
 	for _, s := range scheds {
 		out.Schedules = append(out.Schedules, scheduleToResponse(s))
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 // handleScheduleByID handles DELETE /schedules/{id}.
@@ -205,17 +223,27 @@ func (sr *ScheduleRoutes) handleScheduleByID(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "No schedule: ")
 		return
 	}
-	removed, err := sr.store.DeleteSchedule(r.Context(), id)
+	err := sr.delete(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeRouteError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+func (sr *ScheduleRoutes) delete(ctx context.Context, id string) error {
+	if sr == nil || sr.store == nil || sr.scheduler == nil {
+		return routeErr(http.StatusServiceUnavailable, "schedules not configured")
+	}
+	removed, err := sr.store.DeleteSchedule(ctx, id)
+	if err != nil {
+		return routeErr(http.StatusInternalServerError, err.Error())
 	}
 	if removed == nil {
-		writeError(w, http.StatusNotFound, "No schedule: "+id)
-		return
+		return routeErr(http.StatusNotFound, "No schedule: "+id)
 	}
 	sr.scheduler.Wake()
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	return nil
 }
 
 // parseFireAt parses an ISO-8601 fire_at. Mirrors _parse_fire_at: a naive

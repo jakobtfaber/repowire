@@ -155,16 +155,27 @@ func selfRegistersOnSpawn(b proto.AgentType) bool {
 }
 
 func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
-	if !h.spawnReady(w) {
-		return
-	}
 	var req SpawnRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Circle == "" {
-		writeJSONError(w, http.StatusUnprocessableEntity, "circle is required; run inside a tmux session or pass --circle")
+	resp, err := h.spawnPeer(r.Context(), req)
+	if err != nil {
+		h.writeSpawnError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// spawnPeer is the typed spawn entry point shared by HTTP and MCP callers.
+// It preserves the route's validation, configured-command policy, Antigravity
+// polling fallback, and ownership recording without requiring JSON plumbing.
+func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, error) {
+	if h.spawn == nil || h.spawn.svc == nil || h.spawn.reg == nil {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusServiceUnavailable, Detail: "spawn not configured"}
+	}
+	if req.Circle == "" {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: "circle is required; run inside a tmux session or pass --circle"}
 	}
 	if req.Role == "" {
 		req.Role = proto.RoleAgent
@@ -172,16 +183,13 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	// Single runtime selector (mirrors SpawnRequest._single_runtime_selector).
 	if req.Backend != nil && req.Command != nil {
-		writeJSONError(w, http.StatusUnprocessableEntity, "Pass backend or command, not both")
-		return
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: "Pass backend or command, not both"}
 	}
 	if req.Backend == nil && req.Command == nil {
-		writeJSONError(w, http.StatusUnprocessableEntity, "Pass backend or command")
-		return
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: "Pass backend or command"}
 	}
 	if req.Profile != nil && *req.Profile != "" && req.Backend == nil {
-		writeJSONError(w, http.StatusUnprocessableEntity, "Pass backend with profile")
-		return
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: "Pass backend with profile"}
 	}
 
 	var backend proto.AgentType
@@ -193,12 +201,11 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		// compatibility case; we match against configured commands directly.
 		resolved, ok := h.resolveLegacyCommand(*req.Command)
 		if !ok {
-			writeJSONError(w, http.StatusForbidden, map[string]any{
+			return SpawnResponse{}, &service.SpawnError{Status: http.StatusForbidden, Detail: map[string]any{
 				"error":   "command_unavailable",
 				"hint":    "Command/profile not configured. Use daemon.spawn.commands keyed by backend.",
 				"command": *req.Command,
-			})
-			return
+			}}
 		}
 		backend = resolved
 	}
@@ -207,8 +214,7 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	// Resolve command BEFORE spawn so a 422/403 surfaces without a pane.
 	command, err := svc.ResolveCommand(backend, req.Profile)
 	if err != nil {
-		h.writeSpawnError(w, err)
-		return
+		return SpawnResponse{}, err
 	}
 	result, err := svc.Spawn(service.SpawnConfig{
 		Path:    req.Path,
@@ -219,8 +225,7 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Role:    req.Role,
 	})
 	if err != nil {
-		h.writeSpawnError(w, err)
-		return
+		return SpawnResponse{}, err
 	}
 
 	resp := SpawnResponse{
@@ -242,7 +247,7 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 		paneID := result.PaneID
 		tmux := result.TmuxSession
-		peerID, displayName, aerr := h.spawn.reg.AllocateAndRegister(r.Context(), peer.AllocateParams{
+		peerID, displayName, aerr := h.spawn.reg.AllocateAndRegister(ctx, peer.AllocateParams{
 			Circle:      req.Circle,
 			Backend:     backend,
 			Path:        &resolvedPath,
@@ -253,15 +258,14 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			Metadata:    metadata,
 		})
 		if aerr != nil {
-			writeJSONError(w, http.StatusConflict, aerr.Error())
-			return
+			return SpawnResponse{}, &service.SpawnError{Status: http.StatusConflict, Detail: aerr.Error()}
 		}
 		// turn_state pending_first_turn when a seed message is in flight.
 		// AllocateParams carries no turn_state, so set it post-register through the
 		// registry FSM-orthogonal field (mirrors the Python turn_state arg).
 		if req.Message != nil {
 			if reg, ok := h.spawn.reg.(turnStateRegistry); ok {
-				reg.UpdateTurnState(r.Context(), peerID, proto.TurnPendingFirstTurn)
+				reg.UpdateTurnState(ctx, peerID, proto.TurnPendingFirstTurn)
 			}
 		}
 		// Re-record ownership now that we know the assigned peer_id (so the durable
@@ -287,7 +291,7 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 				"so ask/notify delivery queues until the peer drains it with `repowire peer asks` / `repowire peer deliveries`.")
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	return resp, nil
 }
 
 // turnStateRegistry is the optional seam for seeding pending_first_turn after a
@@ -338,19 +342,29 @@ type KillResponse struct {
 }
 
 func (h *Hub) handleKillPeer(w http.ResponseWriter, r *http.Request) {
-	if !h.spawnReady(w) {
-		return
-	}
 	var req KillPeerRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx := r.Context()
+	resp, err := h.killPeer(r.Context(), req)
+	if err != nil {
+		h.writeSpawnError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// killPeer is the typed destructive-control entry point shared by HTTP and MCP.
+// It retains strict identity resolution and the existing pane-proof truth table.
+func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, error) {
+	if h.spawn == nil || h.spawn.svc == nil || h.spawn.reg == nil {
+		return KillResponse{}, &service.SpawnError{Status: http.StatusServiceUnavailable, Detail: "spawn not configured"}
+	}
 	h.spawn.reg.LazyRepair(ctx)
 
-	resolved, ok := h.resolveStrict(w, req.PeerIdentifier, req.Circle)
-	if !ok {
-		return
+	resolved, err := h.resolveStrictDirect(req.PeerIdentifier, req.Circle)
+	if err != nil {
+		return KillResponse{}, err
 	}
 
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
@@ -359,26 +373,24 @@ func (h *Hub) handleKillPeer(w http.ResponseWriter, r *http.Request) {
 		// No proof: unregister identity but DO NOT touch any pane. tmux_killed=null.
 		// id is already resolved (resolveStrict), so the ambiguity error can't fire.
 		_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
-		writeJSON(w, http.StatusOK, KillResponse{OK: true, TmuxKilled: nil})
-		return
+		return KillResponse{OK: true, TmuxKilled: nil}, nil
 	}
 
 	killed := h.spawn.svc.Tmux().KillPane(proof.paneID)
 	if !killed {
 		// Fail loud: verified pane could not be killed; leave the peer registered.
-		writeJSONError(w, http.StatusInternalServerError, map[string]any{
+		return KillResponse{}, &service.SpawnError{Status: http.StatusInternalServerError, Detail: map[string]any{
 			"error":   "kill_failed",
 			"hint":    "tmux kill-pane failed for the peer's verified pane; the peer remains registered so the operator can inspect it.",
 			"pane_id": proof.paneID,
-		})
-		return
+		}}
 	}
 	h.spawn.svc.Ownership().Forget(proof.paneID)
 	service.ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
 	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
 	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
 	t := true
-	writeJSON(w, http.StatusOK, KillResponse{OK: true, TmuxKilled: &t})
+	return KillResponse{OK: true, TmuxKilled: &t}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +895,29 @@ func (h *Hub) resolveStrict(w http.ResponseWriter, identifier string, circle *st
 		return nil, false
 	}
 	return candidates[0], true
+}
+
+func (h *Hub) resolveStrictDirect(identifier string, circle *string) (*proto.Peer, error) {
+	candidates, err := h.spawn.reg.ResolvePeerStrict(identifier, circle)
+	if err != nil {
+		return nil, &service.SpawnError{Status: http.StatusConflict, Detail: err.Error()}
+	}
+	if len(candidates) == 0 {
+		return nil, &service.SpawnError{Status: http.StatusNotFound, Detail: "Peer not found: " + identifier}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	items := make([]map[string]any, 0, len(candidates))
+	for _, p := range candidates {
+		items = append(items, map[string]any{
+			"peer_id": string(p.PeerID), "display_name": string(p.DisplayName),
+			"circle": p.Circle, "tmux_session": p.TmuxSession,
+		})
+	}
+	return nil, &service.SpawnError{Status: http.StatusConflict, Detail: map[string]any{
+		"error": "Ambiguous peer identifier: " + identifier, "candidates": items,
+	}}
 }
 
 // sameHostOK enforces the same-host gate: a peer on another machine 409s
