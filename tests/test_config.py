@@ -1,6 +1,7 @@
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -181,6 +182,24 @@ class TestConfig:
         assert config.daemon.mcp_http.enabled is True
         assert config.daemon.auth_token == "existing-secret"
 
+    def test_setup_health_probe_uses_daemon_auth_headers(self, monkeypatch):
+        from repowire.cli import _daemon_health_ok
+
+        captured: dict = {}
+
+        def fake_get(_url, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(status_code=200)
+
+        monkeypatch.setattr("httpx.get", fake_get)
+        monkeypatch.setattr(
+            "repowire.daemon_auth.daemon_auth_headers",
+            lambda: {"Authorization": "Bearer test-token"},
+        )
+
+        assert _daemon_health_ok("127.0.0.1", 8377, attempts=1) is True
+        assert captured["headers"] == {"Authorization": "Bearer test-token"}
+
     def test_setup_http_mcp_flag_writes_config_without_detected_agents(self, tmp_path, monkeypatch):
         from repowire.cli import main
 
@@ -231,6 +250,11 @@ class TestUpdatesConfig:
     def test_can_enable_update_checks(self):
         assert UpdatesConfig(check_enabled=True).check_enabled is True
 
+    def test_can_pin_updates_to_a_direct_package_source(self):
+        source = "git+https://github.com/example/repowire.git@0123456789abcdef"
+
+        assert UpdatesConfig(package_source=source).package_source == source
+
 
 class TestUpdateCommandHelpers:
     def test_package_spec_without_extras(self):
@@ -243,6 +267,39 @@ class TestUpdateCommandHelpers:
 
         config = Config(experiments={"acp_broker_client": True})
         assert _repowire_package_spec(config) == "repowire[acp]"
+
+    def test_package_spec_uses_configured_direct_source(self):
+        from repowire.cli import _repowire_package_spec
+
+        config = Config(
+            updates={
+                "package_source": (
+                    "git+https://github.com/example/repowire.git@0123456789abcdef"
+                ),
+            },
+        )
+
+        assert _repowire_package_spec(config) == (
+            "repowire @ "
+            "git+https://github.com/example/repowire.git@0123456789abcdef"
+        )
+
+    def test_package_spec_combines_extras_with_direct_source(self):
+        from repowire.cli import _repowire_package_spec
+
+        config = Config(
+            experiments={"acp_broker_client": True},
+            updates={
+                "package_source": (
+                    "git+https://github.com/example/repowire.git@0123456789abcdef"
+                ),
+            },
+        )
+
+        assert _repowire_package_spec(config) == (
+            "repowire[acp] @ "
+            "git+https://github.com/example/repowire.git@0123456789abcdef"
+        )
 
     def test_upgrade_command_preserves_acp_extra_for_uv(self):
         from repowire.cli import _upgrade_command
@@ -261,6 +318,29 @@ class TestUpdateCommandHelpers:
         from repowire.cli import _upgrade_command
 
         assert _upgrade_command("pipx", Config()) == ["pipx", "upgrade", "repowire"]
+
+    def test_upgrade_command_reinstalls_pinned_source_for_uv(self):
+        from repowire.cli import _upgrade_command
+
+        config = Config(
+            updates={
+                "package_source": (
+                    "git+https://github.com/example/repowire.git@0123456789abcdef"
+                ),
+            },
+        )
+
+        assert _upgrade_command("uv", config) == [
+            "uv",
+            "tool",
+            "install",
+            (
+                "repowire @ "
+                "git+https://github.com/example/repowire.git@0123456789abcdef"
+            ),
+            "--upgrade",
+            "--force",
+        ]
 
 
 class TestRelayConfig:

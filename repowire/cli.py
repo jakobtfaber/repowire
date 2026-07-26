@@ -155,9 +155,12 @@ def _enabled_package_extras(config: object) -> list[str]:
 
 def _repowire_package_spec(config: object) -> str:
     extras = _enabled_package_extras(config)
-    if not extras:
-        return "repowire"
-    return f"repowire[{','.join(extras)}]"
+    package_name = "repowire" if not extras else f"repowire[{','.join(extras)}]"
+    updates = getattr(config, "updates", None)
+    package_source = getattr(updates, "package_source", None)
+    if package_source:
+        return f"{package_name} @ {package_source}"
+    return package_name
 
 
 def _upgrade_command(pkg_mgr: str, config: object) -> list[str]:
@@ -233,7 +236,13 @@ def _daemon_health_ok(host: str, port: int, *, attempts: int = 10) -> bool:
     url = f"http://{host}:{port}/health"
     for _ in range(attempts):
         try:
-            response = httpx.get(url, timeout=0.5)
+            from repowire.daemon_auth import daemon_auth_headers
+
+            response = httpx.get(
+                url,
+                headers=daemon_auth_headers(),
+                timeout=0.5,
+            )
             if response.status_code == 200:
                 return True
         except httpx.HTTPError:
@@ -725,7 +734,7 @@ def status() -> None:
 
     from repowire.config.models import load_config
     from repowire.doctor import Status, check_update_availability
-    from repowire.installers.claude_code import check_hooks_installed
+    from repowire.installers.claude_code import check_configured_hooks_installed
     from repowire.service.installer import get_platform, get_service_status
 
     config = load_config()
@@ -743,7 +752,7 @@ def status() -> None:
     # Check available agent types
     console.print("[cyan]Agent Types:[/]")
     if shutil.which("claude"):
-        if check_hooks_installed():
+        if check_configured_hooks_installed():
             console.print("  [green]✓[/] claude-code (hooks installed)")
         else:
             console.print("  [yellow]✗[/] claude-code (hooks not installed)")
@@ -804,7 +813,7 @@ def status() -> None:
 
     # Check daemon HTTP endpoint
     try:
-        with httpx.Client(timeout=2.0) as client:
+        with _daemon_client(timeout=2.0) as client:
             resp = client.get(f"{_get_daemon_url()}/health")
             resp.raise_for_status()
             console.print(f"[green]✓[/] Daemon responding at {_get_daemon_url()}")
@@ -815,7 +824,7 @@ def status() -> None:
 
     # Show peers
     try:
-        with httpx.Client(timeout=2.0) as client:
+        with _daemon_client(timeout=2.0) as client:
             resp = client.get(f"{_get_daemon_url()}/peers")
             resp.raise_for_status()
             peers = resp.json().get("peers", [])
@@ -879,7 +888,7 @@ def link(pane_id: str | None, backend: str | None, name: str | None, circle: str
 
     if not pane_id:
         try:
-            with httpx.Client(timeout=3.0) as client:
+            with _daemon_client(timeout=3.0) as client:
                 resp = client.get(f"{daemon_url}/panes/orphans")
                 resp.raise_for_status()
                 panes = resp.json().get("panes", [])
@@ -917,7 +926,7 @@ def link(pane_id: str | None, backend: str | None, name: str | None, circle: str
     if circle:
         payload["circle"] = circle
     try:
-        with httpx.Client(timeout=15.0) as client:
+        with _daemon_client(timeout=15.0) as client:
             # pane ids start with '%' — encode so the server doesn't decode
             # "%42" as the byte 'B' before the route validator sees it.
             resp = client.post(
@@ -1113,13 +1122,21 @@ def claude_uninstall() -> None:
 @claude.command(name="status")
 def claude_status() -> None:
     """Check if hooks are installed."""
-    from repowire.installers.claude_code import check_hooks_installed
+    from repowire.installers.claude_code import check_configured_hooks_installed
 
-    if check_hooks_installed():
+    if check_configured_hooks_installed():
         console.print("[green]Hooks are installed.[/]")
     else:
         console.print("[yellow]Hooks are not installed.[/]")
         console.print("Run 'repowire claude install' to set up.")
+
+
+@claude.command(name="channel-ready", hidden=True)
+def claude_channel_ready() -> None:
+    """Exit successfully only when the configured channel is operationally ready."""
+    from repowire.installers.claude_code import check_channel_installed
+
+    raise click.exceptions.Exit(0 if check_channel_installed() else 1)
 
 
 # =============================================================================
@@ -1507,7 +1524,7 @@ def orchestrator_start(runtime: str | None, profile: str | None, service: bool) 
     # Preflight 2: daemon reachable
     daemon_url = _get_daemon_url()
     try:
-        with httpx.Client(timeout=2.0) as client:
+        with _daemon_client(timeout=2.0) as client:
             resp = client.get(f"{daemon_url}/health")
             resp.raise_for_status()
     except httpx.ConnectError:
@@ -1569,7 +1586,7 @@ def orchestrator_start(runtime: str | None, profile: str | None, service: bool) 
         f"profile={profile_label}, role=orchestrator)..."
     )
     try:
-        with httpx.Client(timeout=30.0) as client:
+        with _daemon_client(timeout=30.0) as client:
             body: dict[str, object] = {
                 "path": str(ws),
                 "circle": circle,
@@ -1923,8 +1940,6 @@ def _current_cli_peer_name(client: Any | None = None) -> str:
     import os
     from urllib.parse import quote
 
-    import httpx
-
     if os.environ.get("REPOWIRE_DISPLAY_NAME"):
         return os.environ["REPOWIRE_DISPLAY_NAME"]
     if os.environ.get("REPOWIRE_PEER_ID"):
@@ -1933,7 +1948,7 @@ def _current_cli_peer_name(client: Any | None = None) -> str:
     pane_id = os.environ.get("TMUX_PANE")
     if pane_id:
         owns_client = client is None
-        http_client = client or httpx.Client(timeout=5.0)
+        http_client = client or _daemon_client(timeout=5.0)
         try:
             resp = http_client.get(
                 f"{_get_daemon_url()}/peers/by-pane/{quote(pane_id, safe='')}",
@@ -2116,7 +2131,7 @@ def session_resume_cmd(
         body["from_peer"] = from_peer
 
     try:
-        with httpx.Client(timeout=30.0) as client:
+        with _daemon_client(timeout=30.0) as client:
             resp = client.post(
                 f"{_get_daemon_url()}/sessions/"
                 f"{quote(repowire_session_id, safe='')}/controls/resume",
@@ -2354,7 +2369,7 @@ def jobs_create_cmd(
             body[key] = value
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.post(f"{_get_daemon_url()}/jobs", json=body)
             resp.raise_for_status()
             payload = resp.json()
@@ -2400,7 +2415,7 @@ def jobs_list_cmd(
         if value
     }
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.get(f"{_get_daemon_url()}/jobs", params=params or None)
             resp.raise_for_status()
             payload = resp.json()
@@ -2466,7 +2481,7 @@ def jobs_show_cmd(job_id: str, as_json: bool) -> None:
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.get(f"{_get_daemon_url()}/jobs/{job_id}/status")
             if resp.status_code == 404:
                 raise click.ClickException(f"No job: {job_id}")
@@ -2517,7 +2532,7 @@ def jobs_update_cmd(
         if value:
             body[key] = value
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.patch(f"{_get_daemon_url()}/jobs/{job_id}", json=body)
             if resp.status_code == 404:
                 raise click.ClickException(f"No job: {job_id}")
@@ -2539,7 +2554,7 @@ def _post_job_action(job_id: str, action: str, *, as_json: bool) -> None:
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.post(f"{_get_daemon_url()}/jobs/{job_id}/{action}", json={})
             if resp.status_code == 404:
                 raise click.ClickException(f"No job: {job_id}")
@@ -2589,7 +2604,7 @@ def jobs_cancel_cmd(
     if requested_by_peer_id:
         body["requested_by_peer_id"] = requested_by_peer_id
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.post(f"{_get_daemon_url()}/jobs/{job_id}/cancel", json=body)
             if resp.status_code == 404:
                 raise click.ClickException(f"No job: {job_id}")
@@ -2613,7 +2628,7 @@ def jobs_result_cmd(job_id: str, as_json: bool) -> None:
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.get(f"{_get_daemon_url()}/jobs/{job_id}/result")
             if resp.status_code == 404:
                 raise click.ClickException(f"No job: {job_id}")
@@ -2701,7 +2716,7 @@ def schedule_self_cmd(
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             peer_name = from_peer or _current_cli_peer_name(client)
             body = {
                 "from_peer": peer_name,
@@ -2764,7 +2779,7 @@ def schedule_create_cmd(
         body["circle"] = circle
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.post(f"{_get_daemon_url()}/schedules", json=body)
             resp.raise_for_status()
             _print_schedule_created(resp.json())
@@ -2782,7 +2797,7 @@ def schedule_list_cmd(from_peer: str | None) -> None:
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             params = {"from_peer": from_peer} if from_peer else None
             resp = client.get(f"{_get_daemon_url()}/schedules", params=params)
             resp.raise_for_status()
@@ -2825,7 +2840,7 @@ def schedule_delete_cmd(schedule_id: str) -> None:
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.delete(f"{_get_daemon_url()}/schedules/{schedule_id}")
             if resp.status_code == 404:
                 console.print(f"[red]No schedule: {schedule_id}[/]")
@@ -2871,7 +2886,7 @@ def peer_list(show_offline: bool) -> None:
 
     try:
         params = None if show_offline else {"status": "online"}
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.get(f"{_get_daemon_url()}/peers", params=params)
             resp.raise_for_status()
             peers = resp.json().get("peers", [])
@@ -2954,7 +2969,7 @@ def peer_describe(identifier: str, circle: str | None) -> None:
 
     daemon_url = _get_daemon_url()
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             peers = fetch_all_peers(client, daemon_url)
             outcome = resolve_peer(peers, identifier, circle=circle)
             if isinstance(outcome, ResolveNotFound):
@@ -2990,7 +3005,7 @@ def peer_claim_role(role: str, peer_name: str | None, circle: str | None, force:
 
     daemon_url = _get_daemon_url()
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             target = peer_name or _current_cli_peer_name(client)
             resp = client.post(
                 f"{daemon_url}/peers/claim-role",
@@ -3155,7 +3170,7 @@ def peer_new(
         if profile:
             body["profile"] = profile
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with _daemon_client(timeout=30.0) as client:
                 resp = client.post(
                     f"{daemon_url}/spawn",
                     json=body,
@@ -3236,7 +3251,7 @@ def peer_register(
     actual_path = path or str(Path.cwd())
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.post(
                 f"{_get_daemon_url()}/peers",
                 json={
@@ -3269,7 +3284,7 @@ def peer_unregister(name: str) -> None:
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.delete(f"{_get_daemon_url()}/peers/{name}")
             if resp.status_code == 404:
                 console.print(f"[red]Peer '{name}' not found[/]")
@@ -3309,7 +3324,7 @@ def peer_restart(
         body["message"] = message
 
     try:
-        with httpx.Client(timeout=30.0) as client:
+        with _daemon_client(timeout=30.0) as client:
             resp = client.post(
                 f"{_get_daemon_url()}/peers/{quote(name, safe='')}/restart",
                 json=body,
@@ -3563,7 +3578,7 @@ def peer_prune(force: bool, dry_run: bool) -> None:
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.get(f"{_get_daemon_url()}/peers")
             resp.raise_for_status()
             peers = resp.json().get("peers", [])
@@ -3592,7 +3607,7 @@ def peer_prune(force: bool, dry_run: bool) -> None:
 
     # Remove via daemon API
     removed = 0
-    with httpx.Client(timeout=5.0) as client:
+    with _daemon_client(timeout=5.0) as client:
         for p in offline:
             try:
                 resp = client.delete(f"{_get_daemon_url()}/peers/{p['name']}")
@@ -3613,13 +3628,16 @@ def _auth_headers() -> dict[str, str]:
     Swallows config-load errors silently — the daemon will return 401 if auth
     is actually required, which is a clearer signal than a CLI-side traceback.
     """
-    try:
-        from repowire.config.models import load_config
+    from repowire.daemon_auth import daemon_auth_headers
 
-        token = load_config().daemon.auth_token
-    except Exception:
-        return {}
-    return {"Authorization": f"Bearer {token}"} if token else {}
+    return daemon_auth_headers()
+
+
+def _daemon_client(*, timeout: float):
+    """Create an authenticated HTTP client for the local daemon."""
+    import httpx
+
+    return httpx.Client(headers=_auth_headers(), timeout=timeout)
 
 
 def _auth_token() -> str | None:
@@ -3650,7 +3668,7 @@ def _daemon_request_json(
     import httpx
 
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with _daemon_client(timeout=timeout) as client:
             resp = client.request(
                 method,
                 f"{_get_daemon_url()}{path}",
@@ -3771,7 +3789,7 @@ def peer_whoami(
                 console.print(f"[cyan]status:[/] {info['status']}")
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             if register:
                 if not backend:
                     console.print("[red]--register requires --backend[/]")
@@ -3854,7 +3872,7 @@ def peer_asks(
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resolved, err = _resolve_peer_id_for_asks(
                 client,
                 peer_id=peer_id,
@@ -3914,7 +3932,7 @@ def peer_deliveries(
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resolved, err = _resolve_peer_id_for_asks(
                 client,
                 peer_id=peer_id,
@@ -3973,7 +3991,7 @@ def peer_ack(correlation_id: str, message: str | None, from_peer: str | None) ->
         body["from_peer"] = from_peer
 
     try:
-        with httpx.Client(timeout=10.0) as client:
+        with _daemon_client(timeout=10.0) as client:
             resp = client.post(f"{_get_daemon_url()}/ack", json=body, headers=_auth_headers())
     except httpx.ConnectError:
         console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
@@ -4040,9 +4058,9 @@ def hooks_uninstall() -> None:
 def hooks_status() -> None:
     """Check if hooks are installed."""
     console.print("[dim]Note: 'repowire hooks' is an alias for 'repowire claude'[/]")
-    from repowire.installers.claude_code import check_hooks_installed
+    from repowire.installers.claude_code import check_configured_hooks_installed
 
-    if check_hooks_installed():
+    if check_configured_hooks_installed():
         console.print("[green]Hooks are installed.[/]")
     else:
         console.print("[yellow]Hooks are not installed.[/]")
@@ -4105,7 +4123,7 @@ def daemon_stop() -> None:
     import httpx
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with _daemon_client(timeout=5.0) as client:
             resp = client.post(f"{_get_daemon_url()}/shutdown")
             resp.raise_for_status()
             console.print("[green]Daemon stopped.[/]")
@@ -4121,7 +4139,7 @@ def daemon_status() -> None:
     import httpx
 
     try:
-        with httpx.Client(timeout=2.0) as client:
+        with _daemon_client(timeout=2.0) as client:
             resp = client.get(f"{_get_daemon_url()}/health")
             resp.raise_for_status()
             data = resp.json()

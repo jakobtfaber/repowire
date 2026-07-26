@@ -38,6 +38,8 @@ daemon:
     allowed_paths: []
 updates:
   check_enabled: false
+  # Optional: keep explicit updates on a fork or exact source revision.
+  # package_source: git+https://github.com/OWNER/repowire.git@COMMIT
 ```
 
 ## Environment variables
@@ -48,6 +50,7 @@ Any field can be overridden by an environment variable. Nested fields use a `REP
 REPOWIRE_DAEMON__PORT=9000
 REPOWIRE_DAEMON__AUTH_TOKEN=rw_...
 REPOWIRE_RELAY__URL=wss://repowire.io
+REPOWIRE_UPDATES__PACKAGE_SOURCE=git+https://github.com/OWNER/repowire.git@COMMIT
 ```
 
 Two legacy flat aliases are kept for the relay: `REPOWIRE_RELAY_URL` and `REPOWIRE_API_KEY` (setting `REPOWIRE_API_KEY` also flips `relay.enabled` to true).

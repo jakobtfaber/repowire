@@ -19,6 +19,7 @@ def _make_client(monkeypatch) -> MagicMock:
 
 
 def _set_auth_token(monkeypatch, token: str = "secret-token") -> None:
+    monkeypatch.delenv("REPOWIRE_AUTH_TOKEN", raising=False)
     monkeypatch.setattr(
         "repowire.config.models.load_config",
         lambda: SimpleNamespace(daemon=SimpleNamespace(auth_token=token)),
@@ -112,6 +113,21 @@ def test_whoami_register_uses_config_auth_token(monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert client.post.call_args.kwargs["headers"] == {"Authorization": "Bearer secret-token"}
+
+
+def test_peer_list_client_uses_config_auth_token(monkeypatch) -> None:
+    import httpx
+
+    _set_auth_token(monkeypatch)
+    client = _make_client(monkeypatch)
+    client.get.return_value = _response(200, {"peers": []})
+
+    result = CliRunner().invoke(main, ["peer", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert httpx.Client.call_args.kwargs["headers"] == {
+        "Authorization": "Bearer secret-token",
+    }
 
 
 def test_whoami_register_requires_backend(monkeypatch) -> None:

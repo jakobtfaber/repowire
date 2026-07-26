@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from repowire.agent_backends import AgentResumePlan, build_resume_command
+from repowire.agent_backends import AgentResumePlan, agent_backend_for, build_resume_command
 from repowire.agent_types import AgentType
 from repowire.config.spawn import SpawnSettings, apply_spawn_profile
 from repowire.daemon.spawn_diagnostics import capture_spawn_registration_diagnostics
@@ -143,9 +143,12 @@ class SpawnService:
     ) -> SpawnServiceResult:
         resolved_path = self.validate_path(path)
         command = self.resolve_command(backend, profile)
+        command = agent_backend_for(backend).prepare_spawn_command(command)
         if resume_plan is not None:
             command = self.resume_command(command, backend=backend, resume_plan=resume_plan)
         env = self.spawn_env()
+        if peer_id:
+            env["REPOWIRE_PEER_ID"] = peer_id
         self.validate_command_env(command, env)
         try:
             result = self._spawn_impl(

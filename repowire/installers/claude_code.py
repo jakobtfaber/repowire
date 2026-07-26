@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,6 +22,7 @@ PRETOOLUSE_HOOK_TIMEOUT_SECONDS = 60
 
 # Channel transport requires Claude Code v2.1.80+ with claude.ai login
 CHANNEL_MIN_VERSION = (2, 1, 80)
+HOOK_MANIFEST_TIMEOUT_SECONDS = 2
 
 
 def _load_claude_settings() -> dict:
@@ -85,6 +87,95 @@ def _is_repowire_hook_entry(entry: dict) -> bool:
     return False
 
 
+def _is_repowire_child_command(command: str) -> bool:
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    return any(
+        Path(token).name == "repowire" and argv[index + 1:index + 2] == ["hook"]
+        for index, token in enumerate(argv)
+    )
+
+
+def _is_direct_repowire_hook_entry(entry: dict) -> bool:
+    return any(
+        isinstance(command := hook.get("command"), str)
+        and _is_repowire_child_command(command)
+        for hook in entry.get("hooks", [])
+    )
+
+
+def _external_repowire_hooks(settings: dict) -> tuple[set[str], set[str]]:
+    events: set[str] = set()
+    dispatchers: set[str] = set()
+    candidates: dict[tuple[str, ...], tuple[set[str], set[str]]] = {}
+    for event, entries in settings.get("hooks", {}).items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            for hook in entry.get("hooks", []):
+                command = hook.get("command")
+                if not isinstance(command, str):
+                    continue
+                if _is_repowire_child_command(command):
+                    continue
+                try:
+                    argv = shlex.split(command)
+                except ValueError:
+                    continue
+                if len(argv) < 2 or argv[-1] != event:
+                    continue
+                base = tuple(argv[:-1])
+                owned_events, commands = candidates.setdefault(base, (set(), set()))
+                owned_events.add(event)
+                commands.add(command)
+
+    for base, (owned_events, commands) in candidates.items():
+        if not set(_REQUIRED_HOOK_EVENTS) <= owned_events:
+            continue
+        executable = str(Path(base[0]).expanduser())
+        try:
+            result = subprocess.run(
+                [executable, *base[1:], "--manifest-json"],
+                capture_output=True,
+                text=True,
+                timeout=HOOK_MANIFEST_TIMEOUT_SECONDS,
+            )
+            if result.returncode != 0:
+                continue
+            manifest = json.loads(result.stdout)
+        except (
+            json.JSONDecodeError,
+            OSError,
+            subprocess.TimeoutExpired,
+            UnicodeError,
+            ValueError,
+        ):
+            continue
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("schema_version") != 1
+            or not isinstance(manifest.get("hooks"), dict)
+        ):
+            continue
+        manifest_hooks = manifest["hooks"]
+        if not all(
+            isinstance(name, str)
+            and isinstance(child_commands, list)
+            and all(isinstance(child, str) for child in child_commands)
+            for name, child_commands in manifest_hooks.items()
+        ):
+            continue
+        events.update(
+            name
+            for name, child_commands in manifest_hooks.items()
+            if any(_is_repowire_child_command(child) for child in child_commands)
+        )
+        dispatchers.update(commands)
+    return events, dispatchers
+
+
 def _replace_repowire_hook(settings: dict, event: str, entry: dict | None) -> None:
     hooks = settings.setdefault("hooks", {})
     existing = hooks.get(event, [])
@@ -102,6 +193,17 @@ def _replace_repowire_hook(settings: dict, event: str, entry: dict | None) -> No
 def install_hooks(channel_mode: bool = False) -> bool:
     """Install hooks. In channel_mode, only install Stop hook for dashboard chat_turns."""
     settings = _load_claude_settings()
+    external_events, _ = _external_repowire_hooks(settings)
+    requested_events = (
+        set(_CHANNEL_HOOK_EVENTS) if channel_mode else set(_REQUIRED_HOOK_EVENTS)
+    )
+    if channel_mode and external_events - set(_CHANNEL_HOOK_EVENTS):
+        raise RuntimeError(
+            "Cannot enable channel mode while an external dispatcher provides "
+            "the full Repowire lifecycle hook transport."
+        )
+    if requested_events <= external_events:
+        return True
 
     # Stop hook always needed (dashboard chat_turns)
     _replace_repowire_hook(settings, "Stop", _make_hook_config("repowire hook stop"))
@@ -156,11 +258,19 @@ def uninstall_hooks() -> bool:
         return False
 
     removed_any = False
+    _, external_dispatchers = _external_repowire_hooks(settings)
     for event in HOOK_EVENTS:
         entries = settings["hooks"].get(event, [])
         if not isinstance(entries, list):
             continue
-        filtered = [entry for entry in entries if not _is_repowire_hook_entry(entry)]
+        filtered = [
+            entry for entry in entries
+            if any(
+                hook.get("command") in external_dispatchers
+                for hook in entry.get("hooks", [])
+            )
+            or not _is_direct_repowire_hook_entry(entry)
+        ]
         if len(filtered) < len(entries):
             removed_any = True
             if filtered:
@@ -179,17 +289,26 @@ def uninstall_hooks() -> bool:
 # PreToolUse is opt-in (remote tool approval); its presence is not required for
 # hooks to count as installed. uninstall still iterates HOOK_EVENTS to clean it.
 _REQUIRED_HOOK_EVENTS = [e for e in HOOK_EVENTS if e != "PreToolUse"]
+_CHANNEL_HOOK_EVENTS = ["Stop", "StopFailure"]
 
 
-def check_hooks_installed() -> bool:
+def check_hooks_installed(channel_mode: bool = False) -> bool:
     settings = _load_claude_settings()
     if "hooks" not in settings:
         return False
 
+    external_events, _ = _external_repowire_hooks(settings)
+    required_events = _CHANNEL_HOOK_EVENTS if channel_mode else _REQUIRED_HOOK_EVENTS
     return all(
-        any(_is_repowire_hook_entry(entry) for entry in settings["hooks"].get(event, []))
-        for event in _REQUIRED_HOOK_EVENTS
+        event in external_events
+        or any(_is_repowire_hook_entry(entry) for entry in settings["hooks"].get(event, []))
+        for event in required_events
     )
+
+
+def check_configured_hooks_installed() -> bool:
+    """Check the hook subset required by the currently configured transport."""
+    return check_hooks_installed(channel_mode=check_channel_installed())
 
 
 # -- Channel transport --
@@ -319,11 +438,68 @@ def uninstall_channel() -> bool:
 
 
 def check_channel_installed() -> bool:
-    """Check if the channel transport is configured."""
+    """Check if the configured channel can start from this installed package."""
     if not CLAUDE_JSON.exists():
         return False
     try:
         config = json.loads(CLAUDE_JSON.read_text())
-        return "repowire-channel" in config.get("mcpServers", {})
     except json.JSONDecodeError:
         return False
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return False
+    entry = servers.get("repowire-channel")
+    if not isinstance(entry, dict):
+        return False
+    command = entry.get("command")
+    if not isinstance(command, str):
+        return False
+    resolved_command = shutil.which(command)
+    if not resolved_command or Path(resolved_command).resolve().name != "bun":
+        return False
+    if not supports_channels():
+        return False
+    server = _find_channel_server()
+    if server is None or not server.is_file():
+        return False
+    if entry.get("args") != [str(server)]:
+        return False
+    package_path = server.parent / "package.json"
+    try:
+        package = json.loads(package_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(package, dict) or package.get("name") != "repowire-channel":
+        return False
+    declared_dependencies = package.get("dependencies")
+    required_dependencies = {"@modelcontextprotocol/sdk", "ws", "zod"}
+    if (
+        not isinstance(declared_dependencies, dict)
+        or not required_dependencies <= declared_dependencies.keys()
+        or not all(
+            isinstance(declared_dependencies[name], str)
+            and bool(declared_dependencies[name])
+            for name in required_dependencies
+        )
+    ):
+        return False
+    dependencies = (
+        server.parent / "node_modules" / "@modelcontextprotocol" / "sdk",
+        server.parent / "node_modules" / "ws",
+        server.parent / "node_modules" / "zod",
+    )
+    if not all(dependency.is_dir() for dependency in dependencies):
+        return False
+    env = entry.get("env")
+    if env is not None and not isinstance(env, dict):
+        return False
+    try:
+        expected_auth_token = load_config().daemon.auth_token
+    except Exception:
+        return False
+    if expected_auth_token and (
+        not isinstance(env, dict)
+        or env.get("REPOWIRE_AUTH_TOKEN") != expected_auth_token
+    ):
+        return False
+    return True

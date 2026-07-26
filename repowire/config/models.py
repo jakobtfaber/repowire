@@ -278,6 +278,13 @@ class UpdatesConfig(BaseModel):
             "explicit and are never auto-applied."
         ),
     )
+    package_source: str | None = Field(
+        default=None,
+        description=(
+            "Optional PEP 508 direct-reference source used by explicit "
+            "`repowire update` runs instead of the PyPI package."
+        ),
+    )
 
 
 # Default tools gated by the PreToolUse remote-approval hook: mutating/shell

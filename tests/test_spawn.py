@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from repowire.agent_backends import agent_backend_for
 from repowire.config.models import AgentType
 from repowire.spawn import (
     SpawnConfig,
@@ -52,6 +55,89 @@ class TestSpawnConfig:
             command="claude --model opus",
         )
         assert config.command == "claude --model opus"
+
+
+class TestManagedClaudeCommand:
+    def test_adds_configured_channel_to_fresh_launch(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        command = agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(
+            "claude --dangerously-skip-permissions"
+        )
+        assert command == (
+            "claude --dangerously-skip-permissions "
+            "--dangerously-load-development-channels server:repowire-channel"
+        )
+
+    def test_does_not_duplicate_channel_flag(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        command = (
+            "claude --dangerously-skip-permissions "
+            "--dangerously-load-development-channels server:repowire-channel"
+        )
+        assert (
+            agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command)
+            == command
+        )
+
+    def test_leaves_unconfigured_claude_launch_unchanged(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: False
+        )
+        command = "claude --dangerously-skip-permissions"
+        assert (
+            agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command)
+            == command
+        )
+
+    def test_stale_channel_config_leaves_claude_launch_unchanged(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        from repowire.installers import claude_code
+
+        server = tmp_path / "current" / "server.ts"
+        server.parent.mkdir()
+        server.write_text("// current")
+        config = tmp_path / ".claude.json"
+        config.write_text(json.dumps({
+            "mcpServers": {
+                "repowire-channel": {
+                    "command": "bun",
+                    "args": [str(tmp_path / "stale" / "server.ts")],
+                },
+            },
+        }))
+        monkeypatch.setattr(claude_code, "CLAUDE_JSON", config)
+        monkeypatch.setattr(claude_code, "_find_channel_server", lambda: server)
+        monkeypatch.setattr(
+            claude_code.shutil,
+            "which",
+            lambda command: "/opt/homebrew/bin/bun" if command == "bun" else None,
+        )
+
+        command = "claude --dangerously-skip-permissions"
+        assert (
+            agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command)
+            == command
+        )
+
+    def test_channel_flag_survives_resume_and_session_id_is_not_changed(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        backend = agent_backend_for(AgentType.CLAUDE_CODE)
+        command = backend.prepare_spawn_command("claude --model opus")
+
+        assert backend.build_resume_command(command, "claude-session-123") == (
+            "claude --model opus "
+            "--dangerously-load-development-channels server:repowire-channel "
+            "--resume claude-session-123"
+        )
 
 
 class TestSpawnResult:

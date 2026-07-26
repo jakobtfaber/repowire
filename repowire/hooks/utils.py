@@ -14,6 +14,7 @@ from pathlib import Path
 import httpx
 
 from repowire.config.models import DEFAULT_DAEMON_URL
+from repowire.daemon_auth import daemon_auth_headers
 
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", DEFAULT_DAEMON_URL)
 
@@ -28,7 +29,11 @@ _client: httpx.Client | None = None
 def _get_client() -> httpx.Client:
     global _client
     if _client is None:
-        _client = httpx.Client(base_url=DAEMON_URL, timeout=2.0)
+        _client = httpx.Client(
+            base_url=DAEMON_URL,
+            timeout=2.0,
+            headers=daemon_auth_headers(),
+        )
         atexit.register(_client.close)
     return _client
 

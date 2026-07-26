@@ -29,7 +29,13 @@ OpenCode uses a TypeScript plugin with a persistent WebSocket connection. Pi use
 
 ## Channel / ACP transport
 
-Claude Code can opt into the experimental channel/ACP transport with `repowire setup --experimental-channels`. Messages arrive through `<channel source="repowire">` tags and the default Stop hook remains for dashboard chat-turn extraction.
+Claude Code can opt into the experimental channel/ACP transport with
+`repowire setup --experimental-channels`. Messages arrive through
+`<channel source="repowire">` tags. The default `Stop` and `StopFailure` hooks
+remain for dashboard chat-turn extraction; the other Repowire lifecycle hooks
+are disabled to avoid duplicate delivery. Managed fresh sessions remember the
+daemon-assigned peer identity across WebSocket reconnects, while resumed
+sessions claim their existing durable identity immediately.
 
 ## Relay transport
 

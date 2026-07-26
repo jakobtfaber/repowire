@@ -1870,6 +1870,42 @@ async def test_spawn_service_uses_explicit_env_path(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_spawn_service_exports_claimed_peer_identity(tmp_path, monkeypatch):
+    cfg = Config()
+    cfg.daemon.spawn.commands[AgentType.CLAUDE_CODE] = "claude"
+    cfg.daemon.spawn.allowed_paths = [str(tmp_path)]
+    spawn_impl = Mock(
+        return_value=SimpleNamespace(
+            display_name="project-claude-code",
+            tmux_session="default:project-claude-code",
+            pane_id=None,
+            message=None,
+        )
+    )
+    monkeypatch.setattr(
+        "repowire.installers.claude_code.check_channel_installed",
+        lambda: True,
+    )
+    service = SpawnService(
+        spawn=cfg.daemon.spawn,
+        spawned_pane_ids=set(),
+        background_tasks=set(),
+        spawn_impl=spawn_impl,
+    )
+
+    result = service.spawn(
+        path=str(tmp_path),
+        backend=AgentType.CLAUDE_CODE,
+        peer_id="repow-default-claude123",
+    )
+
+    spawn_config = spawn_impl.call_args.args[0]
+    assert spawn_config.peer_id == "repow-default-claude123"
+    assert spawn_config.env["REPOWIRE_PEER_ID"] == "repow-default-claude123"
+    assert result.env == spawn_config.env
+
+
+@pytest.mark.anyio
 async def test_spawn_service_falls_back_to_login_shell_path(tmp_path, monkeypatch):
     cfg = Config()
     cfg.daemon.spawn.commands[AgentType.CODEX] = "codex"

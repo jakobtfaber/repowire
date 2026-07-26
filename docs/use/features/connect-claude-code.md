@@ -56,6 +56,23 @@ Requirements:
 
 The channel transport only replaces the SessionStart / UserPromptSubmit / Notification hooks. The `Stop` and `StopFailure` hooks are kept so the dashboard still sees chat turns and status repair still runs. If the daemon has `daemon.auth_token` configured, setup passes it to the channel server as `REPOWIRE_AUTH_TOKEN` so the WebSocket registration can authenticate.
 
+When the channel entry is installed, Repowire-managed Claude launches (`peer new`,
+restart, session resume, and job execution) add
+`--dangerously-load-development-channels server:repowire-channel` automatically.
+Ordinary Claude launches are unchanged. Managed launches also pass the
+daemon-minted peer id into the channel process, so reconnects and resumed
+sessions keep the same mesh identity even when another agent uses the same
+working directory.
+
+Custom hook dispatchers can advertise their Repowire children without giving
+Repowire ownership of the dispatcher. A dispatcher command registered as
+`DISPATCHER EVENT` may implement the side-effect-free
+`DISPATCHER --manifest-json` interface. It returns
+`{"schema_version":1,"hooks":{"Event":["child command"]}}`. Repowire only probes
+a common dispatcher command that owns every required lifecycle event; status
+then recognizes those hooks, setup does not add duplicates, and uninstall
+leaves the dispatcher in place.
+
 If `repowire setup --experimental-channels` declines to install:
 
 - *"bun runtime not found"* — install bun, then re-run.

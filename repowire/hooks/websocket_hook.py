@@ -21,6 +21,7 @@ except ImportError as e:
     sys.exit(1)
 
 from repowire.agent_types import AgentType
+from repowire.daemon_auth import daemon_auth_token
 from repowire.hooks._tmux import get_tmux_info
 from repowire.hooks.utils import (
     clear_pane_runtime_state,
@@ -760,7 +761,7 @@ async def main() -> int:
                 model = os.environ.get("REPOWIRE_MODEL")
                 if model:
                     connect_msg["model"] = model
-                auth_token = os.environ.get("REPOWIRE_AUTH_TOKEN")
+                auth_token = daemon_auth_token()
                 if auth_token:
                     connect_msg["auth_token"] = auth_token
                 await websocket.send(json.dumps(connect_msg))

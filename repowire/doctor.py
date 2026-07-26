@@ -27,6 +27,7 @@ import httpx
 from repowire import __version__
 from repowire.config.models import Config
 from repowire.daemon.state.database import SCHEMA_VERSION
+from repowire.daemon_auth import daemon_auth_headers
 
 
 class Status(str, Enum):
@@ -156,7 +157,7 @@ def check_package_manager() -> CheckResult:
 def check_daemon(daemon_url: str, timeout: float = 2.0) -> CheckResult:
     """GET /health on the configured daemon URL."""
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(headers=daemon_auth_headers(), timeout=timeout) as client:
             resp = client.get(f"{daemon_url}/health")
             resp.raise_for_status()
             payload = resp.json()
@@ -217,14 +218,14 @@ def _check_claude_code() -> CheckResult:
         return CheckResult("claude-code", Status.SKIP, "CLI not on PATH")
     from repowire.installers.claude_code import (
         check_channel_installed,
-        check_hooks_installed,
+        check_configured_hooks_installed,
         get_claude_version,
     )
 
     version = get_claude_version()
     ver_str = ".".join(str(x) for x in version) if version else "unknown"
 
-    if not check_hooks_installed():
+    if not check_configured_hooks_installed():
         return CheckResult(
             "claude-code",
             Status.FAIL,
