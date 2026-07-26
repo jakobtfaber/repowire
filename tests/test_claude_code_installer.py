@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from repowire.agent_backends import agent_backend_for
+from repowire.config.models import AgentType
 from repowire.config.models import Config as RealConfig
 from repowire.installers import claude_code as cc_mod
 
@@ -33,6 +35,44 @@ def _retarget(tmp_path, monkeypatch, *, config=None):
     cfg = config or RealConfig()
     monkeypatch.setattr(cc_mod, "load_config", lambda: cfg)
     return settings, claude_json
+
+
+def test_backend_install_pins_claude_mcp_to_active_entrypoint(monkeypatch):
+    executable = "/uv/tools/repowire/bin/repowire"
+    calls = []
+    monkeypatch.setattr(cc_mod, "install_hooks", lambda channel_mode=False: True)
+    monkeypatch.setattr(
+        cc_mod, "repowire_console_entrypoint", lambda: executable
+    )
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    agent_backend_for(AgentType.CLAUDE_CODE).install()
+
+    add_command = next(command for command, _ in calls if command[:3] == ["claude", "mcp", "add"])
+    assert add_command[-3:] == ["--", executable, "mcp"]
+
+
+def test_install_mcp_replaces_entry_with_active_entrypoint(monkeypatch):
+    executable = "/uv/tools/repowire/bin/repowire"
+    calls = []
+    monkeypatch.setattr(cc_mod, "repowire_console_entrypoint", lambda: executable)
+    monkeypatch.setattr(
+        cc_mod.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    assert cc_mod.install_mcp() is True
+
+    assert calls[0][0] == [
+        "claude", "mcp", "remove", "-s", "user", "repowire",
+    ]
+    assert calls[0][1] == {"capture_output": True}
+    assert calls[1][0][-3:] == ["--", executable, "mcp"]
+    assert calls[1][1] == {"check": True}
 
 
 def _read(path: Path) -> dict:
@@ -177,10 +217,52 @@ def test_install_hooks_is_idempotent(tmp_path, monkeypatch):
         assert len(data["hooks"][event]) == 1
 
 
+def test_install_hooks_upgrades_bare_commands_to_active_entrypoint(
+    tmp_path, monkeypatch,
+):
+    settings, _ = _retarget(tmp_path, monkeypatch)
+    executable = "/uv/tools/repowire/bin/repowire"
+    monkeypatch.setattr(cc_mod, "repowire_console_entrypoint", lambda: executable)
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({
+        "hooks": {
+            "Stop": [
+                {"hooks": [{"type": "command", "command": "user-hook"}]},
+                {"hooks": [{"type": "command", "command": "repowire hook stop"}]},
+            ],
+        }
+    }))
+
+    cc_mod.install_hooks()
+
+    hooks = _read(settings)["hooks"]
+    assert hooks["Stop"][0]["hooks"][0]["command"] == "user-hook"
+    assert hooks["Stop"][1]["hooks"][0]["command"] == f"{executable} hook stop"
+    assert hooks["SessionStart"][-1]["hooks"][0]["command"] == (
+        f"{executable} hook session"
+    )
+
+
+def test_install_hooks_shell_quotes_entrypoint_with_spaces(tmp_path, monkeypatch):
+    settings, _ = _retarget(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        cc_mod,
+        "repowire_console_entrypoint",
+        lambda: "/uv tools/repowire/bin/repowire",
+    )
+
+    cc_mod.install_hooks()
+
+    command = _read(settings)["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert command == "'/uv tools/repowire/bin/repowire' hook stop"
+
+
 def test_install_hooks_replaces_existing_repowire_entry_for_same_event(tmp_path, monkeypatch):
     """Documented behavior: install_hooks unconditionally sets each event,
     so a stale repowire entry from an earlier version gets refreshed."""
     settings, _ = _retarget(tmp_path, monkeypatch)
+    executable = "/uv/tools/repowire/bin/repowire"
+    monkeypatch.setattr(cc_mod, "repowire_console_entrypoint", lambda: executable)
     settings.parent.mkdir(parents=True)
     pre = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "old-repowire-hook"}]}]}}
     settings.write_text(json.dumps(pre))
@@ -188,7 +270,7 @@ def test_install_hooks_replaces_existing_repowire_entry_for_same_event(tmp_path,
     cc_mod.install_hooks()
     data = _read(settings)
     stop_cmds = [e["hooks"][0]["command"] for e in data["hooks"]["Stop"]]
-    assert stop_cmds == ["repowire hook stop"]
+    assert stop_cmds == [f"{executable} hook stop"]
 
 
 def test_install_hooks_noops_when_external_dispatcher_provides_full_set(
@@ -223,6 +305,8 @@ def test_pretooluse_absent_when_approval_disabled(tmp_path, monkeypatch):
 
 
 def test_pretooluse_registered_when_approval_enabled(tmp_path, monkeypatch):
+    executable = "/uv/tools/repowire/bin/repowire"
+    monkeypatch.setattr(cc_mod, "repowire_console_entrypoint", lambda: executable)
     settings, _ = _retarget(
         tmp_path, monkeypatch, config=_approval_config(True, gated=["Bash", "Edit"]),
     )
@@ -230,7 +314,7 @@ def test_pretooluse_registered_when_approval_enabled(tmp_path, monkeypatch):
     entry = _read(settings)["hooks"]["PreToolUse"][0]
     assert entry["matcher"] == "Bash|Edit"
     hook = entry["hooks"][0]
-    assert hook["command"] == "repowire hook pretooluse"
+    assert hook["command"] == f"{executable} hook pretooluse"
     assert hook["timeout"] == cc_mod.PRETOOLUSE_HOOK_TIMEOUT_SECONDS
 
 

@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from repowire.config.models import load_config
+from repowire.installers.runtime import repowire_console_entrypoint
 
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 CLAUDE_JSON = Path.home() / ".claude.json"
@@ -23,6 +24,32 @@ PRETOOLUSE_HOOK_TIMEOUT_SECONDS = 60
 # Channel transport requires Claude Code v2.1.80+ with claude.ai login
 CHANNEL_MIN_VERSION = (2, 1, 80)
 HOOK_MANIFEST_TIMEOUT_SECONDS = 2
+
+
+def install_mcp() -> bool:
+    """Replace Claude's Repowire MCP entry with this Python environment."""
+    executable = repowire_console_entrypoint()
+    subprocess.run(
+        ["claude", "mcp", "remove", "-s", "user", "repowire"],
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "claude",
+            "mcp",
+            "add",
+            "-s",
+            "user",
+            "repowire",
+            "-e",
+            "REPOWIRE_BACKEND=claude-code",
+            "--",
+            executable,
+            "mcp",
+        ],
+        check=True,
+    )
+    return True
 
 
 def _load_claude_settings() -> dict:
@@ -193,6 +220,7 @@ def _replace_repowire_hook(settings: dict, event: str, entry: dict | None) -> No
 def install_hooks(channel_mode: bool = False) -> bool:
     """Install hooks. In channel_mode, only install Stop hook for dashboard chat_turns."""
     settings = _load_claude_settings()
+    executable = shlex.quote(repowire_console_entrypoint())
     external_events, _ = _external_repowire_hooks(settings)
     requested_events = (
         set(_CHANNEL_HOOK_EVENTS) if channel_mode else set(_REQUIRED_HOOK_EVENTS)
@@ -206,22 +234,30 @@ def install_hooks(channel_mode: bool = False) -> bool:
         return True
 
     # Stop hook always needed (dashboard chat_turns)
-    _replace_repowire_hook(settings, "Stop", _make_hook_config("repowire hook stop"))
-    _replace_repowire_hook(settings, "StopFailure", _make_hook_config("repowire hook stop"))
+    _replace_repowire_hook(
+        settings, "Stop", _make_hook_config(f"{executable} hook stop")
+    )
+    _replace_repowire_hook(
+        settings, "StopFailure", _make_hook_config(f"{executable} hook stop")
+    )
 
     if not channel_mode:
         # Full hook set for tmux transport
         _replace_repowire_hook(
-            settings, "SessionStart", _make_hook_config("repowire hook session")
+            settings, "SessionStart", _make_hook_config(f"{executable} hook session")
         )
-        _replace_repowire_hook(settings, "SessionEnd", _make_hook_config("repowire hook session"))
         _replace_repowire_hook(
-            settings, "UserPromptSubmit", _make_hook_config("repowire hook prompt")
+            settings, "SessionEnd", _make_hook_config(f"{executable} hook session")
+        )
+        _replace_repowire_hook(
+            settings, "UserPromptSubmit", _make_hook_config(f"{executable} hook prompt")
         )
         _replace_repowire_hook(
             settings,
             "Notification",
-            _make_notification_hook_config("repowire hook notification", "idle_prompt"),
+            _make_notification_hook_config(
+                f"{executable} hook notification", "idle_prompt"
+            ),
         )
         # PreToolUse remote approval: opt-in only. Register the hook (matcher
         # scoped to the configured gated tools) when enabled, otherwise strip
@@ -233,7 +269,9 @@ def install_hooks(channel_mode: bool = False) -> bool:
                 settings,
                 "PreToolUse",
                 _make_pretooluse_hook_config(
-                    "repowire hook pretooluse", matcher, PRETOOLUSE_HOOK_TIMEOUT_SECONDS,
+                    f"{executable} hook pretooluse",
+                    matcher,
+                    PRETOOLUSE_HOOK_TIMEOUT_SECONDS,
                 ),
             )
         else:
