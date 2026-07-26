@@ -12,7 +12,30 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import repowire.hooks.websocket_hook as websocket_hook
+from repowire.daemon_auth import daemon_auth_token
 from repowire.hooks.websocket_hook import _is_pane_safe
+
+
+def test_websocket_auth_prefers_environment_token(monkeypatch):
+    monkeypatch.setenv("REPOWIRE_AUTH_TOKEN", "environment-token")
+    monkeypatch.setattr(
+        "repowire.config.models.load_config",
+        lambda: pytest.fail("config fallback should not run"),
+    )
+
+    assert daemon_auth_token() == "environment-token"
+
+
+def test_websocket_auth_falls_back_to_config_token(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("REPOWIRE_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "repowire.config.models.load_config",
+        lambda: SimpleNamespace(daemon=SimpleNamespace(auth_token="config-token")),
+    )
+
+    assert daemon_auth_token() == "config-token"
 
 
 class TestHandleAskAndNotify:

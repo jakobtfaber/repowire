@@ -136,6 +136,27 @@ def _mock_client_factory(handler):
 
 
 class TestDaemon:
+    def test_reachable_uses_daemon_auth_headers(self):
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.get.return_value.json.return_value = {
+            "status": "ok",
+            "version": "9.9.9",
+        }
+        factory = MagicMock(return_value=client)
+
+        with patch("repowire.doctor.__version__", "9.9.9"), \
+             patch("repowire.doctor.daemon_auth_headers", return_value={
+                 "Authorization": "Bearer test-token",
+             }), \
+             patch("repowire.doctor.httpx.Client", factory):
+            result = check_daemon("http://localhost:8377")
+
+        assert result.status is Status.OK
+        assert factory.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer test-token",
+        }
+
     def test_reachable_ok(self):
         def handler(_request):
             return httpx.Response(
@@ -209,7 +230,10 @@ class TestRuntimes:
         def which(tool):
             return "/p/claude" if tool == "claude" else None
         with patch("repowire.doctor.shutil.which", side_effect=which), \
-             patch("repowire.installers.claude_code.check_hooks_installed", return_value=False), \
+             patch(
+                 "repowire.installers.claude_code.check_configured_hooks_installed",
+                 return_value=False,
+             ), \
              patch("repowire.installers.claude_code.check_channel_installed", return_value=False), \
              patch("repowire.installers.claude_code.get_claude_version", return_value=(2, 1, 80)):
             r = check_runtimes()
@@ -221,12 +245,36 @@ class TestRuntimes:
         def which(tool):
             return "/p/claude" if tool == "claude" else None
         with patch("repowire.doctor.shutil.which", side_effect=which), \
-             patch("repowire.installers.claude_code.check_hooks_installed", return_value=True), \
+             patch(
+                 "repowire.installers.claude_code.check_configured_hooks_installed",
+                 return_value=True,
+             ), \
              patch("repowire.installers.claude_code.check_channel_installed", return_value=False), \
              patch("repowire.installers.claude_code.get_claude_version", return_value=(2, 1, 80)):
             r = check_runtimes()
         claude_result = next(c for c in r.children if c.name == "claude-code")
         assert claude_result.status is Status.OK
+
+    def test_claude_channel_hooks_installed_ok(self):
+        def which(tool):
+            return "/p/claude" if tool == "claude" else None
+        with patch("repowire.doctor.shutil.which", side_effect=which), \
+             patch(
+                 "repowire.installers.claude_code.check_configured_hooks_installed",
+                 return_value=True,
+             ), \
+             patch(
+                 "repowire.installers.claude_code.check_channel_installed",
+                 return_value=True,
+             ), \
+             patch(
+                 "repowire.installers.claude_code.get_claude_version",
+                 return_value=(2, 1, 80),
+             ):
+            r = check_runtimes()
+        claude_result = next(c for c in r.children if c.name == "claude-code")
+        assert claude_result.status is Status.OK
+        assert "channel" in claude_result.detail
 
 
 class TestSpawnConfig:

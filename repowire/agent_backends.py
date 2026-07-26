@@ -122,6 +122,10 @@ class AgentBackend(ABC):
             return f"{command} {self.resume_subcommand} {quoted_session}"
         return f"{command} {self.resume_flag} {quoted_session}"
 
+    def prepare_spawn_command(self, command: str) -> str:
+        """Add backend launch options needed by Repowire-managed sessions."""
+        return command
+
     def runtime_session_validation_status(
         self,
         peer_path: str | None,
@@ -243,6 +247,22 @@ class ClaudeCodeBackend(AgentBackend):
             or env.get("CLAUDE_CODE_ENTRYPOINT")
             or ai_agent.startswith("claude-code")
         )
+
+    def prepare_spawn_command(self, command: str) -> str:
+        """Enable the installed experimental channel for managed Claude launches."""
+        from repowire.installers.claude_code import check_channel_installed
+
+        channel_arg = "server:repowire-channel"
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            argv = []
+        for index, arg in enumerate(argv[:-1]):
+            if arg == "--dangerously-load-development-channels" and argv[index + 1] == channel_arg:
+                return command
+        if not check_channel_installed():
+            return command
+        return f"{command} --dangerously-load-development-channels {channel_arg}"
 
     def install(self, options: BackendInstallOptions | None = None) -> list[BackendInstallMessage]:
         import subprocess

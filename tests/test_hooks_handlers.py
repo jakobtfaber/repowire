@@ -1,8 +1,12 @@
 """Tests for prompt and notification hook handlers."""
 
 import json
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+import httpx
+
+import repowire.hooks.utils as hook_utils
 from repowire.hooks.notification_handler import main as notification_main
 from repowire.hooks.prompt_handler import main as prompt_main
 
@@ -25,6 +29,46 @@ class TestPromptHandler:
     def test_wrong_event(self):
         result = _run_with_input(prompt_main, {"hook_event_name": "SessionStart"})
         assert result == 0
+
+    def test_live_prompt_request_uses_environment_auth_token(self, monkeypatch):
+        client = MagicMock()
+        response = MagicMock()
+        response.json.return_value = {"ok": True}
+        client.post.return_value = response
+        factory = MagicMock(return_value=client)
+        monkeypatch.setenv("REPOWIRE_AUTH_TOKEN", "environment-token")
+        monkeypatch.setattr(httpx, "Client", factory)
+        monkeypatch.setattr("repowire.hooks.prompt_handler.get_pane_id", lambda: "%42")
+        hook_utils._client = None
+
+        result = _run_with_input(prompt_main, {"hook_event_name": "UserPromptSubmit"})
+
+        assert result == 0
+        assert factory.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer environment-token",
+        }
+
+    def test_live_prompt_request_falls_back_to_config_auth_token(self, monkeypatch):
+        client = MagicMock()
+        response = MagicMock()
+        response.json.return_value = {"ok": True}
+        client.post.return_value = response
+        factory = MagicMock(return_value=client)
+        monkeypatch.delenv("REPOWIRE_AUTH_TOKEN", raising=False)
+        monkeypatch.setattr(httpx, "Client", factory)
+        monkeypatch.setattr(
+            "repowire.config.models.load_config",
+            lambda: SimpleNamespace(daemon=SimpleNamespace(auth_token="config-token")),
+        )
+        monkeypatch.setattr("repowire.hooks.prompt_handler.get_pane_id", lambda: "%42")
+        hook_utils._client = None
+
+        result = _run_with_input(prompt_main, {"hook_event_name": "UserPromptSubmit"})
+
+        assert result == 0
+        assert factory.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer config-token",
+        }
 
     @patch("repowire.hooks.prompt_handler.update_status", return_value=True)
     @patch("repowire.hooks.prompt_handler.get_pane_id", return_value="%42")

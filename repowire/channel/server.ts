@@ -17,6 +17,10 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import WebSocket from "ws";
+import {
+  ChannelIdentity,
+  buildPeerFetchInit,
+} from "./connect_payload.js";
 
 // -- Config --
 
@@ -25,12 +29,14 @@ const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN ?? "";
 // Proposed name for initial connect; daemon assigns the canonical display_name
 const PROPOSED_NAME = process.env.REPOWIRE_DISPLAY_NAME ?? "channel";
 const CIRCLE = process.env.REPOWIRE_CIRCLE ?? "default";
+const CLAIMED_PEER_ID = process.env.REPOWIRE_PEER_ID ?? "";
 const PROJECT_PATH = process.cwd();
 
 // -- Daemon WebSocket --
 
 let ws: WebSocket | null = null;
 let sessionId: string | null = null;
+const channelIdentity = new ChannelIdentity(CLAIMED_PEER_ID);
 let displayName: string = PROPOSED_NAME;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const pendingCorrelations = new Map<string, string>(); // correlation_id -> from_peer
@@ -55,14 +61,15 @@ function connectDaemon(mcp: Server): void {
 
   ws.on("open", () => {
     ws!.send(
-      JSON.stringify({
-        type: "connect",
-        display_name: PROPOSED_NAME,
-        circle: CIRCLE,
-        backend: "claude-code",
-        path: PROJECT_PATH,
-        ...(AUTH_TOKEN ? { auth_token: AUTH_TOKEN } : {}),
-      })
+      JSON.stringify(
+        channelIdentity.buildConnectPayload({
+          displayName: PROPOSED_NAME,
+          circle: CIRCLE,
+          projectPath: PROJECT_PATH,
+          agentPid: process.ppid,
+          authToken: AUTH_TOKEN,
+        }),
+      )
     );
   });
 
@@ -77,6 +84,7 @@ function connectDaemon(mcp: Server): void {
 
     if (msg.type === "connected") {
       sessionId = msg.session_id;
+      channelIdentity.rememberAssignedPeerId(msg.peer_id ?? msg.session_id);
       if (msg.display_name) displayName = msg.display_name;
       console.error(`repowire: connected as ${displayName} (${sessionId})`);
       return;
@@ -145,7 +153,7 @@ async function fetchPeerContext(): Promise<string> {
       "wss://",
       "https://"
     );
-    const resp = await fetch(`${httpUrl}/peers`);
+    const resp = await fetch(`${httpUrl}/peers`, buildPeerFetchInit(AUTH_TOKEN));
     const data = (await resp.json()) as { peers?: Array<Record<string, any>> };
     const peers = data.peers ?? [];
     const online = peers.filter(
@@ -156,7 +164,7 @@ async function fetchPeerContext(): Promise<string> {
     if (online.length === 0) return "";
 
     const lines = online
-      .filter((p) => p.display_name !== displayName)
+      .filter((p) => p.peer_id !== channelIdentity.peerId)
       .map((p) => {
         const name = p.display_name ?? p.name ?? "?";
         const folder = (p.path ?? "").split("/").pop() || name;

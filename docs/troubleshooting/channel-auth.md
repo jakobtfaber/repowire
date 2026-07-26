@@ -10,6 +10,12 @@ The experimental [channel transport](../use/features/connect-claude-code.md#chan
 
 If any of these are missing, `repowire setup --experimental-channels` refuses to install and reports which one. Re-run after fixing.
 
+`repowire status` treats the channel as ready only when the configured Bun
+command, installed server path, package dependencies, Claude Code version, and
+daemon bearer token all match the current Repowire installation. If that check
+fails, an externally managed hook dispatcher should retain the default
+lifecycle transport instead of suppressing it.
+
 ## "Failed to authenticate"
 
 The channel server starts but immediately exits with an auth error.
@@ -23,7 +29,9 @@ The channel server starts but immediately exits with an auth error.
 The channel server is running but messages never reach Claude:
 
 - Confirm the `repowire-channel` MCP server entry in `~/.claude.json` points at the channel server. The normal `repowire` MCP server should still be present separately for tools such as `ack`, `ask`, and `notify_peer`.
-- Restart the Claude Code session. The channel server connects once at session start; if it disconnected, a restart re-establishes the WebSocket.
+- The channel server reconnects its WebSocket automatically and reclaims the
+  daemon-assigned peer identity. Restart the Claude Code session only if the
+  channel process itself exited.
 
 ## Switching back to default transport
 
