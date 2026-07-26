@@ -27,6 +27,11 @@ def _capture(text: str) -> CompletedProcess:
     return CompletedProcess(args=[], returncode=0, stdout=text, stderr="")
 
 
+def _held_through_submit_grace(text: str) -> list[CompletedProcess]:
+    """Captures that hold the prompt throughout the 1.2-second grace window."""
+    return [_capture(text) for _ in range(6)]
+
+
 def _fake_clock():
     """A monotonic/sleep pair backed by a shared mutable clock so elapsed time
     advances deterministically by the slept amount on each sleep."""
@@ -65,7 +70,7 @@ class TestInjectText:
             ["tmux", "send-keys", "-t", "%5", "-l", "hello"],
             ["tmux", "send-keys", "-t", "%5", "-H", "1b", "5b", "32", "30", "31", "7e"],
             ["tmux", "send-keys", "-t", "%5", "Enter"],
-            ["tmux", "capture-pane", "-t", "%5", "-p"],
+            ["tmux", "capture-pane", "-t", "%5", "-p", "-J", "-S", "-30"],
         ]
         assert ["tmux", "send-keys", "-t", "%5", "Escape"] not in calls
         assert ["tmux", "send-keys", "-t", "%5", "-X", "cancel"] not in calls
@@ -93,7 +98,7 @@ class TestInjectText:
             ["tmux", "send-keys", "-t", "%5", "-l", "hello"],
             ["tmux", "send-keys", "-t", "%5", "-H", "1b", "5b", "32", "30", "31", "7e"],
             ["tmux", "send-keys", "-t", "%5", "Enter"],
-            ["tmux", "capture-pane", "-t", "%5", "-p"],
+            ["tmux", "capture-pane", "-t", "%5", "-p", "-J", "-S", "-30"],
         ]
         cancel_idx = calls.index(["tmux", "send-keys", "-t", "%5", "-X", "cancel"])
         paste_idx = calls.index(["tmux", "send-keys", "-t", "%5", "-l", "hello"])
@@ -131,13 +136,222 @@ class TestInjectText:
                 _ok(),  # -l text
                 _ok(),  # -H close
                 _ok(),  # Enter
-                _capture(composer_stuck),
+                *_held_through_submit_grace(composer_stuck),
                 _ok(),  # retry Enter
+                _capture("❯ \n"),  # retry submitted; composer now empty
             ]
             assert inject_text("%5", "hello there friend") is True
 
         calls = [call.args[0] for call in mock_run.call_args_list]
         assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 2
+
+    def test_two_swallowed_enters_are_retried_until_composer_is_empty(self):
+        """Claude can swallow both the initial Enter and first retry.
+
+        Keep submitting only while each capture positively shows the injected
+        text in the live composer, then stop as soon as it is empty.
+        """
+        composer_stuck = "❯ hello there friend\n"
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),  # -l text
+                _ok(),  # -H close
+                _ok(),  # first Enter swallowed
+                *_held_through_submit_grace(composer_stuck),
+                _ok(),  # second Enter swallowed
+                *_held_through_submit_grace(composer_stuck),
+                _ok(),  # third Enter submits
+                _capture("❯ \n"),
+            ]
+            assert inject_text("%5", "hello there friend") is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 3
+
+    def test_multiple_stale_held_frames_then_delayed_clear_do_not_retry(self):
+        composer_stuck = "❯ hello there friend\n"
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),  # -l text
+                _ok(),  # -H close
+                _ok(),  # Enter submits
+                *[_capture(composer_stuck) for _ in range(5)],
+                _capture("❯ \n"),  # delayed clear
+            ]
+            assert inject_text("%5", "hello there friend") is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 1
+
+    def test_submit_retries_stop_at_bound_when_composer_stays_full(self):
+        composer_stuck = "❯ hello there friend\n"
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),  # -l text
+                _ok(),  # -H close
+                _ok(),
+                *_held_through_submit_grace(composer_stuck),
+                _ok(),
+                *_held_through_submit_grace(composer_stuck),
+                _ok(),
+                *_held_through_submit_grace(composer_stuck),
+            ]
+            assert inject_text("%5", "hello there friend") is False
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 3
+
+    def test_final_attempt_unknown_fails_without_extra_enter(self):
+        composer_stuck = "❯ hello there friend\n"
+        capture_failed = CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="pane unavailable"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),  # -l text
+                _ok(),  # -H close
+                _ok(),
+                *_held_through_submit_grace(composer_stuck),
+                _ok(),
+                *_held_through_submit_grace(composer_stuck),
+                _ok(),
+                capture_failed,
+            ]
+            assert inject_text("%5", "hello there friend") is False
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 3
+
+    def test_joined_capture_detects_held_long_wrapped_composer(self):
+        text = "submit this long seed prompt " + " ".join(["word"] * 40)
+        composer_stuck = (
+            "────────────────────────────────────────\n"
+            "❯\xa0submit this long seed\n"
+            "  prompt " + " ".join(["word"] * 20) + "\n"
+            "  " + " ".join(["word"] * 20) + "\n"
+            "────────────────────────────────────────\n"
+            "  bypass permissions on\n"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),
+                _ok(),
+                _ok(),
+                *_held_through_submit_grace(composer_stuck),
+                _ok(),
+                _capture("❯ \n"),
+            ]
+            assert inject_text("%5", text) is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 2
+        assert ["tmux", "capture-pane", "-t", "%5", "-p", "-J", "-S", "-30"] in calls
+
+    def test_different_nonempty_composer_is_unknown_not_cleared(self):
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),
+                _ok(),
+                _ok(),
+                _capture("❯ different text\n"),
+            ]
+            assert inject_text("%5", "hello there friend") is False
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 1
+
+    def test_submitted_prompt_followed_by_processing_is_not_live_composer(self):
+        processing = (
+            "❯ hello there friend\n"
+            "⏺ Reading the repository\n"
+            "  Working…\n"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),
+                _ok(),
+                _ok(),
+                *_held_through_submit_grace(processing),
+            ]
+            assert inject_text("%5", "hello there friend") is False
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 1
+
+    def test_submitted_prompt_plus_output_before_divider_is_not_live_composer(self):
+        processing = (
+            "❯ hello there friend\n"
+            "\n"
+            "  Called repowire 1 time\n"
+            "────────────────────────────────────────\n"
+            "  bypass permissions on\n"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),
+                _ok(),
+                _ok(),
+                *_held_through_submit_grace(processing),
+            ]
+            assert inject_text("%5", "hello there friend") is False
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 1
+
+    def test_partial_long_composer_content_is_unknown(self):
+        text = "submit this long seed prompt " + "x" * 200
+        partial = (
+            "────────────────────────────────────────\n"
+            f"❯ {text[:70]}\n"
+            "────────────────────────────────────────\n"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),
+                _ok(),
+                _ok(),
+                _capture(partial),
+            ]
+            assert inject_text("%5", text) is False
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 1
 
     def test_submitted_text_in_transcript_does_not_trigger_resend(self):
         """A submitted prompt stays visible in the transcript; only text in
@@ -172,7 +386,7 @@ class TestInjectText:
                 _ok(),
                 CompletedProcess(args=[], returncode=1, stdout="", stderr="boom"),
             ]
-            assert inject_text("%5", "hello") is True
+            assert inject_text("%5", "hello") is False
 
         calls = [call.args[0] for call in mock_run.call_args_list]
         assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 1
@@ -194,6 +408,22 @@ class TestInjectText:
 
 class TestWaitForComposerReady:
     """wait_for_composer_ready polls capture-pane for the composer prompt."""
+
+    def test_historical_prompt_does_not_signal_resumed_composer_ready(self):
+        historical = "❯ old submitted prompt\n⏺ old completed response\n"
+        live_composer = (
+            "────────────────────────────────────────\n"
+            "❯ \n"
+            "────────────────────────────────────────\n"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep") as mock_sleep,
+        ):
+            mock_run.side_effect = [_capture(historical), _capture(live_composer)]
+            assert wait_for_composer_ready("%5", timeout=5.0) is True
+
+        mock_sleep.assert_called_once_with(0.5)
 
     def test_returns_true_immediately_when_prompt_present(self):
         with (
