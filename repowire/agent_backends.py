@@ -270,7 +270,11 @@ class ClaudeCodeBackend(AgentBackend):
     def install(self, options: BackendInstallOptions | None = None) -> list[BackendInstallMessage]:
         import subprocess
 
-        from repowire.installers.claude_code import install_channel, install_hooks
+        from repowire.installers.claude_code import (
+            install_channel,
+            install_hooks,
+            install_mcp,
+        )
 
         options = options or BackendInstallOptions()
         messages: list[BackendInstallMessage] = []
@@ -293,13 +297,7 @@ class ClaudeCodeBackend(AgentBackend):
             messages.append(BackendInstallMessage("success", "Claude Code hooks installed"))
 
         try:
-            subprocess.run(["claude", "mcp", "remove", "repowire"], capture_output=True)
-            cmd = [
-                "claude", "mcp", "add", "-s", "user",
-                "repowire", "-e", "REPOWIRE_BACKEND=claude-code",
-                "--", "repowire", "mcp",
-            ]
-            subprocess.run(cmd, check=True)
+            install_mcp()
             messages.append(BackendInstallMessage("success", "MCP server added to Claude"))
         except subprocess.CalledProcessError as e:
             messages.append(

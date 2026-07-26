@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 import subprocess
 from pathlib import Path
+
+from repowire.installers.runtime import repowire_console_entrypoint
 
 CODEX_HOME = Path.home() / ".codex"
 HOOKS_PATH = CODEX_HOME / "hooks.json"
@@ -50,13 +53,18 @@ def _make_hook_entry(command: str, matcher: str | None = None) -> dict:
     return entry
 
 
-_REPOWIRE_HOOKS = {
-    "SessionStart": _make_hook_entry(
-        "repowire hook session --backend=codex", matcher="startup|resume|clear",
-    ),
-    "Stop": _make_hook_entry("repowire hook stop --backend=codex"),
-    "UserPromptSubmit": _make_hook_entry("repowire hook prompt --backend=codex"),
-}
+def _repowire_hooks() -> dict[str, dict]:
+    executable = shlex.quote(repowire_console_entrypoint())
+    return {
+        "SessionStart": _make_hook_entry(
+            f"{executable} hook session --backend=codex",
+            matcher="startup|resume|clear",
+        ),
+        "Stop": _make_hook_entry(f"{executable} hook stop --backend=codex"),
+        "UserPromptSubmit": _make_hook_entry(
+            f"{executable} hook prompt --backend=codex"
+        ),
+    }
 
 
 def trusted_hash_for(event: str, command: str, matcher: str | None) -> str:
@@ -150,12 +158,57 @@ def write_trusted_hashes(data: dict) -> None:
     CONFIG_PATH.write_text(content)
 
 
+def _reindex_trusted_hashes(
+    index_maps: dict[
+        str,
+        dict[tuple[int, int], tuple[int, int] | None],
+    ],
+) -> None:
+    if not CONFIG_PATH.exists():
+        return
+    labels = {event: _EVENT_LABELS[event] for event in index_maps}
+    output: list[str] = []
+    skip_section = False
+    for line in CONFIG_PATH.read_text().splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            skip_section = False
+            if stripped.startswith('[hooks.state."') and stripped.endswith('"]'):
+                key = stripped[len('[hooks.state."'):-2]
+                try:
+                    base, group_text, handler_text = key.rsplit(":", 2)
+                except ValueError:
+                    output.append(line)
+                    continue
+                for event, label in labels.items():
+                    if base != f"{HOOKS_PATH}:{label}":
+                        continue
+                    try:
+                        group = int(group_text)
+                        handler = int(handler_text)
+                    except ValueError:
+                        break
+                    mapped = index_maps[event].get(
+                        (group, handler), (group, handler)
+                    )
+                    if mapped is None:
+                        skip_section = True
+                    elif mapped != (group, handler):
+                        new_key = f"{base}:{mapped[0]}:{mapped[1]}"
+                        line = line.replace(key, new_key, 1)
+                    break
+        if not skip_section:
+            output.append(line)
+    CONFIG_PATH.write_text("".join(output))
+
+
 def _is_repowire_hook(entry: dict) -> bool:
     """Check if a hook entry belongs to repowire."""
-    for h in entry.get("hooks", []):
-        if "repowire" in h.get("command", ""):
-            return True
-    return False
+    return any(_is_repowire_handler(handler) for handler in entry.get("hooks", []))
+
+
+def _is_repowire_handler(handler: dict) -> bool:
+    return "repowire" in handler.get("command", "")
 
 
 def install_hooks() -> bool:
@@ -172,13 +225,61 @@ def install_hooks() -> bool:
     before = _load_hooks()
     data = json.loads(json.dumps(before)) if before else {}
     hooks = data.setdefault("hooks", {})
+    index_maps: dict[
+        str,
+        dict[tuple[int, int], tuple[int, int] | None],
+    ] = {}
 
-    for event, entry in _REPOWIRE_HOOKS.items():
+    for event, entry in _repowire_hooks().items():
         existing = hooks.get(event, [])
-        # Remove any previous repowire entries, then append fresh
-        existing = [e for e in existing if not _is_repowire_hook(e)]
-        existing.append(entry)
-        hooks[event] = existing
+        refreshed: list[dict] = []
+        installed = False
+        event_map: dict[tuple[int, int], tuple[int, int] | None] = {}
+        desired_handler = entry["hooks"][0]
+        for old_group, current in enumerate(existing):
+            handlers = current.get("hooks", [])
+            if not any(_is_repowire_handler(handler) for handler in handlers):
+                new_group = len(refreshed)
+                refreshed.append(current)
+                for old_handler in range(len(handlers)):
+                    event_map[(old_group, old_handler)] = (
+                        new_group,
+                        old_handler,
+                    )
+                continue
+
+            new_group = len(refreshed)
+            new_handlers: list[dict] = []
+            repowire_count = 0
+            for old_handler, handler in enumerate(handlers):
+                if _is_repowire_handler(handler):
+                    repowire_count += 1
+                    if not installed:
+                        event_map[(old_group, old_handler)] = (
+                            new_group,
+                            len(new_handlers),
+                        )
+                        new_handlers.append(desired_handler)
+                        installed = True
+                    else:
+                        event_map[(old_group, old_handler)] = None
+                    continue
+                event_map[(old_group, old_handler)] = (
+                    new_group,
+                    len(new_handlers),
+                )
+                new_handlers.append(handler)
+            if new_handlers:
+                if repowire_count == len(handlers):
+                    refreshed.append(entry)
+                else:
+                    mixed = dict(current)
+                    mixed["hooks"] = new_handlers
+                    refreshed.append(mixed)
+        if not installed:
+            refreshed.append(entry)
+        hooks[event] = refreshed
+        index_maps[event] = event_map
 
     # Drop entries for events codex doesn't support (a prior repowire version
     # wrote an inert SessionEnd group).
@@ -190,6 +291,7 @@ def install_hooks() -> bool:
         else:
             del hooks["SessionEnd"]
 
+    _reindex_trusted_hashes(index_maps)
     _save_hooks(data)
     write_trusted_hashes(data)
     return data != before
@@ -272,34 +374,141 @@ def _enable_hooks_feature() -> None:
     CONFIG_PATH.write_text(content)
 
 
-def _ensure_repowire_mcp_backend_env(content: str) -> str:
+def _split_toml_comment(value: str) -> tuple[str, str]:
+    quote = ""
+    escaped = False
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote == '"':
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "#":
+            body = value[:index].rstrip()
+            return body, value[len(body):]
+    return value.rstrip(), value[len(value.rstrip()):]
+
+
+def _unquoted_delimiter(value: str, delimiter: str) -> int | None:
+    quote = ""
+    escaped = False
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote == '"':
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == delimiter:
+            return index
+    return None
+
+
+def _upsert_inline_backend(value: str) -> str:
+    opening = value.find("{")
+    closing = value.rfind("}")
+    if opening < 0 or closing < opening:
+        return value
+    inner = value[opening + 1:closing]
+    if not inner.strip():
+        return (
+            f'{value[:opening + 1]} REPOWIRE_BACKEND = "codex" '
+            f"{value[closing:]}"
+        )
+    entries: list[str] = []
+    start = 0
+    while start <= len(inner):
+        relative = _unquoted_delimiter(inner[start:], ",")
+        if relative is None:
+            entries.append(inner[start:])
+            break
+        end = start + relative
+        entries.append(inner[start:end])
+        start = end + 1
+
+    found = False
+    for index, entry in enumerate(entries):
+        equals = _unquoted_delimiter(entry, "=")
+        if equals is None or entry[:equals].strip() != "REPOWIRE_BACKEND":
+            continue
+        trailing = entry[len(entry.rstrip()):]
+        entries[index] = f'{entry[:equals + 1]} "codex"{trailing}'
+        found = True
+        break
+    if not found:
+        trailing = entries[-1][len(entries[-1].rstrip()):]
+        entries[-1] = entries[-1].rstrip()
+        entries.append(f' REPOWIRE_BACKEND = "codex"{trailing}')
+    return f"{value[:opening + 1]}{','.join(entries)}{value[closing:]}"
+
+
+def _ensure_repowire_mcp_backend_env(content: str, executable: str) -> str:
     lines = content.splitlines()
     out: list[str] = []
     in_section = False
+    in_env_section = False
     saw_section = False
     saw_env = False
+    saw_command = False
+    saw_backend = False
 
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
-            if in_section and not saw_env:
-                out.append(_MCP_ENV_LINE)
+            next_is_env = stripped == "[mcp_servers.repowire.env]"
+            if in_section:
+                if not saw_command:
+                    out.append(f"command = {json.dumps(executable)}")
+                if not saw_env and not next_is_env:
+                    out.append(_MCP_ENV_LINE)
+            if in_env_section and not saw_backend:
+                out.append('REPOWIRE_BACKEND = "codex"')
             in_section = stripped == "[mcp_servers.repowire]"
+            in_env_section = next_is_env
             saw_section = saw_section or in_section
-            saw_env = False
+            if in_section:
+                saw_env = False
+                saw_command = False
+            if in_env_section:
+                saw_backend = False
             out.append(line)
             continue
 
-        if in_section and stripped.startswith("env") and "=" in stripped:
+        key = stripped.partition("=")[0].strip() if "=" in stripped else ""
+        if in_section and key == "env":
             saw_env = True
-            if "REPOWIRE_BACKEND" not in stripped and stripped.endswith("}"):
-                prefix, suffix = line.rsplit("}", 1)
-                sep = "" if prefix.rstrip().endswith("{") else ","
-                line = f'{prefix}{sep} REPOWIRE_BACKEND = "codex" }}{suffix}'
+            value, comment = _split_toml_comment(line.split("=", 1)[1])
+            line = (
+                f"{line.split('=', 1)[0]}="
+                f"{_upsert_inline_backend(value)}{comment}"
+            )
+        elif (
+            in_section
+            and key == "command"
+        ):
+            saw_command = True
+            _, comment = _split_toml_comment(line.split("=", 1)[1])
+            line = f"{line.split('=', 1)[0]}= {json.dumps(executable)}{comment}"
+        elif in_env_section and "=" in stripped:
+            if key == "REPOWIRE_BACKEND":
+                saw_backend = True
+                line = 'REPOWIRE_BACKEND = "codex"'
         out.append(line)
 
-    if in_section and not saw_env:
-        out.append(_MCP_ENV_LINE)
+    if in_section:
+        if not saw_env:
+            out.append(_MCP_ENV_LINE)
+        if not saw_command:
+            out.append(f"command = {json.dumps(executable)}")
+    if in_env_section and not saw_backend:
+        out.append('REPOWIRE_BACKEND = "codex"')
 
     if not saw_section:
         return content
@@ -316,10 +525,10 @@ def install_mcp() -> bool:
 
     _enable_hooks_feature()
 
-    # Use bare command name — resolved via PATH at runtime, survives upgrades
+    executable = repowire_console_entrypoint()
     section = (
         "\n[mcp_servers.repowire]\n"
-        'command = "repowire"\n'
+        f"command = {json.dumps(executable)}\n"
         'args = ["mcp"]\n'
         f"{_MCP_ENV_LINE}\n"
     )
@@ -327,7 +536,9 @@ def install_mcp() -> bool:
     if CONFIG_PATH.exists():
         content = CONFIG_PATH.read_text()
         if "[mcp_servers.repowire]" in content:
-            CONFIG_PATH.write_text(_ensure_repowire_mcp_backend_env(content))
+            CONFIG_PATH.write_text(
+                _ensure_repowire_mcp_backend_env(content, executable)
+            )
             return True  # already installed
         CONFIG_PATH.write_text(content.rstrip() + "\n" + section)
     else:
@@ -376,7 +587,27 @@ def check_mcp_installed() -> bool:
     """Check if repowire MCP server is configured in Codex."""
     if not CONFIG_PATH.exists():
         return False
-    return "[mcp_servers.repowire]" in CONFIG_PATH.read_text()
+    try:
+        expected = repowire_console_entrypoint()
+    except RuntimeError:
+        return False
+    in_section = False
+    for line in CONFIG_PATH.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped == "[mcp_servers.repowire]"
+            continue
+        if not in_section or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        if key.strip() != "command":
+            continue
+        try:
+            command, _ = _split_toml_comment(value)
+            return json.loads(command.strip()) == expected
+        except json.JSONDecodeError:
+            return False
+    return False
 
 
 def get_codex_version() -> tuple[int, ...] | None:

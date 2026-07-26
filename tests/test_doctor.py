@@ -227,7 +227,7 @@ class TestRuntimes:
         assert all(c.status is Status.SKIP for c in r.children)
 
     def test_claude_hooks_missing_fails(self):
-        def which(tool):
+        def which(tool, path=None):
             return "/p/claude" if tool == "claude" else None
         with patch("repowire.doctor.shutil.which", side_effect=which), \
              patch(
@@ -242,7 +242,7 @@ class TestRuntimes:
         assert r.status is Status.FAIL
 
     def test_claude_hooks_installed_ok(self):
-        def which(tool):
+        def which(tool, path=None):
             return "/p/claude" if tool == "claude" else None
         with patch("repowire.doctor.shutil.which", side_effect=which), \
              patch(
@@ -256,7 +256,7 @@ class TestRuntimes:
         assert claude_result.status is Status.OK
 
     def test_claude_channel_hooks_installed_ok(self):
-        def which(tool):
+        def which(tool, path=None):
             return "/p/claude" if tool == "claude" else None
         with patch("repowire.doctor.shutil.which", side_effect=which), \
              patch(

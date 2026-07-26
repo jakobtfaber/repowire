@@ -19,11 +19,16 @@ Six lifecycle events are wired by default:
 | `StopFailure` | Uses the same stop handler to repair status after API-level stop failures |
 | `SessionEnd` | Tears down the WebSocket hook supervisor, marks the peer `offline` |
 
-The hooks shell out to the `repowire` CLI: `repowire hook session`, `repowire hook prompt`, `repowire hook notification`, `repowire hook stop`, `repowire hook session-end`.
+The hooks shell out to the absolute `repowire` console entrypoint from the
+Python environment running setup. Pinning the command avoids selecting a
+different installation from an inherited shell `PATH`.
 
 ### MCP server
 
-The normal Repowire MCP server is added as `repowire`. It runs as `repowire mcp` over stdio and provides the stable tool surface: `ask`, `ack`, `notify_peer`, `broadcast`, peer listing, schedules, and related commands.
+The normal Repowire MCP server is added as `repowire`. It runs the same
+absolute console entrypoint with `mcp` over stdio and provides the stable tool
+surface: `ask`, `ack`, `notify_peer`, `broadcast`, peer listing, schedules, and
+related commands.
 
 ## Plugins and skills
 

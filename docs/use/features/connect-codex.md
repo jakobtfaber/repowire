@@ -9,14 +9,18 @@ OpenAI's Codex CLI. Hooks and the MCP server are wired into `~/.codex/`.
 | `~/.codex/hooks.json` | Hook entries for `SessionStart`, `UserPromptSubmit`, and `Stop` |
 | `~/.codex/config.toml` | `[features] hooks = true` flag and a `[mcp_servers.repowire]` section |
 
-The MCP entry points at the installed `repowire` binary:
+The MCP entry points at the `repowire` binary from the Python environment
+running setup:
 
 ```toml
 [mcp_servers.repowire]
-command = "repowire"
+command = "/absolute/path/to/active/environment/bin/repowire"
 args = ["mcp"]
 env = { REPOWIRE_BACKEND = "codex" }
 ```
+
+Hooks use the same absolute entrypoint. This prevents an inherited shell
+`PATH` from selecting a different Repowire installation.
 
 ## The hooks feature flag
 
