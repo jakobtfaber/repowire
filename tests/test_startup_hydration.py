@@ -210,6 +210,7 @@ async def test_retired_peer_without_live_pid_does_not_hydrate(tmp_path):
             "repowire.daemon.startup_hydration.read_pane_runtime_metadata",
             return_value=_metadata(agent_pid=None),
         ),
+        patch("repowire.daemon.startup_hydration.pid_alive", return_value=False),
         patch(
             "repowire.hooks.ws_hook_supervisor.startup_respawn_ws_hook",
             return_value=True,

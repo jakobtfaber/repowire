@@ -147,6 +147,7 @@ class SpawnService:
         if resume_plan is not None:
             command = self.resume_command(command, backend=backend, resume_plan=resume_plan)
         env = self.spawn_env()
+        env["REPOWIRE_CIRCLE"] = circle
         if peer_id:
             env["REPOWIRE_PEER_ID"] = peer_id
         self.validate_command_env(command, env)
