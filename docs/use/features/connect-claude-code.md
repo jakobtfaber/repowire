@@ -58,7 +58,9 @@ The channel transport only replaces the SessionStart / UserPromptSubmit / Notifi
 
 When the channel entry is installed, Repowire-managed Claude launches (`peer new`,
 restart, session resume, and job execution) add
-`--channels server:repowire-channel` automatically.
+`--dangerously-load-development-channels server:repowire-channel` automatically.
+Claude requests confirmation when a fresh session loads this custom development
+channel; this is expected during the channel research preview.
 Ordinary Claude launches are unchanged. Managed launches also pass the
 daemon-minted peer id into the channel process, so reconnects and resumed
 sessions keep the same mesh identity even when another agent uses the same
