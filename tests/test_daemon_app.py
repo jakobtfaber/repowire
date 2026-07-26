@@ -148,6 +148,53 @@ class TestSpawnConfig:
         )
         cleanup_deps()
 
+    async def test_spawn_records_canonical_caller_as_owner(self, tmp_path):
+        cfg = Config(daemon=DaemonConfig(
+            spawn={
+                "commands": {"codex": "codex"},
+                "allowed_paths": [str(tmp_path)],
+            },
+        ))
+        app = _make_app(tmp_path, config=cfg)
+        t = ASGITransport(app=app)
+        with patch.object(
+            spawn_routes,
+            "spawn_peer",
+            return_value=spawn_routes.SpawnResult(
+                display_name=tmp_path.name,
+                tmux_session=f"default:{tmp_path.name}",
+                pane_id="%42",
+                message="start",
+            ),
+        ), patch.object(
+            spawn_routes, "post_spawn_warmup", new_callable=AsyncMock,
+        ), patch(
+            "repowire.daemon.spawn_service.record_spawn_ownership",
+        ) as mock_ownership:
+            async with AsyncClient(transport=t, base_url="http://test") as c:
+                owner = await c.post(
+                    "/peers",
+                    json={
+                        "name": "owner",
+                        "path": str(tmp_path),
+                        "circle": "default",
+                        "backend": "codex",
+                    },
+                )
+                owner_id = owner.json()["peer_id"]
+                response = await c.post(
+                    "/spawn",
+                    json={
+                        "path": str(tmp_path),
+                        "backend": "codex",
+                        "from_peer": owner_id,
+                    },
+                )
+
+        assert response.status_code == 200, response.text
+        assert mock_ownership.call_args.kwargs["owner_peer_id"] == owner_id
+        cleanup_deps()
+
     async def test_spawn_antigravity_pre_registers_cli_fallback_peer(self, tmp_path):
         """Antigravity hooks do not fire reliably, so daemon spawn pre-registers it."""
         cfg = Config(daemon=DaemonConfig(

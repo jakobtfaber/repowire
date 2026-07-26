@@ -1438,6 +1438,11 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
             Spawn confirmation with display_name and tmux_session
         """
         _ensure_http_admin_tool_allowed("spawn_peer")
+        await _ensure_registered(strict=True)
+        _caller_name, my_circle, _role = await _get_my_identity()
+        caller_identifier = await _get_my_peer_identifier()
+        if not caller_identifier:
+            raise RuntimeError("Cannot resolve current peer identity")
         if backend is not None and command is not None:
             raise ValueError("Pass backend or command, not both")
         if backend is None and command is None:
@@ -1445,10 +1450,12 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         if profile is not None and backend is None:
             raise ValueError("Pass backend with profile")
         if circle is None:
-            await _ensure_registered(strict=True)
-            _name, my_circle, _role = await _get_my_identity()
             circle = my_circle or "default"
-        body: dict = {"path": path, "circle": circle}
+        body: dict = {
+            "path": path,
+            "circle": circle,
+            "from_peer": caller_identifier,
+        }
         if backend is not None:
             body["backend"] = backend
         if profile is not None:
@@ -1536,9 +1543,12 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         """
         await _ensure_registered(strict=True)
         _ensure_http_admin_tool_allowed("kill_peer")
+        caller_identifier = await _get_my_peer_identifier()
+        if not caller_identifier:
+            raise RuntimeError("Cannot resolve current peer identity")
         payload: dict[str, str] = {
             "peer_identifier": peer_identifier,
-            "from_peer": await _get_my_peer_name(),
+            "from_peer": caller_identifier,
         }
         if circle is not None:
             payload["circle"] = circle

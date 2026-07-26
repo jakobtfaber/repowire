@@ -10,6 +10,18 @@ repowire setup [--relay] [--experimental-channels] [--http-mcp] [--update-checks
 
 One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service.
 
+For Codex, setup pre-approves the bounded MCP tool set needed to identify the
+current peer, exchange tracked asks and acknowledgements, spawn peers, and clean
+up owned peers. It leaves broadcast, scheduling, durable jobs, session sharing,
+and special-role claims behind Codex's normal approval prompt. Existing explicit
+per-tool approval modes are preserved. Ordinary agents can clean up only peers
+whose live spawn record names them as owner; local operator requests and peers
+with the human or orchestrator role retain administrative cleanup.
+
+The Codex editor preserves comments and unrelated formatting. If an existing
+Repowire tool table uses an inline or quoted spelling the editor cannot safely
+extend, setup reports the unsupported shape and leaves `config.toml` unchanged.
+
 Setup uses the SQLite daemon state store. The daemon applies idempotent
 migrations on startup, imports legacy `schedules.json`, `events.json`, and
 `sessions.json` once, and leaves those JSON files in place for downgrade/export

@@ -139,6 +139,7 @@ class SpawnService:
         message: str | None = None,
         role: PeerRole = PeerRole.AGENT,
         peer_id: str | None = None,
+        owner_peer_id: str | None = None,
         resume_plan: AgentResumePlan | None = None,
     ) -> SpawnServiceResult:
         resolved_path = self.validate_path(path)
@@ -180,6 +181,7 @@ class SpawnService:
                 display_name=result.display_name,
                 tmux_session=result.tmux_session,
                 peer_id=peer_id,
+                owner_peer_id=owner_peer_id,
             )
             task = asyncio.create_task(
                 self._warmup_impl(
@@ -213,6 +215,7 @@ class SpawnService:
         message: str | None = None,
         role: PeerRole = PeerRole.AGENT,
         peer_id: str | None = None,
+        owner_peer_id: str | None = None,
         resume_plan: AgentResumePlan | None = None,
         attempts: int = 2,
         on_spawned: Callable[[SpawnServiceResult], None] | None = None,
@@ -230,6 +233,7 @@ class SpawnService:
                     message=message,
                     role=role,
                     peer_id=peer_id,
+                    owner_peer_id=owner_peer_id,
                     resume_plan=resume_plan,
                 )
             except Exception as exc:

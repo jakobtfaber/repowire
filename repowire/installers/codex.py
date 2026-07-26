@@ -8,6 +8,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+import tomllib
+
 from repowire.installers.runtime import repowire_console_entrypoint
 
 CODEX_HOME = Path.home() / ".codex"
@@ -19,6 +21,22 @@ CONFIG_PATH = CODEX_HOME / "config.toml"
 # Quit deregistration for codex rides on the ws-hook agent-pid watcher.
 HOOK_EVENTS = ["SessionStart", "Stop", "UserPromptSubmit"]
 _MCP_ENV_LINE = 'env = { REPOWIRE_BACKEND = "codex" }'
+_AUTO_APPROVE_MCP_TOOLS = (
+    "ack",
+    "answer",
+    "ask",
+    "ask_many",
+    "ask_many_result",
+    "kill_peer",
+    "list_peers",
+    "notify_peer",
+    "orchestrator_status",
+    "set_description",
+    "spawn_peer",
+    "wait_on_ack",
+    "whoami",
+)
+_MCP_TOOL_SECTION_PREFIX = "[mcp_servers.repowire.tools."
 
 # Codex's hook_event_key_label() values for the events we install.
 _EVENT_LABELS = {
@@ -323,20 +341,13 @@ def uninstall_hooks() -> bool:
     return removed
 
 
-def _enable_hooks_feature() -> None:
+def _enable_hooks_feature(content: str) -> str:
     """Enable the hooks feature flag in config.toml.
 
     Codex hooks default to false. We need features.hooks = true for them to fire.
     Codex 0.129.0 renamed `codex_hooks` to `hooks`. Migrate the legacy key
     away because current Codex releases warn whenever it is present.
     """
-    CODEX_HOME.mkdir(parents=True, exist_ok=True)
-
-    if CONFIG_PATH.exists():
-        content = CONFIG_PATH.read_text()
-    else:
-        content = ""
-
     lines = content.splitlines()
     in_features = False
     saw_features = False
@@ -371,7 +382,7 @@ def _enable_hooks_feature() -> None:
     else:
         content = "[features]\nhooks = true\n"
 
-    CONFIG_PATH.write_text(content)
+    return content
 
 
 def _split_toml_comment(value: str) -> tuple[str, str]:
@@ -515,6 +526,114 @@ def _ensure_repowire_mcp_backend_env(content: str, executable: str) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def _ensure_repowire_mcp_tool_approvals(content: str) -> str:
+    """Auto-approve the bounded tool set required for mesh orchestration."""
+    lines = content.splitlines()
+    out: list[str] = []
+    present: set[str] = set()
+    current_tool: str | None = None
+    current_has_mode = False
+
+    def finish_tool_section() -> None:
+        if current_tool is not None and not current_has_mode:
+            out.append('approval_mode = "approve"')
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            finish_tool_section()
+            current_tool = None
+            current_has_mode = False
+            if stripped.startswith(_MCP_TOOL_SECTION_PREFIX):
+                tool = stripped[len(_MCP_TOOL_SECTION_PREFIX):-1]
+                if tool in _AUTO_APPROVE_MCP_TOOLS:
+                    present.add(tool)
+                    current_tool = tool
+        elif current_tool is not None and "=" in stripped:
+            key = stripped.partition("=")[0].strip()
+            current_has_mode = current_has_mode or key == "approval_mode"
+        out.append(line)
+    finish_tool_section()
+
+    for tool in _AUTO_APPROVE_MCP_TOOLS:
+        if tool in present:
+            continue
+        out.extend(
+            [
+                "",
+                f"{_MCP_TOOL_SECTION_PREFIX}{tool}]",
+                'approval_mode = "approve"',
+            ]
+        )
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _preflight_repowire_mcp_shape(content: str) -> bool:
+    """Reject valid TOML spellings the surgical editor cannot preserve safely.
+
+    The installer intentionally preserves comments and unrelated formatting
+    instead of serializing the entire file. Parse first, then only edit the
+    canonical table spelling that the line editor understands.
+    """
+    parsed = tomllib.loads(content)
+    servers = parsed.get("mcp_servers", {})
+    if not isinstance(servers, dict) or "repowire" not in servers:
+        return False
+
+    repowire = servers["repowire"]
+    if not isinstance(repowire, dict):
+        raise ValueError("unsupported Codex Repowire MCP configuration")
+
+    stripped_lines = [line.strip() for line in content.splitlines()]
+    if "[mcp_servers.repowire]" not in stripped_lines:
+        raise ValueError(
+            "unsupported Codex Repowire MCP table spelling; refusing to rewrite"
+        )
+
+    root_start = stripped_lines.index("[mcp_servers.repowire]") + 1
+    for stripped in stripped_lines[root_start:]:
+        if stripped.startswith("[") and stripped.endswith("]"):
+            break
+        if "=" not in stripped:
+            continue
+        key = stripped.partition("=")[0].strip().strip("'\"")
+        if key == "tools":
+            raise ValueError(
+                "inline Codex Repowire tool tables are unsupported; "
+                "refusing to rewrite"
+            )
+
+    tools = repowire.get("tools", {})
+    if not isinstance(tools, dict):
+        raise ValueError("unsupported Codex Repowire tools configuration")
+    for tool in _AUTO_APPROVE_MCP_TOOLS:
+        tool_config = tools.get(tool)
+        if tool_config is None:
+            continue
+        header = f"{_MCP_TOOL_SECTION_PREFIX}{tool}]"
+        if header not in stripped_lines or not isinstance(tool_config, dict):
+            raise ValueError(
+                f"unsupported Codex Repowire tool table for {tool}; "
+                "refusing to rewrite"
+            )
+        if "approval_mode" not in tool_config:
+            continue
+        section_start = stripped_lines.index(header) + 1
+        has_canonical_mode = False
+        for stripped in stripped_lines[section_start:]:
+            if stripped.startswith("[") and stripped.endswith("]"):
+                break
+            if "=" in stripped:
+                key = stripped.partition("=")[0].strip()
+                has_canonical_mode = has_canonical_mode or key == "approval_mode"
+        if not has_canonical_mode:
+            raise ValueError(
+                f"unsupported Codex approval_mode key for {tool}; "
+                "refusing to rewrite"
+            )
+    return True
+
+
 def install_mcp() -> bool:
     """Add repowire MCP server to ~/.codex/config.toml.
 
@@ -522,8 +641,9 @@ def install_mcp() -> bool:
     Also enables the hooks feature flag (required for hooks to fire).
     """
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
-
-    _enable_hooks_feature()
+    content = CONFIG_PATH.read_text() if CONFIG_PATH.exists() else ""
+    has_repowire = _preflight_repowire_mcp_shape(content)
+    content = _enable_hooks_feature(content)
 
     executable = repowire_console_entrypoint()
     section = (
@@ -533,46 +653,48 @@ def install_mcp() -> bool:
         f"{_MCP_ENV_LINE}\n"
     )
 
-    if CONFIG_PATH.exists():
-        content = CONFIG_PATH.read_text()
-        if "[mcp_servers.repowire]" in content:
-            CONFIG_PATH.write_text(
-                _ensure_repowire_mcp_backend_env(content, executable)
-            )
-            return True  # already installed
-        CONFIG_PATH.write_text(content.rstrip() + "\n" + section)
+    if has_repowire:
+        updated = _ensure_repowire_mcp_backend_env(content, executable)
     else:
-        CONFIG_PATH.write_text(section.lstrip())
+        updated = content.rstrip() + "\n" + section
+    updated = _ensure_repowire_mcp_tool_approvals(updated)
+    tomllib.loads(updated)
+    CONFIG_PATH.write_text(updated)
 
     return True
 
 
+def _is_repowire_mcp_section(header: str) -> bool:
+    return (
+        header == "[mcp_servers.repowire]"
+        or header.startswith("[mcp_servers.repowire.")
+    )
+
+
 def uninstall_mcp() -> bool:
-    """Remove repowire MCP server from config.toml."""
+    """Remove the Repowire MCP server and its nested configuration."""
     if not CONFIG_PATH.exists():
         return False
 
     content = CONFIG_PATH.read_text()
-    if "[mcp_servers.repowire]" not in content:
+    if not _preflight_repowire_mcp_shape(content):
         return False
 
-    # Remove the section and its key-value lines
     lines = content.splitlines(keepends=True)
     new_lines: list[str] = []
-    in_section = False
+    in_repowire_section = False
     for line in lines:
-        if line.strip() == "[mcp_servers.repowire]":
-            in_section = True
-            continue
-        if in_section and (line.startswith("[") or not line.strip()):
-            if line.startswith("["):
-                in_section = False
-                new_lines.append(line)
-            continue
-        if not in_section:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_repowire_section = _is_repowire_mcp_section(stripped)
+            if in_repowire_section:
+                continue
+        if not in_repowire_section:
             new_lines.append(line)
 
-    CONFIG_PATH.write_text("".join(new_lines).strip() + "\n" if new_lines else "")
+    updated = "".join(new_lines).strip() + "\n" if new_lines else ""
+    tomllib.loads(updated)
+    CONFIG_PATH.write_text(updated)
     return True
 
 
