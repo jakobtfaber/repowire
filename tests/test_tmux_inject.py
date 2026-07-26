@@ -514,8 +514,173 @@ class TestInjectText:
 class TestWaitForComposerReady:
     """wait_for_composer_ready polls capture-pane for the composer prompt."""
 
+    def test_changing_compaction_frames_with_bare_composer_are_not_ready(self):
+        monotonic, sleep = _fake_clock()
+
+        def compaction_frame(step: int) -> str:
+            return (
+                f"Compacting conversation… step {step}\n"
+                "────────────────────────────────────────\n"
+                "❯ \n"
+                "────────────────────────────────────────\n"
+            )
+
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep", side_effect=sleep),
+            patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
+        ):
+            mock_run.side_effect = [
+                _capture(compaction_frame(step)) for step in range(4)
+            ]
+            assert (
+                wait_for_composer_ready(
+                    "%5", timeout=3.0, poll=1.0, stable_polls=3, stable_floor=5.0
+                )
+                is False
+            )
+
+    def test_stable_busy_compaction_with_bare_composer_is_not_ready(self):
+        monotonic, sleep = _fake_clock()
+        busy_compaction = (
+            "Compacting conversation… 64%\n"
+            "────────────────────────────────────────\n"
+            "❯ \n"
+            "────────────────────────────────────────\n"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep", side_effect=sleep),
+            patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
+        ):
+            mock_run.return_value = _capture(busy_compaction)
+            assert (
+                wait_for_composer_ready(
+                    "%5", timeout=6.0, poll=1.0, stable_polls=3, stable_floor=5.0
+                )
+                is False
+            )
+
+    def test_stable_ascii_compaction_status_is_not_ready(self):
+        monotonic, sleep = _fake_clock()
+        busy_compaction = (
+            "✽ Compacting conversation...\n"
+            "────────────────────────────────────────\n"
+            "❯ \n"
+            "────────────────────────────────────────\n"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep", side_effect=sleep),
+            patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
+        ):
+            mock_run.return_value = _capture(busy_compaction)
+            assert (
+                wait_for_composer_ready(
+                    "%5", timeout=6.0, poll=1.0, stable_polls=3, stable_floor=5.0
+                )
+                is False
+            )
+
+    def test_stable_claude_progress_bar_is_not_ready(self):
+        monotonic, sleep = _fake_clock()
+        busy_progress = (
+            "Compaction in progress\n"
+            "▰▰▰▱▱ 60%\n"
+            "────────────────────────────────────────\n"
+            "❯ \n"
+            "────────────────────────────────────────\n"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep", side_effect=sleep),
+            patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
+        ):
+            mock_run.return_value = _capture(busy_progress)
+            assert (
+                wait_for_composer_ready(
+                    "%5", timeout=6.0, poll=1.0, stable_polls=3, stable_floor=5.0
+                )
+                is False
+            )
+
+    def test_stable_idle_footer_with_truncated_path_is_ready_after_floor(self):
+        monotonic, sleep = _fake_clock()
+        idle = (
+            "✻ Crunched for 5s\n"
+            "────────────────────────────────────────\n"
+            "❯ \n"
+            "────────────────────────────────────────\n"
+            "  py312 user:~/work/.repowire-acceptance…\n"
+            "  bypass permissions on\n"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep", side_effect=sleep),
+            patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
+        ):
+            mock_run.return_value = _capture(idle)
+            assert (
+                wait_for_composer_ready(
+                    "%5", timeout=10.0, poll=1.0, stable_polls=3, stable_floor=5.0
+                )
+                is True
+            )
+
+    def test_stable_nonempty_live_composer_is_not_ready(self):
+        monotonic, sleep = _fake_clock()
+        nonempty = (
+            "────────────────────────────────────────\n"
+            "❯ unsent user text\n"
+            "────────────────────────────────────────\n"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep", side_effect=sleep),
+            patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
+        ):
+            mock_run.return_value = _capture(nonempty)
+            assert (
+                wait_for_composer_ready(
+                    "%5", timeout=6.0, poll=1.0, stable_polls=3, stable_floor=5.0
+                )
+                is False
+            )
+
     def test_historical_prompt_does_not_signal_resumed_composer_ready(self):
+        monotonic, sleep = _fake_clock()
         historical = "❯ old submitted prompt\n⏺ old completed response\n"
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep", side_effect=sleep),
+            patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
+        ):
+            mock_run.return_value = _capture(historical)
+            assert (
+                wait_for_composer_ready(
+                    "%5", timeout=3.0, poll=1.0, stable_polls=2, stable_floor=0.0
+                )
+                is False
+            )
+
+    def test_stable_idle_composer_is_ready_only_after_floor(self):
+        monotonic, sleep = _fake_clock()
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep", side_effect=sleep) as mock_sleep,
+            patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
+        ):
+            mock_run.return_value = _capture("❯ \n")
+            assert (
+                wait_for_composer_ready(
+                    "%5", timeout=10.0, poll=1.0, stable_polls=3, stable_floor=5.0
+                )
+                is True
+            )
+            assert mock_sleep.call_count == 5
+
+    def test_live_composer_builds_fresh_streak_after_stable_nonprompt_frames(self):
+        monotonic, sleep = _fake_clock()
         live_composer = (
             "────────────────────────────────────────\n"
             "❯ \n"
@@ -523,37 +688,24 @@ class TestWaitForComposerReady:
         )
         with (
             patch("repowire.tmux_inject.subprocess.run") as mock_run,
-            patch("repowire.tmux_inject.time.sleep") as mock_sleep,
-        ):
-            mock_run.side_effect = [_capture(historical), _capture(live_composer)]
-            assert wait_for_composer_ready("%5", timeout=5.0) is True
-
-        mock_sleep.assert_called_once_with(0.5)
-
-    def test_returns_true_immediately_when_prompt_present(self):
-        with (
-            patch("repowire.tmux_inject.subprocess.run") as mock_run,
-            patch("repowire.tmux_inject.time.sleep") as mock_sleep,
-        ):
-            mock_run.return_value = _capture("❯ \n")
-            assert wait_for_composer_ready("%5", timeout=5.0) is True
-            # No need to sleep when ready on the first capture.
-            mock_sleep.assert_not_called()
-
-    def test_polls_until_prompt_appears(self):
-        monotonic, sleep = _fake_clock()
-        with (
-            patch("repowire.tmux_inject.subprocess.run") as mock_run,
             patch("repowire.tmux_inject.time.sleep", side_effect=sleep) as mock_sleep,
             patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
         ):
             mock_run.side_effect = [
-                _capture("booting...\n"),  # not ready yet
-                _capture("still booting\n"),  # not ready yet
-                _capture("❯ \n"),  # ready (glyph)
+                _capture("booting...\n"),
+                _capture("booting...\n"),
+                _capture("booting...\n"),
+                _capture(live_composer),
+                _capture(live_composer),
+                _capture(live_composer),
             ]
-            assert wait_for_composer_ready("%5", timeout=10.0, poll=0.1) is True
-            assert mock_sleep.call_count == 2  # two not-ready captures => two sleeps
+            assert (
+                wait_for_composer_ready(
+                    "%5", timeout=10.0, poll=1.0, stable_polls=3, stable_floor=0.0
+                )
+                is True
+            )
+            assert mock_sleep.call_count == 5
 
     def test_returns_false_on_timeout(self):
         monotonic, sleep = _fake_clock()
@@ -570,36 +722,40 @@ class TestWaitForComposerReady:
 
     def test_capture_failure_is_not_ready_keeps_polling(self):
         monotonic, sleep = _fake_clock()
+        live_composer = _capture("❯ \n")
         with (
             patch("repowire.tmux_inject.subprocess.run") as mock_run,
             patch("repowire.tmux_inject.time.sleep", side_effect=sleep),
             patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
         ):
             mock_run.side_effect = [
+                live_composer,
+                live_composer,
                 CompletedProcess(args=[], returncode=1, stdout="", stderr="boom"),
-                _capture("❯ \n"),
+                live_composer,
+                live_composer,
+                live_composer,
             ]
-            assert wait_for_composer_ready("%5", timeout=10.0, poll=0.1) is True
+            assert (
+                wait_for_composer_ready(
+                    "%5", timeout=10.0, poll=1.0, stable_polls=3, stable_floor=0.0
+                )
+                is True
+            )
 
-    def test_stable_content_without_glyph_is_ready_after_floor(self):
-        """Unknown-glyph backend: non-empty content unchanged across
-        stable_polls consecutive captures counts as ready once the floor has
-        elapsed (latency guard)."""
+    def test_stable_content_without_live_composer_is_not_ready(self):
         monotonic, sleep = _fake_clock()
         with (
             patch("repowire.tmux_inject.subprocess.run") as mock_run,
             patch("repowire.tmux_inject.time.sleep", side_effect=sleep),
             patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
         ):
-            # Same non-glyph content repeated. With poll=2s and a 5s floor, the
-            # streak (>=3) is satisfied early but the floor blocks ready until
-            # >=5s elapsed.
             mock_run.return_value = _capture("weird-prompt$ \n")
             assert (
                 wait_for_composer_ready(
-                    "%5", timeout=30.0, poll=2.0, stable_polls=3, stable_floor=5.0
+                    "%5", timeout=6.0, poll=1.0, stable_polls=3, stable_floor=5.0
                 )
-                is True
+                is False
             )
 
     def test_stable_does_not_fire_before_floor(self):
@@ -612,9 +768,7 @@ class TestWaitForComposerReady:
             patch("repowire.tmux_inject.time.sleep", side_effect=sleep),
             patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
         ):
-            # Stable from poll 1, but timeout (3s) trips before the 5s floor, so
-            # the stable signal is suppressed and the wait times out.
-            mock_run.return_value = _capture("weird-prompt$ \n")
+            mock_run.return_value = _capture("❯ \n")
             assert (
                 wait_for_composer_ready(
                     "%5", timeout=3.0, poll=1.0, stable_polls=2, stable_floor=5.0
@@ -644,24 +798,6 @@ class TestWaitForComposerReady:
                 is False
             )
 
-    def test_glyph_beats_stable_fallback_and_floor(self):
-        """A glyph match returns ready immediately — no floor applies, since
-        glyph is positive evidence the composer exists."""
-        monotonic, sleep = _fake_clock()
-        with (
-            patch("repowire.tmux_inject.subprocess.run") as mock_run,
-            patch("repowire.tmux_inject.time.sleep", side_effect=sleep) as mock_sleep,
-            patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
-        ):
-            mock_run.return_value = _capture("❯ \n")
-            assert (
-                wait_for_composer_ready(
-                    "%5", timeout=30.0, poll=0.1, stable_polls=3, stable_floor=5.0
-                )
-                is True
-            )
-            mock_sleep.assert_not_called()  # ready on first capture, well under floor
-
     def test_empty_capture_does_not_count_as_stable(self):
         """Blank/whitespace-only captures reset the streak — an empty pane is
         not 'ready', it's just not booted yet."""
@@ -671,17 +807,17 @@ class TestWaitForComposerReady:
             patch("repowire.tmux_inject.time.sleep", side_effect=sleep),
             patch("repowire.tmux_inject.time.monotonic", side_effect=monotonic),
         ):
-            # Empty 3x would trip stability if blanks counted; they must not,
-            # so this falls through to the glyph capture to become ready.
             mock_run.side_effect = [
                 _capture("\n"),
                 _capture("   \n"),
                 _capture("\n"),
                 _capture("❯ \n"),
+                _capture("❯ \n"),
+                _capture("❯ \n"),
             ]
             assert (
                 wait_for_composer_ready(
-                    "%5", timeout=30.0, poll=1.0, stable_polls=3, stable_floor=5.0
+                    "%5", timeout=10.0, poll=1.0, stable_polls=3, stable_floor=0.0
                 )
                 is True
             )

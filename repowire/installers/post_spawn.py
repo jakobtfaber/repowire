@@ -23,11 +23,9 @@ from repowire.agent_backends import agent_backend_for
 from repowire.agent_types import AgentType
 from repowire.tmux_inject import inject_text, wait_for_composer_ready
 
-# Ceiling for waiting on a freshly spawned pane's composer to appear before
-# seeding. Kept at the prior fixed-sleep budget's order of magnitude so slow
-# cold starts still get seeded, but we now poll and proceed the moment the
-# prompt shows rather than always paying the full wait.
-_SEED_READY_TIMEOUT_SECONDS = 20.0
+# Resumed Claude may auto-compact before it becomes idle. Allow that lifecycle
+# to finish, but never seed without positive stable-idle composer evidence.
+_SEED_READY_TIMEOUT_SECONDS = 60.0
 
 logger = logging.getLogger(__name__)
 
@@ -115,9 +113,9 @@ async def _claude_code_family_seed(pane_id: str, message: str) -> None:
     Best-effort — failure is logged and swallowed by the caller.
 
     Sequence:
-      1. Poll for the composer prompt, up to ``_SEED_READY_TIMEOUT_SECONDS``.
-         If it never appears, log loudly and seed anyway as a fallback
-         (preserves the prior fire-once behavior on slow/unreadable panes).
+      1. Poll for a stable idle composer, up to
+         ``_SEED_READY_TIMEOUT_SECONDS``. If readiness cannot be positively
+         confirmed, log and skip injection.
       2. inject_text — hardened paste + submit, identical to ws-hook delivery.
     """
     if not pane_id:
@@ -132,10 +130,11 @@ async def _claude_code_family_seed(pane_id: str, message: str) -> None:
     if not ready:
         logger.warning(
             "seed-message: composer readiness not confirmed for pane %s after %.0fs; "
-            "seeding anyway (fallback)",
+            "skipping injection",
             pane_id,
             _SEED_READY_TIMEOUT_SECONDS,
         )
+        return
     if not await asyncio.to_thread(inject_text, pane_id, message):
         logger.warning("seed-message: injection failed for pane %s", pane_id)
 

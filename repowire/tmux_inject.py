@@ -23,6 +23,7 @@ The pattern (Gastown's battle-tested NudgeSession):
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import time
 from enum import Enum
@@ -33,12 +34,9 @@ logger = logging.getLogger(__name__)
 # line starting with one of these is the live input line.
 _COMPOSER_PROMPT_PREFIXES = ("❯", "›", "> ")
 
-# The STABLE readiness signal (non-empty capture unchanged across N polls) must
-# not declare ready before this many seconds have elapsed. The acceptance bar
-# is "a false-ready is no worse than main", and main injected blindly after a
-# fixed 5s sleep — so a stable signal that fires at ~1s would be *worse*. The
-# GLYPH signal is exempt: it is positive evidence the composer exists, so it
-# stays fast.
+# A positively live composer must remain unchanged across consecutive full-pane
+# captures and must not declare ready before this startup floor. A bare composer
+# can coexist with Claude's busy compaction UI, so the glyph alone is unsafe.
 STABLE_READY_FLOOR_SECONDS = 5.0
 
 # Claude Code 2.1.220 has been observed swallowing two consecutive submit
@@ -54,6 +52,11 @@ class _ComposerState(Enum):
     HOLDS = "holds"
     CLEARED = "cleared"
     UNKNOWN = "unknown"
+
+
+_ACTIVITY_GLYPHS = "✢✣✤✥✦✧✳✶✻✽"
+_BUSY_PERCENT_RE = re.compile(r"(?<!\d)\d{1,3}%")
+_PROGRESS_BAR_RE = re.compile(r"^[█▓▒░▏▎▍▌▋▊▉━▰▱-]+\s*\d{1,3}%")
 
 
 def _pane_in_copy_mode(pane_id: str) -> bool:
@@ -91,6 +94,25 @@ def _capture_pane(pane_id: str) -> str | None:
 def _composer_prompt_present(pane_text: str) -> bool:
     """True if the captured pane shows a positively live composer block."""
     return _composer_block_text(pane_text) is not None
+
+
+def _idle_composer_present(pane_text: str) -> bool:
+    """True only for an empty live composer without nearby busy evidence."""
+    if _composer_block_text(pane_text) != "":
+        return False
+    for line in pane_text.splitlines()[-12:]:
+        stripped = line.strip()
+        activity_text = stripped.lstrip(_ACTIVITY_GLYPHS).strip()
+        if activity_text.lower().startswith("compacting conversation"):
+            return False
+        if (
+            stripped.startswith(tuple(_ACTIVITY_GLYPHS))
+            and ("…" in stripped or "..." in stripped or _BUSY_PERCENT_RE.search(stripped))
+        ):
+            return False
+        if _PROGRESS_BAR_RE.match(stripped):
+            return False
+    return True
 
 
 def _composer_block_text(pane_text: str) -> str | None:
@@ -185,29 +207,17 @@ def wait_for_composer_ready(
     stable_polls: int = 3,
     stable_floor: float = STABLE_READY_FLOOR_SECONDS,
 ) -> bool:
-    """Poll capture-pane until the pane looks ready, or timeout elapses.
+    """Poll until a positively live composer and full pane are stable.
 
-    Two ready signals, in priority order:
-      * **glyph** — a known composer prompt line (``❯``/``›``/``> ``). This is
-        positive evidence the composer exists, so it is the fast path with no
-        minimum-elapsed floor.
-      * **stable** — for a backend with an unrecognized prompt glyph, falling
-        through to the full timeout would regress latency vs the old fixed
-        sleep. So if the capture is non-empty and unchanged across
-        ``stable_polls`` consecutive polls *and* at least ``stable_floor``
-        seconds have elapsed, treat it as ready. The floor exists because the
-        acceptance bar is "a false-ready is no worse than main" — main injected
-        blindly after a fixed 5s sleep, so a stable signal firing at ~1s would
-        be strictly worse. The floor keeps stable no faster than that baseline.
-
-    A false positive at-or-after the floor is acceptable: the prior behavior
-    injected blindly after a fixed sleep, so a too-early "ready" is never worse
-    than the baseline — and the hardened ``inject_text`` paste path tolerates it.
+    A composer glyph is necessary but insufficient: resumed Claude can display
+    a framed bare composer while auto-compaction is still changing the pane.
+    Readiness requires the entire capture to remain unchanged across
+    ``stable_polls`` consecutive polls and the startup ``stable_floor`` to
+    elapse. A stable pane without a positively live composer never qualifies.
 
     Returns True once ready, False if the budget is exhausted without either
-    signal (callers should still attempt their paste as a fallback, but log
-    that readiness was not confirmed). Capture failure is treated as "not yet
-    ready" and resets the stability streak. Logs which signal fired.
+    condition. Capture failure or a missing live composer resets the stability
+    streak.
     """
     start = time.monotonic()
     deadline = start + timeout
@@ -215,19 +225,14 @@ def wait_for_composer_ready(
     stable_count = 0
     while True:
         pane_text = _capture_pane(pane_id)
-        if pane_text is not None and _composer_prompt_present(pane_text):
-            logger.debug("Pane %s ready (glyph)", pane_id)
-            return True
-        if pane_text is not None and pane_text.strip():
+        if pane_text is not None and _idle_composer_present(pane_text):
             if pane_text == last_text:
                 stable_count += 1
                 if (
                     stable_count >= stable_polls
                     and time.monotonic() - start >= stable_floor
                 ):
-                    logger.debug(
-                        "Pane %s ready (stable content, no glyph match)", pane_id
-                    )
+                    logger.debug("Pane %s ready (stable live composer)", pane_id)
                     return True
             else:
                 stable_count = 1
