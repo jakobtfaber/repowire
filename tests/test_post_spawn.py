@@ -160,22 +160,22 @@ class TestClaudeCodeFamilySeed:
 
         mock_ready.assert_called_once()
         assert mock_ready.call_args.args[0] == "%42"
+        assert mock_ready.call_args.kwargs == {"timeout": 60.0}
         mock_inject.assert_called_once_with("%42", "Task brief from orch")
 
     @pytest.mark.asyncio
     @patch("repowire.installers.post_spawn.inject_text", return_value=True)
     @patch("repowire.installers.post_spawn.wait_for_composer_ready", return_value=False)
     @patch("repowire.installers.post_spawn.shutil.which", return_value="/usr/bin/tmux")
-    async def test_seed_injects_anyway_on_readiness_timeout(
+    async def test_seed_skips_injection_on_readiness_timeout(
         self,
         _mock_which,
         _mock_ready,
         mock_inject,
     ) -> None:
-        """Readiness not confirmed => fall back to injecting once (prior
-        fire-once behavior), rather than dropping the seed."""
+        """Readiness uncertainty must not inject into a busy runtime."""
         await _claude_code_family_seed("%42", "Task brief")
-        mock_inject.assert_called_once_with("%42", "Task brief")
+        mock_inject.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("repowire.installers.post_spawn.inject_text", return_value=True)
