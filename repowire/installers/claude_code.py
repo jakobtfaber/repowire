@@ -411,7 +411,9 @@ def install_channel() -> tuple[bool, str]:
 
     return True, (
         "Channel transport installed. "
-        "Start Claude with: claude --channels server:repowire-channel"
+        "Start Claude with: "
+        "claude --dangerously-load-development-channels server:repowire-channel. "
+        "Claude will request confirmation for this custom development channel."
     )
 
 

@@ -521,8 +521,11 @@ def test_install_channel_on_empty_writes_mcp_entry(tmp_path, monkeypatch):
     ok, msg = cc_mod.install_channel()
     assert ok is True
     assert "Channel transport installed" in msg
-    assert "claude --channels server:repowire-channel" in msg
-    assert "--dangerously-load-development-channels" not in msg
+    assert (
+        "claude --dangerously-load-development-channels server:repowire-channel"
+        in msg
+    )
+    assert "confirmation" in msg.lower()
 
     data = _read(claude_json)
     assert data["mcpServers"]["repowire-channel"] == {
