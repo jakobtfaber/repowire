@@ -67,7 +67,7 @@ class TestManagedClaudeCommand:
         )
         assert command == (
             "claude --dangerously-skip-permissions "
-            "--dangerously-load-development-channels server:repowire-channel"
+            "--channels server:repowire-channel"
         )
 
     def test_does_not_duplicate_channel_flag(self, monkeypatch) -> None:
@@ -76,11 +76,135 @@ class TestManagedClaudeCommand:
         )
         command = (
             "claude --dangerously-skip-permissions "
-            "--dangerously-load-development-channels server:repowire-channel"
+            "--channels server:repowire-channel"
         )
         assert (
             agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command)
             == command
+        )
+
+    def test_replaces_legacy_development_channel_flag(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        command = (
+            "claude --dangerously-skip-permissions "
+            "--dangerously-load-development-channels server:repowire-channel"
+        )
+        assert agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command) == (
+            "claude --dangerously-skip-permissions --channels server:repowire-channel"
+        )
+
+    def test_removes_duplicate_legacy_and_approved_channel_flags(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        command = (
+            "claude --channels server:repowire-channel "
+            "--dangerously-load-development-channels server:repowire-channel "
+            "--dangerously-load-development-channels server:repowire-channel"
+        )
+        assert agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command) == (
+            "claude --channels server:repowire-channel"
+        )
+
+    def test_normalizes_equals_form_channel_flags(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        command = (
+            "claude "
+            "--dangerously-load-development-channels=server:repowire-channel "
+            "--channels=server:repowire-channel"
+        )
+        assert agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command) == (
+            "claude --channels server:repowire-channel"
+        )
+
+    @pytest.mark.parametrize(
+        ("operator", "suffix"),
+        [
+            (">", "/tmp/out"),
+            ("&&", "echo done"),
+            ("|", "tee /tmp/out"),
+        ],
+    )
+    def test_preserves_shell_operator_semantics(
+        self, monkeypatch, operator: str, suffix: str
+    ) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        command = (
+            "claude --dangerously-load-development-channels "
+            f"server:repowire-channel -p OK {operator} {suffix}"
+        )
+        assert agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command) == (
+            f"claude --channels server:repowire-channel -p OK {operator} {suffix}"
+        )
+
+    def test_does_not_normalize_tokens_after_double_dash(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        command = (
+            "claude -p OK -- "
+            "--dangerously-load-development-channels server:repowire-channel"
+        )
+        assert agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command) == (
+            "claude -p OK --channels server:repowire-channel -- "
+            "--dangerously-load-development-channels server:repowire-channel"
+        )
+
+    @pytest.mark.parametrize("redirect", ["2>/tmp/err", "2>&1"])
+    def test_inserts_channel_before_file_descriptor_redirect(
+        self, monkeypatch, redirect: str
+    ) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        command = f"claude -p OK {redirect}"
+        assert agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command) == (
+            f"claude -p OK --channels server:repowire-channel {redirect}"
+        )
+
+    def test_inserts_channel_before_newline_command_separator(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        command = (
+            "claude -p OK\n"
+            "echo --dangerously-load-development-channels server:repowire-channel"
+        )
+        assert agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command) == (
+            "claude -p OK --channels server:repowire-channel\n"
+            "echo --dangerously-load-development-channels server:repowire-channel"
+        )
+
+    def test_does_not_normalize_channel_tokens_after_newline(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        command = (
+            "claude --channels server:repowire-channel\n"
+            "echo --dangerously-load-development-channels server:repowire-channel"
+        )
+        assert (
+            agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command)
+            == command
+        )
+
+    def test_preserves_other_development_channels(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "repowire.installers.claude_code.check_channel_installed", lambda: True
+        )
+        command = (
+            "claude --dangerously-load-development-channels server:other-channel "
+            "--dangerously-load-development-channels server:repowire-channel"
+        )
+        assert agent_backend_for(AgentType.CLAUDE_CODE).prepare_spawn_command(command) == (
+            "claude --dangerously-load-development-channels server:other-channel "
+            "--channels server:repowire-channel"
         )
 
     def test_leaves_unconfigured_claude_launch_unchanged(self, monkeypatch) -> None:
@@ -135,7 +259,7 @@ class TestManagedClaudeCommand:
 
         assert backend.build_resume_command(command, "claude-session-123") == (
             "claude --model opus "
-            "--dangerously-load-development-channels server:repowire-channel "
+            "--channels server:repowire-channel "
             "--resume claude-session-123"
         )
 

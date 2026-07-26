@@ -23,6 +23,59 @@ from typing import Any, ClassVar
 from repowire.agent_types import AgentType
 
 
+def _shell_argument_prefix(command: str) -> tuple[list[tuple[str, int, int]], int]:
+    """Return argument tokens before the first shell operator or ``--``."""
+    tokens: list[tuple[str, int, int]] = []
+    index = 0
+    while index < len(command):
+        while index < len(command) and command[index].isspace():
+            if command[index] in "\r\n":
+                return tokens, index
+            index += 1
+        if index >= len(command) or command[index] in "|&;<>":
+            return tokens, index
+
+        start = index
+        quote = ""
+        escaped = False
+        while index < len(command):
+            char = command[index]
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote != "'":
+                escaped = True
+            elif quote:
+                if char == quote:
+                    quote = ""
+            elif char in {"'", '"'}:
+                quote = char
+            elif char.isspace() or char in "|&;<>":
+                break
+            index += 1
+
+        raw = command[start:index]
+        try:
+            parsed = shlex.split(raw)
+            value = parsed[0] if len(parsed) == 1 else raw
+        except ValueError:
+            value = raw
+        if value == "--":
+            return tokens, start
+        if (
+            value.isdigit()
+            and index < len(command)
+            and command[index] in "<>"
+        ):
+            return tokens, start
+        tokens.append((value, start, index))
+
+        if index < len(command) and command[index] in "\r\n":
+            return tokens, index
+        if index < len(command) and command[index] in "|&;<>":
+            return tokens, index
+    return tokens, len(command)
+
+
 @dataclass(frozen=True)
 class AgentResumePlan:
     backend: AgentType
@@ -253,16 +306,49 @@ class ClaudeCodeBackend(AgentBackend):
         from repowire.installers.claude_code import check_channel_installed
 
         channel_arg = "server:repowire-channel"
-        try:
-            argv = shlex.split(command)
-        except ValueError:
-            argv = []
-        for index, arg in enumerate(argv[:-1]):
-            if arg == "--dangerously-load-development-channels" and argv[index + 1] == channel_arg:
-                return command
+        channel_flags = {"--channels", "--dangerously-load-development-channels"}
+        channel_options = {f"{flag}={channel_arg}" for flag in channel_flags}
+        tokens, boundary = _shell_argument_prefix(command)
+        channel_spans: list[tuple[int, int]] = []
+        index = 0
+        while index < len(tokens):
+            value, start, end = tokens[index]
+            if value in channel_options:
+                channel_spans.append((start, end))
+                index += 1
+                continue
+            if (
+                value in channel_flags
+                and index + 1 < len(tokens)
+                and tokens[index + 1][0] == channel_arg
+            ):
+                channel_spans.append((start, tokens[index + 1][2]))
+                index += 2
+                continue
+            index += 1
+
+        if channel_spans:
+            replacements: list[tuple[int, int, str]] = [
+                (*channel_spans[0], f"--channels {channel_arg}")
+            ]
+            for start, end in channel_spans[1:]:
+                whitespace_start = start
+                while whitespace_start > 0 and command[whitespace_start - 1].isspace():
+                    whitespace_start -= 1
+                replacements.append((whitespace_start, end, ""))
+            for start, end, replacement in reversed(replacements):
+                command = command[:start] + replacement + command[end:]
+            return command
         if not check_channel_installed():
             return command
-        return f"{command} --dangerously-load-development-channels {channel_arg}"
+        insertion = boundary
+        while insertion > 0 and command[insertion - 1].isspace():
+            insertion -= 1
+        return (
+            command[:insertion]
+            + f" --channels {channel_arg}"
+            + command[insertion:]
+        )
 
     def install(self, options: BackendInstallOptions | None = None) -> list[BackendInstallMessage]:
         import subprocess

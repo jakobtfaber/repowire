@@ -11,7 +11,9 @@ import repowire.mcp.server as server
 def mock_http_client():
     client = MagicMock()
     client.get = AsyncMock()
-    client.get.return_value.json.return_value = {"ok": True}
+    response = MagicMock()
+    response.json.return_value = {"ok": True}
+    client.get.return_value = response
     return client
 
 

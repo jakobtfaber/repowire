@@ -518,7 +518,12 @@ def test_compute_git_status_non_git_dir(tmp_path):
 def _git(cwd, *args):
     import subprocess
 
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "core.hooksPath=/dev/null", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+    )
 
 
 def test_compute_git_status_clean_repo(tmp_path):
