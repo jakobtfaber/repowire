@@ -24,6 +24,7 @@ from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.state.database import StateDatabase
 from repowire.daemon.state.session_bindings import SQLiteSessionBindingStore
 from repowire.daemon.websocket_transport import WebSocketTransport
+from repowire.session.history import _claude_project_key
 from repowire.spawn import SpawnResult
 from repowire.spawn_ownership import TmuxPaneEvidence
 
@@ -118,10 +119,22 @@ def _bind(store, *, peer_id, backend, project_path, runtime_session_id):
 
 def _write_claude_session(home: Path, cwd: str, session_id: str) -> None:
     # ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
-    enc = cwd.replace("/", "-")
+    enc = _claude_project_key(cwd)
     d = home / ".claude" / "projects" / enc
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{session_id}.jsonl").write_text('{"type":"summary"}\n')
+    (d / f"{session_id}.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {"type": "last-prompt", "sessionId": session_id, "cwd": None}
+                ),
+                json.dumps(
+                    {"type": "attachment", "sessionId": session_id, "cwd": cwd}
+                ),
+            ]
+        )
+        + "\n"
+    )
 
 
 def _write_codex_session(home: Path, cwd: str, session_id: str) -> None:
@@ -160,6 +173,79 @@ class TestBackendValidators:
         ) == "resumable"
         assert self._backend_status(
             monkeypatch, home, cwd, AgentType.CLAUDE_CODE, "stale-id"
+        ) == "stale_missing_file"
+
+    def test_agent_backend_validates_claude_session_for_dotted_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "h"
+        cwd = "/Users/example/.codex"
+        sid = "aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"
+        project_dir = home / ".claude" / "projects" / "-Users-example--codex"
+        project_dir.mkdir(parents=True)
+        (project_dir / f"{sid}.jsonl").write_text(
+            json.dumps({"type": "last-prompt", "sessionId": sid, "cwd": None})
+            + "\n"
+            + json.dumps({"type": "attachment", "sessionId": sid, "cwd": cwd})
+            + "\n"
+        )
+
+        assert self._backend_status(
+            monkeypatch, home, cwd, AgentType.CLAUDE_CODE, sid
+        ) == "resumable"
+
+    def test_claude_resume_rejects_sanitized_directory_collision(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "h"
+        sid = "aaaaaaaa-bbbb-cccc-dddd-111111111111"
+        stored_cwd = "/workspace/project_v1"
+        colliding_cwd = "/workspace/project.v1"
+        _write_claude_session(home, stored_cwd, sid)
+
+        assert self._backend_status(
+            monkeypatch, home, colliding_cwd, AgentType.CLAUDE_CODE, sid
+        ) == "stale_missing_file"
+        assert self._backend_status(
+            monkeypatch, home, stored_cwd, AgentType.CLAUDE_CODE, sid
+        ) == "resumable"
+
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            '{"type":"summary"}\n',
+            '{"type":"attachment","sessionId":"different","cwd":"/workspace/repo"}\n',
+            '{"type":"attachment","sessionId":"session-id","cwd":"/other/repo"}\n',
+            "{malformed json}\n",
+        ],
+        ids=["missing_identity", "mismatched_session", "mismatched_cwd", "malformed"],
+    )
+    def test_claude_resume_rejects_unverified_transcript(
+        self, tmp_path, monkeypatch, contents
+    ):
+        home = tmp_path / "h"
+        cwd = "/workspace/repo"
+        sid = "session-id"
+        project_dir = home / ".claude" / "projects" / _claude_project_key(cwd)
+        project_dir.mkdir(parents=True)
+        (project_dir / f"{sid}.jsonl").write_text(contents)
+
+        assert self._backend_status(
+            monkeypatch, home, cwd, AgentType.CLAUDE_CODE, sid
+        ) == "stale_missing_file"
+
+    def test_claude_resume_rejects_invalid_utf8_transcript(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "h"
+        cwd = "/workspace/repo"
+        sid = "session-id"
+        project_dir = home / ".claude" / "projects" / _claude_project_key(cwd)
+        project_dir.mkdir(parents=True)
+        (project_dir / f"{sid}.jsonl").write_bytes(b"\xff\xfe\x00")
+
+        assert self._backend_status(
+            monkeypatch, home, cwd, AgentType.CLAUDE_CODE, sid
         ) == "stale_missing_file"
 
     def test_agent_backend_validates_codex_resume_session(self, tmp_path, monkeypatch):

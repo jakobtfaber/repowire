@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,11 +58,62 @@ def _codex_sessions_dir() -> Path:
 
 
 def _encode_cwd(path: str) -> str:
-    """Claude Code encodes the cwd by replacing `/` with `-`.
+    """Encode a cwd as Claude Code does for its project directory.
 
-    Example: `/Users/x/dev/repo` → `-Users-x-dev-repo`.
+    Claude replaces every non-ASCII-alphanumeric character with ``-``. For
+    example, ``/Users/x/.config/repo_one`` becomes
+    ``-Users-x--config-repo-one``. Names over 200 JavaScript string units are
+    truncated and suffixed with Claude's base-36 signed 32-bit path hash.
     """
-    return path.replace("/", "-")
+    utf16 = path.encode("utf-16-le", errors="surrogatepass")
+    char_codes = [
+        int.from_bytes(utf16[index : index + 2], "little")
+        for index in range(0, len(utf16), 2)
+    ]
+    encoded = "".join(
+        chr(char_code)
+        if 48 <= char_code <= 57
+        or 65 <= char_code <= 90
+        or 97 <= char_code <= 122
+        else "-"
+        for char_code in char_codes
+    )
+    if len(encoded) <= 200:
+        return encoded
+
+    hash_value = 0
+    for char_code in char_codes:
+        hash_value = ((hash_value << 5) - hash_value + char_code) & 0xFFFFFFFF
+    if hash_value >= 0x80000000:
+        hash_value -= 0x100000000
+
+    return f"{encoded[:200]}-{_base36(abs(hash_value))}"
+
+
+def _base36(value: int) -> str:
+    """Return the lowercase base-36 form used by JavaScript Number."""
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    if value == 0:
+        return "0"
+    result = ""
+    while value:
+        value, remainder = divmod(value, 36)
+        result = digits[remainder] + result
+    return result
+
+
+def _claude_canonical_path(path: str) -> str:
+    """Apply Claude's strict realpath/NFC path canonicalization."""
+    try:
+        canonical = str(Path(path).resolve(strict=True))
+    except (OSError, RuntimeError, ValueError):
+        canonical = path
+    return unicodedata.normalize("NFC", canonical)
+
+
+def _claude_project_key(path: str) -> str:
+    """Return Claude's encoded project key for a path."""
+    return _encode_cwd(_claude_canonical_path(path))
 
 
 def discover_claude_sessions(peer_path: str | None) -> list[Path]:
@@ -71,7 +123,7 @@ def discover_claude_sessions(peer_path: str | None) -> list[Path]:
     """
     if not peer_path:
         return []
-    project_dir = _claude_projects_dir() / _encode_cwd(peer_path)
+    project_dir = _claude_projects_dir() / _claude_project_key(peer_path)
     if not project_dir.is_dir():
         return []
     return sorted(project_dir.glob("*.jsonl"))
@@ -163,7 +215,11 @@ def _session_file_candidates(
         return []
     backend_value = getattr(backend, "value", backend)
     if backend_value == "claude-code" and peer_path:
-        direct = _claude_projects_dir() / _encode_cwd(peer_path) / f"{runtime_session_id}.jsonl"
+        direct = (
+            _claude_projects_dir()
+            / _claude_project_key(peer_path)
+            / f"{runtime_session_id}.jsonl"
+        )
         discovered = discover_claude_sessions(peer_path)
         return [direct, *[path for path in discovered if path != direct]]
     if backend_value == "codex":
@@ -188,10 +244,30 @@ def _pi_session_map_path() -> Path:
 
 
 def _claude_resumable(peer_path: str | None, runtime_session_id: str) -> bool:
-    # The id is embedded in the filename; require an exact stem match so a stale
-    # id + another session in the same cwd cannot false-positive.
+    if not peer_path:
+        return False
+    expected_cwd = _claude_canonical_path(peer_path)
     for path in _session_file_candidates(peer_path, "claude-code", runtime_session_id):
-        if path.stem == runtime_session_id and _safe_is_file(path):
+        if path.stem != runtime_session_id or not _safe_is_file(path):
+            continue
+        matched = False
+        try:
+            with path.open() as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    if not isinstance(record, dict):
+                        return False
+                    if (
+                        record.get("sessionId") == runtime_session_id
+                        and isinstance(record.get("cwd"), str)
+                        and _claude_canonical_path(record["cwd"]) == expected_cwd
+                    ):
+                        matched = True
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        if matched:
             return True
     return False
 
