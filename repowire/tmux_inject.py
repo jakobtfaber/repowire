@@ -15,9 +15,9 @@ The pattern (Gastown's battle-tested NudgeSession):
    settle before Enter or it swallows it as a newline.
 4. Explicitly close bracketed paste mode with ESC[201~.
 5. Enter — submits.
-6. Verify: if the composer still holds the text, the paste heuristic ate the
-   Enter — nudge once more (an extra Enter on an empty composer is a no-op,
-   but we only resend on positive evidence).
+6. Verify after every Enter: while the composer still holds the text, the
+   paste heuristic ate the submit — retry within a fixed bound. Stop as soon
+   as the composer is empty, and never retry when capture evidence is absent.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,19 @@ _COMPOSER_PROMPT_PREFIXES = ("❯", "›", "> ")
 # GLYPH signal is exempt: it is positive evidence the composer exists, so it
 # stays fast.
 STABLE_READY_FLOOR_SECONDS = 5.0
+
+# Claude Code 2.1.220 has been observed swallowing two consecutive submit
+# Enters for a long seed prompt. Keep retries bounded while allowing one
+# additional attempt beyond that observed sequence.
+_MAX_SUBMIT_ATTEMPTS = 3
+_SUBMIT_VERIFY_POLLS = 6
+_SUBMIT_POLL_SECONDS = 0.2
+
+
+class _ComposerState(Enum):
+    HOLDS = "holds"
+    CLEARED = "cleared"
+    UNKNOWN = "unknown"
 
 
 def _pane_in_copy_mode(pane_id: str) -> bool:
@@ -61,7 +75,7 @@ def _capture_pane(pane_id: str) -> str | None:
     """Capture visible pane text, or None on any failure."""
     try:
         result = subprocess.run(
-            ["tmux", "capture-pane", "-t", pane_id, "-p"],
+            ["tmux", "capture-pane", "-t", pane_id, "-p", "-J", "-S", "-30"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -74,36 +88,80 @@ def _capture_pane(pane_id: str) -> str | None:
 
 
 def _composer_prompt_present(pane_text: str) -> bool:
-    """True if the captured pane shows a composer prompt line."""
-    return any(
-        line.lstrip().startswith(_COMPOSER_PROMPT_PREFIXES)
-        for line in pane_text.splitlines()
-    )
+    """True if the captured pane shows a positively live composer block."""
+    return _composer_block_text(pane_text) is not None
 
 
-def composer_still_holds(pane_id: str, text: str) -> bool:
-    """Heuristic: is the injected text still sitting unsubmitted in the
-    composer?
+def _composer_block_text(pane_text: str) -> str | None:
+    """Return normalized text from a positively live composer prompt block.
+
+    Claude frames its active composer with a closing divider. Simpler runtimes
+    may expose only a final prompt line. A prompt followed by non-divider
+    output is transcript history or processing state, not a live composer.
+    """
+    lines = pane_text.splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        stripped = lines[index].lstrip()
+        prompt_prefix = next(
+            (
+                prefix
+                for prefix in _COMPOSER_PROMPT_PREFIXES
+                if stripped.startswith(prefix)
+            ),
+            None,
+        )
+        if prompt_prefix is None:
+            continue
+        content_lines = [stripped[len(prompt_prefix) :].strip()]
+        saw_closing_divider = False
+        for continuation in lines[index + 1 :]:
+            divider = continuation.strip()
+            if divider and set(divider) == {"─"}:
+                saw_closing_divider = True
+                break
+            content_lines.append(continuation.strip())
+        if not saw_closing_divider and any(content_lines[1:]):
+            return None
+        return " ".join(" ".join(content_lines).split())
+    return None
+
+
+def _composer_state(pane_id: str, text: str) -> _ComposerState:
+    """Classify the injected prompt as held, cleared, or unknown.
 
     A submitted prompt also remains visible in the transcript, so presence of
     the text alone proves nothing. The distinguishing feature is the
     bottom-most composer prompt line: after a successful submit it is empty
-    (a bare prompt), while a swallowed Enter leaves our text in it. False on
-    any capture failure — callers must not retry on uncertainty.
+    (a bare prompt), while a swallowed Enter leaves our text in it. Joined
+    capture lines keep wrapped long prompts in one logical composer line.
+
+    Capture failures, missing prompt glyphs, and empty injected text are
+    unknown. They must never justify another Enter.
     """
     pane_text = _capture_pane(pane_id)
     if pane_text is None:
-        return False
-    prefix = text.splitlines()[0][:40].strip() if text.strip() else ""
-    if not prefix:
-        return False
-    prompt_lines = [
-        line for line in pane_text.splitlines()
-        if line.lstrip().startswith(_COMPOSER_PROMPT_PREFIXES)
-    ]
-    if not prompt_lines:
-        return False
-    return prefix in prompt_lines[-1]
+        return _ComposerState.UNKNOWN
+    expected_text = " ".join(text.split())
+    if not expected_text:
+        return _ComposerState.UNKNOWN
+    composer_text = _composer_block_text(pane_text)
+    if composer_text is None:
+        return _ComposerState.UNKNOWN
+    if composer_text == expected_text:
+        return _ComposerState.HOLDS
+    if not composer_text:
+        return _ComposerState.CLEARED
+    return _ComposerState.UNKNOWN
+
+
+def _wait_for_submit_state(pane_id: str, text: str) -> _ComposerState:
+    """Poll through the grace window before declaring the composer held."""
+    for _ in range(_SUBMIT_VERIFY_POLLS):
+        time.sleep(_SUBMIT_POLL_SECONDS)
+        state = _composer_state(pane_id, text)
+        if state is not _ComposerState.HOLDS:
+            return state
+    return _ComposerState.HOLDS
 
 
 def wait_for_composer_ready(
@@ -196,23 +254,37 @@ def inject_text(pane_id: str, text: str) -> bool:
             check=True,
         )
         time.sleep(0.1)
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "Enter"],
-            capture_output=True,
-            check=True,
-        )
-        time.sleep(0.4)
-        if composer_still_holds(pane_id, text):
-            logger.warning(
-                "Pane %s composer still holds injected text after Enter; nudging once",
-                pane_id,
-            )
+        for attempt in range(1, _MAX_SUBMIT_ATTEMPTS + 1):
             subprocess.run(
                 ["tmux", "send-keys", "-t", pane_id, "Enter"],
                 capture_output=True,
                 check=True,
             )
-        return True
+            state = _wait_for_submit_state(pane_id, text)
+            if state is _ComposerState.CLEARED:
+                return True
+            if state is _ComposerState.UNKNOWN:
+                logger.error(
+                    "Pane %s submit state unknown after attempt %d; not sending "
+                    "another Enter",
+                    pane_id,
+                    attempt,
+                )
+                return False
+            if attempt == _MAX_SUBMIT_ATTEMPTS:
+                logger.error(
+                    "Pane %s composer still holds injected text after %d submit attempts",
+                    pane_id,
+                    attempt,
+                )
+                return False
+            logger.warning(
+                "Pane %s composer still holds injected text after submit attempt %d; "
+                "retrying",
+                pane_id,
+                attempt,
+            )
+        return False
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         logger.error(f"Failed to send keys to {pane_id}: {e}")
         return False
