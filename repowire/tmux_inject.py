@@ -45,7 +45,8 @@ STABLE_READY_FLOOR_SECONDS = 5.0
 # Enters for a long seed prompt. Keep retries bounded while allowing one
 # additional attempt beyond that observed sequence.
 _MAX_SUBMIT_ATTEMPTS = 3
-_SUBMIT_VERIFY_POLLS = 6
+_SUBMIT_VERIFY_POLLS = 8
+_SUBMIT_STABLE_HOLDS = 6
 _SUBMIT_POLL_SECONDS = 0.2
 
 
@@ -155,13 +156,25 @@ def _composer_state(pane_id: str, text: str) -> _ComposerState:
 
 
 def _wait_for_submit_state(pane_id: str, text: str) -> _ComposerState:
-    """Poll through the grace window before declaring the composer held."""
+    """Observe a bounded window before declaring the composer held.
+
+    A transient capture failure is inconclusive, not terminal. Only a run of
+    exact held-composer observations justifies another Enter. Unknown resets
+    that run; cleared succeeds immediately.
+    """
+    consecutive_holds = 0
     for _ in range(_SUBMIT_VERIFY_POLLS):
         time.sleep(_SUBMIT_POLL_SECONDS)
         state = _composer_state(pane_id, text)
-        if state is not _ComposerState.HOLDS:
+        if state is _ComposerState.CLEARED:
             return state
-    return _ComposerState.HOLDS
+        if state is _ComposerState.HOLDS:
+            consecutive_holds += 1
+            if consecutive_holds >= _SUBMIT_STABLE_HOLDS:
+                return _ComposerState.HOLDS
+        else:
+            consecutive_holds = 0
+    return _ComposerState.UNKNOWN
 
 
 def wait_for_composer_ready(
