@@ -10,8 +10,11 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from repowire.session.history import (
     Turn,
+    _claude_project_key,
     _encode_cwd,
     decode_cursor,
     discover_claude_sessions,
@@ -54,6 +57,53 @@ def _a(ts: str, text: str, tool_uses: list[dict] | None = None) -> dict:
 class TestEncodeCwd:
     def test_simple(self):
         assert _encode_cwd("/Users/x/dev/repo") == "-Users-x-dev-repo"
+
+    def test_replaces_every_non_ascii_alphanumeric_character(self):
+        assert (
+            _encode_cwd("/Users/example/.config/repo_one")
+            == "-Users-example--config-repo-one"
+        )
+
+    def test_long_path_matches_claude_javascript_oracle(self):
+        path = "/Users/test/" + "a" * 210
+        assert _encode_cwd(path) == (
+            "-Users-test-"
+            + "a" * 188
+            + "-6rz1dz"
+        )
+
+    def test_long_non_bmp_path_matches_claude_javascript_oracle(self):
+        path = "/Users/test/" + "a" * 190 + "/repo_😀.name"
+        assert _encode_cwd(path) == (
+            "-Users-test-"
+            + "a" * 188
+            + "-xrqa29"
+        )
+
+    def test_project_key_uses_strict_realpath(self, tmp_path: Path):
+        target = tmp_path / ".real.repo"
+        target.mkdir()
+        link = tmp_path / "repo-link"
+        link.symlink_to(target, target_is_directory=True)
+
+        assert _claude_project_key(str(link) + "/") == _encode_cwd(str(target.resolve()))
+
+    def test_project_key_normalizes_nonexistent_path_to_nfc(self, tmp_path: Path):
+        decomposed = str(tmp_path / "cafe\u0301")
+        composed = str(tmp_path / "caf\u00e9")
+
+        assert not Path(decomposed).exists()
+        assert _claude_project_key(decomposed) == _encode_cwd(composed)
+
+    @pytest.mark.parametrize(
+        "error",
+        [RuntimeError("symlink loop"), ValueError("embedded null byte")],
+        ids=["runtime_error", "value_error"],
+    )
+    def test_project_key_falls_back_when_strict_resolve_fails(self, error):
+        path = "/workspace/symlink-loop"
+        with patch.object(Path, "resolve", side_effect=error):
+            assert _claude_project_key(path) == _encode_cwd(path)
 
 
 class TestDiscoverClaudeSessions:
