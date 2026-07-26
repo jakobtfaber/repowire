@@ -12,6 +12,7 @@ uninstall.
 from __future__ import annotations
 
 import pytest
+import tomllib
 
 from repowire.installers import codex as codex_mod
 
@@ -44,6 +45,32 @@ def test_install_mcp_on_empty_writes_section_and_feature_flag(tmp_path, monkeypa
     assert 'REPOWIRE_BACKEND = "codex"' in content
     assert "[features]" in content
     assert "hooks = true" in content
+
+
+def test_install_mcp_auto_approves_core_orchestration_tools(tmp_path, monkeypatch):
+    home = _retarget(tmp_path, monkeypatch)
+
+    codex_mod.install_mcp()
+    data = tomllib.loads((home / "config.toml").read_text())
+    tools = data["mcp_servers"]["repowire"]["tools"]
+
+    expected = {
+        "ack",
+        "answer",
+        "ask",
+        "ask_many",
+        "ask_many_result",
+        "kill_peer",
+        "list_peers",
+        "notify_peer",
+        "orchestrator_status",
+        "set_description",
+        "spawn_peer",
+        "wait_on_ack",
+        "whoami",
+    }
+    assert set(tools) == expected
+    assert all(tool["approval_mode"] == "approve" for tool in tools.values())
 
 
 def test_install_mcp_preserves_existing_config(tmp_path, monkeypatch):
@@ -81,6 +108,90 @@ def test_install_mcp_is_idempotent(tmp_path, monkeypatch):
     assert second.count("[mcp_servers.repowire]") == 1
     assert second.count("hooks = true") == 1
     assert second.count("REPOWIRE_BACKEND") == 1
+    assert second.count('approval_mode = "approve"') == 13
+
+
+def test_install_mcp_preserves_explicit_tool_approval_mode(tmp_path, monkeypatch):
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    (home / "config.toml").write_text(
+        "[mcp_servers.repowire]\n"
+        'command = "repowire"\n'
+        'args = ["mcp"]\n'
+        "\n"
+        "[mcp_servers.repowire.tools.whoami]\n"
+        'approval_mode = "prompt"\n'
+    )
+
+    codex_mod.install_mcp()
+    content = (home / "config.toml").read_text()
+
+    assert content.count("[mcp_servers.repowire.tools.whoami]") == 1
+    assert 'approval_mode = "prompt"' in content
+
+
+def test_install_mcp_fills_missing_tool_approval_mode(tmp_path, monkeypatch):
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    (home / "config.toml").write_text(
+        "[mcp_servers.repowire]\n"
+        'command = "repowire"\n'
+        'args = ["mcp"]\n'
+        "\n"
+        "[mcp_servers.repowire.tools.whoami]\n"
+        'enabled = true\n'
+    )
+
+    codex_mod.install_mcp()
+    data = tomllib.loads((home / "config.toml").read_text())
+
+    assert data["mcp_servers"]["repowire"]["tools"]["whoami"] == {
+        "enabled": True,
+        "approval_mode": "approve",
+    }
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        (
+            "[mcp_servers.repowire]\n"
+            'command = "repowire"\n'
+            "\n"
+            '[mcp_servers.repowire.tools."whoami"]\n'
+            'approval_mode = "prompt"\n'
+        ),
+        (
+            "[mcp_servers.repowire]\n"
+            'command = "repowire"\n'
+            'tools = { whoami = { approval_mode = "prompt" } }\n'
+        ),
+        (
+            "[mcp_servers.repowire]\n"
+            'command = "repowire"\n'
+            "\n"
+            "[mcp_servers.repowire.tools.whoami]\n"
+            '"approval_mode" = "prompt"\n'
+        ),
+        (
+            '[mcp_servers."repowire"]\n'
+            'command = "repowire"\n'
+        ),
+    ],
+)
+def test_install_mcp_rejects_unsupported_valid_toml_without_mutation(
+    tmp_path, monkeypatch, existing,
+):
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    path = home / "config.toml"
+    path.write_text(existing)
+    tomllib.loads(existing)
+
+    with pytest.raises(ValueError, match="unsupported|inline"):
+        codex_mod.install_mcp()
+
+    assert path.read_text() == existing
 
 
 def test_install_mcp_upgrades_existing_repowire_section_with_backend_env(
@@ -333,7 +444,30 @@ def test_uninstall_mcp_removes_section(tmp_path, monkeypatch):
     assert codex_mod.uninstall_mcp() is True
     content = (home / "config.toml").read_text()
     assert "[mcp_servers.repowire]" not in content
+    assert "[mcp_servers.repowire.tools.whoami]" not in content
     assert "command = \"repowire\"" not in content
+
+
+def test_uninstall_mcp_removes_nested_sections_only(tmp_path, monkeypatch):
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    (home / "config.toml").write_text(
+        "[mcp_servers.repowire]\n"
+        'command = "repowire"\n'
+        "\n"
+        "[mcp_servers.repowire.tools.whoami]\n"
+        'approval_mode = "approve"\n'
+        "\n"
+        "[mcp_servers.repowire-other]\n"
+        'command = "keep"\n'
+    )
+
+    assert codex_mod.uninstall_mcp() is True
+    content = (home / "config.toml").read_text()
+
+    assert "[mcp_servers.repowire]" not in content
+    assert "[mcp_servers.repowire.tools.whoami]" not in content
+    assert "[mcp_servers.repowire-other]" in content
 
 
 def test_uninstall_mcp_keeps_other_sections(tmp_path, monkeypatch):
@@ -366,6 +500,21 @@ def test_uninstall_mcp_noop_when_section_missing(tmp_path, monkeypatch):
     home.mkdir(parents=True)
     (home / "config.toml").write_text("model = \"gpt-5\"\n")
     assert codex_mod.uninstall_mcp() is False
+
+
+def test_uninstall_mcp_rejects_unsupported_table_without_mutation(
+    tmp_path, monkeypatch,
+):
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    path = home / "config.toml"
+    existing = '[mcp_servers."repowire"]\ncommand = "repowire"\n'
+    path.write_text(existing)
+
+    with pytest.raises(ValueError, match="unsupported"):
+        codex_mod.uninstall_mcp()
+
+    assert path.read_text() == existing
 
 
 # -- check_* ----------------------------------------------------------------

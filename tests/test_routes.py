@@ -10,7 +10,7 @@ from repowire.config.models import AgentType, Config
 from repowire.daemon.deps import cleanup_deps, get_peer_registry
 from repowire.daemon.routes import health, messages, peers
 from repowire.daemon.routes import spawn as spawn_routes
-from repowire.protocol.peers import PeerStatus
+from repowire.protocol.peers import PeerRole, PeerStatus
 from repowire.spawn_ownership import TmuxPaneEvidence
 
 from .conftest import async_client_for, make_daemon_app
@@ -470,6 +470,152 @@ class TestKillPeer:
         assert r.json() == {"ok": True, "tmux_killed": True}
         assert killed == ["%42"]
         assert "%42" not in spawn_routes._SPAWNED_PANE_IDS  # cleared after kill
+
+    async def test_agent_owner_may_kill_spawned_peer(self, client, monkeypatch):
+        registry = get_peer_registry()
+        owner_id, _ = await registry.allocate_and_register(
+            circle="5", backend=AgentType.CODEX, path="/tmp/owner", role=PeerRole.AGENT,
+        )
+        target_id, _ = await registry.allocate_and_register(
+            circle="5", backend=AgentType.CLAUDE_CODE, path="/tmp/target",
+            pane_id="%42",
+        )
+        spawn_routes._SPAWNED_PANE_IDS.add("%42")
+        monkeypatch.setattr(
+            spawn_routes,
+            "_effective_ownership_validation",
+            lambda _peer: SimpleNamespace(
+                ok=True,
+                record=SimpleNamespace(
+                    owner_peer_id=owner_id,
+                    pane_id="%42",
+                    tmux_session="5:target",
+                    machine=None,
+                ),
+            ),
+        )
+        monkeypatch.setattr(spawn_routes, "kill_pane", lambda _pane: True)
+
+        response = await client.post(
+            "/kill-peer",
+            json={"peer_identifier": target_id, "from_peer": owner_id},
+        )
+
+        assert response.status_code == 200
+
+    async def test_unrelated_agent_denied_before_kill_or_deregister(
+        self, client, monkeypatch,
+    ):
+        registry = get_peer_registry()
+        owner_id, _ = await registry.allocate_and_register(
+            circle="5", backend=AgentType.CODEX, path="/tmp/owner", role=PeerRole.AGENT,
+        )
+        caller_id, _ = await registry.allocate_and_register(
+            circle="5", backend=AgentType.CODEX, path="/tmp/caller", role=PeerRole.AGENT,
+        )
+        target_id, _ = await registry.allocate_and_register(
+            circle="5", backend=AgentType.CLAUDE_CODE, path="/tmp/target",
+            pane_id="%42",
+        )
+        monkeypatch.setattr(
+            spawn_routes,
+            "_effective_ownership_validation",
+            lambda _peer: SimpleNamespace(
+                ok=True,
+                record=SimpleNamespace(
+                    owner_peer_id=owner_id,
+                    pane_id="%42",
+                    tmux_session="5:target",
+                    machine=None,
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            spawn_routes, "kill_pane",
+            lambda _pane: (_ for _ in ()).throw(AssertionError("must not kill")),
+        )
+
+        response = await client.post(
+            "/kill-peer",
+            json={"peer_identifier": target_id, "from_peer": caller_id},
+        )
+
+        assert response.status_code == 403
+        assert await registry.get_peer(target_id) is not None
+
+    async def test_agent_denied_for_legacy_unowned_spawn(self, client, monkeypatch):
+        registry = get_peer_registry()
+        caller_id, _ = await registry.allocate_and_register(
+            circle="5", backend=AgentType.CODEX, path="/tmp/caller", role=PeerRole.AGENT,
+        )
+        target_id, _ = await registry.allocate_and_register(
+            circle="5", backend=AgentType.CLAUDE_CODE, path="/tmp/target",
+            pane_id="%42",
+        )
+        monkeypatch.setattr(
+            spawn_routes,
+            "_effective_ownership_validation",
+            lambda _peer: SimpleNamespace(
+                ok=True,
+                record=SimpleNamespace(
+                    owner_peer_id=None,
+                    pane_id="%42",
+                    tmux_session="5:target",
+                    machine=None,
+                ),
+            ),
+        )
+
+        response = await client.post(
+            "/kill-peer",
+            json={"peer_identifier": target_id, "from_peer": caller_id},
+        )
+
+        assert response.status_code == 403
+        assert await registry.get_peer(target_id) is not None
+
+    async def test_agent_denied_when_matching_owner_record_is_stale(
+        self, client, monkeypatch,
+    ):
+        registry = get_peer_registry()
+        caller_id, _ = await registry.allocate_and_register(
+            circle="5", backend=AgentType.CODEX, path="/tmp/caller", role=PeerRole.AGENT,
+        )
+        target_id, _ = await registry.allocate_and_register(
+            circle="5", backend=AgentType.CLAUDE_CODE, path="/tmp/target",
+            pane_id="%42",
+        )
+        monkeypatch.setattr(
+            spawn_routes,
+            "_effective_ownership_validation",
+            lambda _peer: SimpleNamespace(
+                ok=False,
+                record=SimpleNamespace(owner_peer_id=caller_id),
+            ),
+        )
+
+        response = await client.post(
+            "/kill-peer",
+            json={"peer_identifier": target_id, "from_peer": caller_id},
+        )
+
+        assert response.status_code == 403
+        assert await registry.get_peer(target_id) is not None
+
+    async def test_local_operator_omitting_caller_retains_admin_behavior(
+        self, client, monkeypatch,
+    ):
+        registry = get_peer_registry()
+        target_id, _ = await registry.allocate_and_register(
+            circle="5", backend=AgentType.CLAUDE_CODE, path="/tmp/target",
+            pane_id="%42",
+        )
+        spawn_routes._SPAWNED_PANE_IDS.add("%42")
+        monkeypatch.setattr(spawn_routes, "kill_pane", lambda _pane: True)
+
+        response = await client.post("/kill-peer", json={"peer_identifier": target_id})
+
+        assert response.status_code == 200
 
     async def test_kill_peer_by_name_and_circle(self, client, monkeypatch):
         registry = get_peer_registry()

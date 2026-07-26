@@ -598,6 +598,11 @@ class TestMcpToolDescriptions:
 class TestMcpSpawnPeerReturn:
     """Tests for spawn_peer MCP tool return value."""
 
+    @pytest.fixture(autouse=True)
+    def _canonical_caller(self, monkeypatch):
+        caller = AsyncMock(return_value="repow-test-caller")
+        monkeypatch.setattr("repowire.mcp.server._get_my_peer_identifier", caller)
+
     @pytest.mark.asyncio
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     async def test_spawn_peer_returns_display_name_and_tmux_session(
@@ -682,15 +687,21 @@ class TestMcpSpawnPeerReturn:
         mock_request.assert_awaited_once_with(
             "POST",
             "/spawn",
-            {"path": "/tmp/alpha-svc", "circle": "agentbox", "backend": "codex"},
+            {
+                "path": "/tmp/alpha-svc",
+                "circle": "agentbox",
+                "from_peer": "repow-test-caller",
+                "backend": "codex",
+            },
         )
         assert "agentbox:alpha-svc" in result
 
     @pytest.mark.asyncio
     @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
+    @patch("repowire.mcp.server._get_my_identity", new_callable=AsyncMock)
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     async def test_spawn_peer_preserves_explicit_default_circle(
-        self, mock_request: AsyncMock, mock_register: AsyncMock,
+        self, mock_request: AsyncMock, mock_identity: AsyncMock, mock_register: AsyncMock,
     ) -> None:
         """Explicit circle='default' should still target the default tmux session."""
         mock_request.return_value = {
@@ -698,6 +709,7 @@ class TestMcpSpawnPeerReturn:
             "display_name": "alpha-svc",
             "tmux_session": "default:alpha-svc",
         }
+        mock_identity.return_value = ("repow-default-owner", "default", "agent")
 
         from repowire.mcp.server import create_mcp_server
 
@@ -707,19 +719,25 @@ class TestMcpSpawnPeerReturn:
             path="/tmp/alpha-svc", backend="codex", circle="default",
         )
 
-        mock_register.assert_not_awaited()
+        mock_register.assert_awaited_once_with(strict=True)
         mock_request.assert_awaited_once_with(
             "POST",
             "/spawn",
-            {"path": "/tmp/alpha-svc", "circle": "default", "backend": "codex"},
+            {
+                "path": "/tmp/alpha-svc",
+                "circle": "default",
+                "from_peer": "repow-test-caller",
+                "backend": "codex",
+            },
         )
         assert "default:alpha-svc" in result
 
     @pytest.mark.asyncio
     @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
+    @patch("repowire.mcp.server._get_my_identity", new_callable=AsyncMock)
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     async def test_spawn_peer_posts_profile(
-        self, mock_request: AsyncMock, mock_register: AsyncMock,
+        self, mock_request: AsyncMock, mock_identity: AsyncMock, mock_register: AsyncMock,
     ) -> None:
         """spawn_peer MCP tool should forward model/profile selection."""
         mock_request.return_value = {
@@ -727,6 +745,7 @@ class TestMcpSpawnPeerReturn:
             "display_name": "alpha-svc",
             "tmux_session": "default:alpha-svc",
         }
+        mock_identity.return_value = ("repow-default-owner", "default", "agent")
 
         from repowire.mcp.server import create_mcp_server
 
@@ -739,13 +758,14 @@ class TestMcpSpawnPeerReturn:
             circle="default",
         )
 
-        mock_register.assert_not_awaited()
+        mock_register.assert_awaited_once_with(strict=True)
         mock_request.assert_awaited_once_with(
             "POST",
             "/spawn",
             {
                 "path": "/tmp/alpha-svc",
                 "circle": "default",
+                "from_peer": "repow-test-caller",
                 "backend": "codex",
                 "profile": "fast",
             },
@@ -774,7 +794,7 @@ class TestMcpSpawnPeerReturn:
             "/kill-peer",
             {
                 "peer_identifier": "repow-5-abc12345",
-                "from_peer": "orchestrator",
+                "from_peer": "repow-test-caller",
                 "circle": "5",
             },
         )

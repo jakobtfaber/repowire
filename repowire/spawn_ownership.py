@@ -50,6 +50,9 @@ class SpawnOwnershipRecord:
     tmux_session: str
     machine: str
     peer_id: str | None = None
+    # Peer that requested the spawn. Missing on records written before caller
+    # ownership enforcement and therefore intentionally not inferred.
+    owner_peer_id: str | None = None
     created_at: float = 0.0
 
     def __post_init__(self) -> None:
@@ -89,6 +92,7 @@ def record_spawn_ownership(
     display_name: str,
     tmux_session: str,
     peer_id: str | None = None,
+    owner_peer_id: str | None = None,
     machine: str | None = None,
 ) -> None:
     """Persist proof that Repowire spawned ``pane_id``.
@@ -110,6 +114,7 @@ def record_spawn_ownership(
         tmux_session=tmux_session,
         machine=machine or socket.gethostname(),
         peer_id=peer_id,
+        owner_peer_id=owner_peer_id,
     )
     records = _load_records()
     records[pane_id] = record

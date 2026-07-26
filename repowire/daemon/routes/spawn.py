@@ -214,6 +214,9 @@ class SpawnRequest(BaseModel):
         ),
     )
     role: PeerRole = Field(default=PeerRole.AGENT, description="Peer role to seed")
+    from_peer: str | None = Field(
+        None, description="Calling peer identity; omitted for local operator requests"
+    )
 
     @model_validator(mode="after")
     def _single_runtime_selector(self) -> SpawnRequest:
@@ -265,8 +268,39 @@ class KillPeerRequest(BaseModel):
     )
 
 
-async def _authorize_kill(registry: PeerRegistry, from_peer: str | None) -> None:
-    """Hook for future role-based authorization (e.g. orchestrator-only kill)."""
+async def _resolve_caller(
+    registry: PeerRegistry, from_peer: str | None
+) -> Peer | None:
+    """Resolve a peer caller canonically; omission denotes the local operator."""
+    if from_peer is None:
+        return None
+    resolved = await registry.resolve_peer_strict(from_peer)
+    if isinstance(resolved, list):
+        if not resolved:
+            raise HTTPException(status_code=404, detail=f"Caller peer not found: {from_peer}")
+        raise HTTPException(status_code=409, detail=f"Ambiguous caller peer: {from_peer}")
+    return resolved
+
+
+async def _authorize_kill(
+    registry: PeerRegistry, from_peer: str | None, target: Peer
+) -> None:
+    """Allow operators/admin roles, or the ordinary peer that spawned target."""
+    caller = await _resolve_caller(registry, from_peer)
+    if caller is None or caller.role in {PeerRole.ORCHESTRATOR, PeerRole.HUMAN}:
+        return
+    ownership = _effective_ownership_validation(target)
+    record = ownership.record if ownership.ok else None
+    if record is not None and record.owner_peer_id == caller.peer_id:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "spawn_owner_required",
+            "hint": "Ordinary agents may kill only peers they spawned.",
+            "owner_peer_id": record.owner_peer_id if record is not None else None,
+        },
+    )
 
 
 def _spawn_service(state: Any | None = None) -> SpawnService:
@@ -310,6 +344,8 @@ async def spawn(
     else:
         backend = request.backend
     service = _spawn_service()
+    caller = await _resolve_caller(get_peer_registry(), request.from_peer)
+    owner_peer_id = caller.peer_id if caller is not None else None
     resolved_path = str(Path(request.path).expanduser().resolve())
     result = service.spawn(
         path=request.path,
@@ -318,6 +354,7 @@ async def spawn(
         circle=request.circle,
         message=request.message,
         role=request.role,
+        owner_peer_id=owner_peer_id,
     )
     backend_profile = agent_backend_for(backend)
     peer_id: str | None = None
@@ -351,6 +388,7 @@ async def spawn(
             display_name=display_name,
             tmux_session=result.tmux_session,
             peer_id=peer_id,
+            owner_peer_id=owner_peer_id,
         )
         registration_state = "cli_fallback"
         warnings.append(
@@ -547,7 +585,6 @@ async def kill_registered_peer(
     """
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
-    await _authorize_kill(peer_registry, request.from_peer)
     resolved = await peer_registry.resolve_peer_strict(
         request.peer_identifier,
         circle=request.circle,
@@ -576,6 +613,7 @@ async def kill_registered_peer(
         )
 
     peer = _peer_with_adopted_ownership(resolved)
+    await _authorize_kill(peer_registry, request.from_peer, peer)
     proof = _destructive_pane_proof(peer)
     if not proof.ok or not proof.pane_id:
         await peer_registry.unregister_peer(peer.peer_id)
@@ -754,7 +792,6 @@ async def restart_peer(
     """Restart a peer by killing its verified pane, then backend-resuming it."""
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
-    await _authorize_kill(peer_registry, request.from_peer)
     resolved = await peer_registry.resolve_peer_strict(name, circle=request.circle)
 
     if isinstance(resolved, list):
@@ -982,7 +1019,6 @@ async def rehook_peer(
     state = get_app_state()
     transport = state.transport
     await peer_registry.lazy_repair()
-    await _authorize_kill(peer_registry, request.from_peer)
     resolved = await peer_registry.resolve_peer_strict(name, circle=request.circle)
 
     if isinstance(resolved, list):
