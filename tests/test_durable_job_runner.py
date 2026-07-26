@@ -1865,7 +1865,44 @@ async def test_spawn_service_uses_explicit_env_path(tmp_path, monkeypatch):
     assert spawn_config.env == {
         "GWS_CONFIG": "~/calendar.yaml",
         "PATH": f"{Path('~/.local/bin').expanduser()}{os.pathsep}/opt/homebrew/bin",
+        "REPOWIRE_CIRCLE": "default",
     }
+    assert result.env == spawn_config.env
+
+
+@pytest.mark.anyio
+async def test_spawn_service_exports_requested_circle(tmp_path, monkeypatch):
+    cfg = Config()
+    cfg.daemon.spawn.commands[AgentType.CLAUDE_CODE] = "claude"
+    cfg.daemon.spawn.allowed_paths = [str(tmp_path)]
+    cfg.daemon.spawn.env = {"REPOWIRE_CIRCLE": "stale-config-circle"}
+    spawn_impl = Mock(
+        return_value=SimpleNamespace(
+            display_name="project-claude-code",
+            tmux_session="science:project-claude-code",
+            pane_id=None,
+            message=None,
+        )
+    )
+    monkeypatch.setattr(
+        "repowire.installers.claude_code.check_channel_installed",
+        lambda: True,
+    )
+    service = SpawnService(
+        spawn=cfg.daemon.spawn,
+        spawned_pane_ids=set(),
+        background_tasks=set(),
+        spawn_impl=spawn_impl,
+    )
+
+    result = service.spawn(
+        path=str(tmp_path),
+        backend=AgentType.CLAUDE_CODE,
+        circle="science",
+    )
+
+    spawn_config = spawn_impl.call_args.args[0]
+    assert spawn_config.env["REPOWIRE_CIRCLE"] == "science"
     assert result.env == spawn_config.env
 
 
@@ -1938,7 +1975,10 @@ async def test_spawn_service_falls_back_to_login_shell_path(tmp_path, monkeypatc
     service.spawn(path=str(tmp_path), backend=AgentType.CODEX, message="warm")
 
     spawn_config = spawn_impl.call_args.args[0]
-    assert spawn_config.env == {"PATH": "/nvm/bin:/opt/homebrew/bin:/usr/bin"}
+    assert spawn_config.env == {
+        "PATH": "/nvm/bin:/opt/homebrew/bin:/usr/bin",
+        "REPOWIRE_CIRCLE": "default",
+    }
 
 
 @pytest.mark.anyio

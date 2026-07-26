@@ -130,7 +130,10 @@ class TestSwitchBackendRoute:
         assert spawn_cfg.backend is AgentType.CODEX
         assert spawn_cfg.circle == "default"
         assert spawn_cfg.path == str(Path(tmp_path).resolve())
-        assert spawn_cfg.env == {"PATH": str(bin_dir)}
+        assert spawn_cfg.env == {
+            "PATH": str(bin_dir),
+            "REPOWIRE_CIRCLE": "default",
+        }
 
         # Registry must have unregistered the old peer.
         assert await env.registry.get_peer(name) is None
