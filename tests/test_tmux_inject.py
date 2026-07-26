@@ -32,6 +32,11 @@ def _held_through_submit_grace(text: str) -> list[CompletedProcess]:
     return [_capture(text) for _ in range(6)]
 
 
+def _through_submit_observation(result: CompletedProcess) -> list[CompletedProcess]:
+    """Repeat one observation result across the bounded eight-poll window."""
+    return [result for _ in range(8)]
+
+
 def _fake_clock():
     """A monotonic/sleep pair backed by a shared mutable clock so elapsed time
     advances deterministically by the slept amount on each sleep."""
@@ -145,6 +150,79 @@ class TestInjectText:
         calls = [call.args[0] for call in mock_run.call_args_list]
         assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 2
 
+    def test_initial_unknown_then_stable_holds_retries_submit(self):
+        composer_stuck = "❯ hello there friend\n"
+        capture_failed = CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="transient capture failure"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),  # -l text
+                _ok(),  # -H close
+                _ok(),  # first Enter swallowed
+                capture_failed,  # transient UNKNOWN
+                *_held_through_submit_grace(composer_stuck),
+                _ok(),  # retry Enter submits
+                _capture("❯ \n"),
+            ]
+            assert inject_text("%5", "hello there friend") is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 2
+
+    def test_two_initial_unknowns_then_six_holds_retry_on_last_poll(self):
+        composer_stuck = "❯ hello there friend\n"
+        capture_failed = CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="transient capture failure"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),
+                _ok(),
+                _ok(),
+                capture_failed,
+                capture_failed,
+                *_held_through_submit_grace(composer_stuck),
+                _ok(),
+                _capture("❯ \n"),
+            ]
+            assert inject_text("%5", "hello there friend") is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 2
+
+    def test_intermittent_unknown_resets_holds_and_does_not_retry(self):
+        composer_stuck = "❯ hello there friend\n"
+        capture_failed = CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="transient capture failure"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),
+                _ok(),
+                _ok(),
+                *[_capture(composer_stuck) for _ in range(5)],
+                capture_failed,
+                _capture(composer_stuck),
+                _capture(composer_stuck),
+            ]
+            assert inject_text("%5", "hello there friend") is False
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 1
+
     def test_two_swallowed_enters_are_retried_until_composer_is_empty(self):
         """Claude can swallow both the initial Enter and first retry.
 
@@ -191,6 +269,31 @@ class TestInjectText:
         calls = [call.args[0] for call in mock_run.call_args_list]
         assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 1
 
+    def test_clear_after_holds_and_unknown_returns_without_retry(self):
+        composer_stuck = "❯ hello there friend\n"
+        capture_failed = CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="transient capture failure"
+        )
+        with (
+            patch("repowire.tmux_inject.subprocess.run") as mock_run,
+            patch("repowire.tmux_inject.time.sleep"),
+        ):
+            mock_run.side_effect = [
+                _mode_result(False),
+                _ok(),
+                _ok(),
+                _ok(),
+                *[_capture(composer_stuck) for _ in range(3)],
+                capture_failed,
+                _capture(composer_stuck),
+                _capture(composer_stuck),
+                _capture("❯ \n"),
+            ]
+            assert inject_text("%5", "hello there friend") is True
+
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        assert calls.count(["tmux", "send-keys", "-t", "%5", "Enter"]) == 1
+
     def test_submit_retries_stop_at_bound_when_composer_stays_full(self):
         composer_stuck = "❯ hello there friend\n"
         with (
@@ -231,7 +334,7 @@ class TestInjectText:
                 _ok(),
                 *_held_through_submit_grace(composer_stuck),
                 _ok(),
-                capture_failed,
+                *_through_submit_observation(capture_failed),
             ]
             assert inject_text("%5", "hello there friend") is False
 
@@ -277,7 +380,7 @@ class TestInjectText:
                 _ok(),
                 _ok(),
                 _ok(),
-                _capture("❯ different text\n"),
+                *_through_submit_observation(_capture("❯ different text\n")),
             ]
             assert inject_text("%5", "hello there friend") is False
 
@@ -299,7 +402,7 @@ class TestInjectText:
                 _ok(),
                 _ok(),
                 _ok(),
-                *_held_through_submit_grace(processing),
+                *_through_submit_observation(_capture(processing)),
             ]
             assert inject_text("%5", "hello there friend") is False
 
@@ -323,7 +426,7 @@ class TestInjectText:
                 _ok(),
                 _ok(),
                 _ok(),
-                *_held_through_submit_grace(processing),
+                *_through_submit_observation(_capture(processing)),
             ]
             assert inject_text("%5", "hello there friend") is False
 
@@ -346,7 +449,7 @@ class TestInjectText:
                 _ok(),
                 _ok(),
                 _ok(),
-                _capture(partial),
+                *_through_submit_observation(_capture(partial)),
             ]
             assert inject_text("%5", text) is False
 
@@ -384,7 +487,9 @@ class TestInjectText:
                 _ok(),
                 _ok(),
                 _ok(),
-                CompletedProcess(args=[], returncode=1, stdout="", stderr="boom"),
+                *_through_submit_observation(
+                    CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
+                ),
             ]
             assert inject_text("%5", "hello") is False
 
