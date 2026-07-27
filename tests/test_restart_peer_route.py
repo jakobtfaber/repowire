@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 import time
 from pathlib import Path
@@ -89,6 +90,7 @@ async def _register(
     role: str = "agent",
     pane_id: str | None = "%101",
     machine: str | None = None,
+    peer_id: str | None = None,
 ) -> str:
     payload = {
         "name": Path(path).name,
@@ -100,6 +102,8 @@ async def _register(
     }
     if pane_id is not None:
         payload["pane_id"] = pane_id
+    if peer_id is not None:
+        payload["peer_id"] = peer_id
     response = await client.post("/peers", json=payload)
     assert response.status_code == 200, response.text
     return response.json()["display_name"]
@@ -166,24 +170,45 @@ class TestRestartPeerRoute:
             pane_id="%101",
         )
 
-        with patch.object(spawn_routes, "spawn_peer", return_value=result), \
+        with patch.object(spawn_routes, "spawn_peer", return_value=result) as mock_spawn, \
             patch.object(spawn_routes, "post_spawn_warmup", new_callable=AsyncMock):
-            response = await env.client.post(
+            spawn_task = asyncio.create_task(env.client.post(
                 "/spawn",
                 json={
                     "path": str(tmp_path),
                     "backend": "claude-code",
                     "role": "orchestrator",
                 },
+            ))
+            while not mock_spawn.called:
+                await asyncio.sleep(0)
+            spawn_cfg = mock_spawn.call_args.args[0]
+            assert spawn_cfg.peer_id is not None
+            registered_name = await _register(
+                env.client,
+                path=str(tmp_path),
+                role=PeerRole.ORCHESTRATOR.value,
+                pane_id="%101",
+                peer_id=spawn_cfg.peer_id,
             )
+            await env.registry._transport.connect(
+                spawn_cfg.peer_id,
+                AsyncMock(),
+                pane_id="%101",
+                display_name=registered_name,
+            )
+            response = await spawn_task
 
         assert response.status_code == 200, response.text
+        assert response.json()["registration_state"] == "registered"
         record = get_spawn_ownership("%101")
         assert record is not None
         assert record.path == str(tmp_path.resolve())
         assert record.backend == "claude-code"
         assert record.role == "orchestrator"
         assert record.tmux_session == f"default:{tmp_path.name}"
+        assert record.peer_id == response.json()["peer_id"]
+        assert record.display_name == response.json()["display_name"]
 
     async def test_daemon_owned_success_preserves_peer_id_and_role(self, env, tmp_path):
         name = await _register(

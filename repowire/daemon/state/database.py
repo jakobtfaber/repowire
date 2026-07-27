@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 class StateDatabase:
@@ -512,7 +512,48 @@ class StateDatabase:
                 """,
                 (12, "retired peer identities survive daemon restarts"),
             )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS registration_tombstones (
+                    peer_id TEXT PRIMARY KEY,
+                    tombstoned_at TEXT NOT NULL
+                )
+                """,
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, description)
+                VALUES (?, ?)
+                """,
+                (13, "cancelled registration tombstones survive daemon restarts"),
+            )
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+    def save_registration_tombstone(self, peer_id: str, tombstoned_at: str) -> None:
+        """Persist a cancelled-registration fence."""
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO registration_tombstones(peer_id, tombstoned_at)
+                VALUES (?, ?)
+                """,
+                (peer_id, tombstoned_at),
+            )
+
+    def delete_registration_tombstone(self, peer_id: str) -> None:
+        """Delete a cancelled-registration fence."""
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM registration_tombstones WHERE peer_id = ?",
+                (peer_id,),
+            )
+
+    def load_registration_tombstones(self) -> dict[str, str]:
+        """Load cancelled-registration fences keyed by peer id."""
+        rows = self.conn.execute(
+            "SELECT peer_id, tombstoned_at FROM registration_tombstones",
+        ).fetchall()
+        return {str(row["peer_id"]): str(row["tombstoned_at"]) for row in rows}
 
     def integrity_check(self) -> str:
         row = self.conn.execute("PRAGMA integrity_check").fetchone()

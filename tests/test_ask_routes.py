@@ -1,19 +1,30 @@
 """Tests for /ask, /ack, and /asks/* HTTP routes."""
 
 import asyncio
+import os
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from repowire.agent_types import AgentType
+from repowire.config.spawn import SpawnSettings
 from repowire.daemon.deps import cleanup_deps
-from repowire.daemon.routes import asks, peers
+from repowire.daemon.message_router import MessageRouter
+from repowire.daemon.peer_registry import PeerRetiredError
+from repowire.daemon.routes import asks, peers, spawn
+from repowire.daemon.spawn_service import (
+    SpawnRegistrationResult,
+    SpawnService,
+    SpawnServiceResult,
+)
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import PeerStatus
+from repowire.spawn import SpawnResult
 
 from .conftest import async_client_for, make_daemon_app
 
-ROUTERS = (peers.router, asks.router)
+ROUTERS = (peers.router, asks.router, spawn.router)
 
 
 def _make_app(tmp_path):
@@ -37,28 +48,380 @@ async def env(tmp_path):
     cleanup_deps()
 
 
-async def _register_peer(client, name: str, pane_id: str | None = None) -> str:
+async def _register_peer(
+    client,
+    name: str,
+    pane_id: str | None = None,
+    *,
+    peer_id: str | None = None,
+    path: str | None = None,
+) -> str:
     body: dict = {
         "name": name,
-        "path": f"/tmp/{name}",
+        "path": path or f"/tmp/{name}",
         "circle": "default",
         "backend": "claude-code",
     }
     if pane_id:
         body["pane_id"] = pane_id
+    if peer_id:
+        body["peer_id"] = peer_id
     r = await client.post("/peers", json=body)
     assert r.status_code == 200, r.text
     return r.json()["display_name"]
 
 
-async def _register_peer_info(client, name: str, pane_id: str | None = None) -> dict:
-    display_name = await _register_peer(client, name, pane_id=pane_id)
+async def _register_peer_info(
+    client,
+    name: str,
+    pane_id: str | None = None,
+    *,
+    peer_id: str | None = None,
+    path: str | None = None,
+) -> dict:
+    display_name = await _register_peer(
+        client,
+        name,
+        pane_id=pane_id,
+        peer_id=peer_id,
+        path=path,
+    )
     r = await client.get(f"/peers/{display_name}")
     assert r.status_code == 200, r.text
     return r.json()
 
 
 class TestAsk:
+    async def test_hook_spawn_returns_registered_identity_immediately_addressable(
+        self, env, monkeypatch, tmp_path,
+    ):
+        client, registry, _, msg_router = env
+        await _register_peer(client, "alice")
+        existing_name = await _register_peer(
+            client,
+            tmp_path.name,
+            path=str(tmp_path),
+        )
+        spawn_started = asyncio.Event()
+        reserved: dict[str, str] = {}
+
+        class FakeSpawnService:
+            async def spawn_registered(self, *, await_peer, peer_id, **_kwargs):
+                reserved["peer_id"] = peer_id
+                result = SpawnServiceResult(
+                    display_name=tmp_path.name,
+                    tmux_session=f"default:{tmp_path.name}",
+                    pane_id="%42",
+                    message=None,
+                )
+                spawn_started.set()
+                peer = await await_peer(result)
+                return SpawnRegistrationResult(
+                    spawn_result=result,
+                    resolved_peer=peer,
+                    registration_attempts=[],
+                )
+
+        monkeypatch.setattr(spawn, "_spawn_service", lambda: FakeSpawnService())
+        monkeypatch.setattr(spawn, "record_spawn_ownership", Mock())
+
+        spawn_task = asyncio.create_task(client.post("/spawn", json={
+            "path": str(tmp_path),
+            "backend": "claude-code",
+        }))
+        await spawn_started.wait()
+        assert not spawn_task.done()
+
+        registered_name = await _register_peer(
+            client,
+            tmp_path.name,
+            pane_id="%42",
+            peer_id=reserved["peer_id"],
+            path=str(tmp_path),
+        )
+        await asyncio.sleep(0)
+        assert not spawn_task.done()
+
+        websocket = AsyncMock()
+        transport = msg_router._transport
+        await transport.connect(
+            reserved["peer_id"],
+            websocket,
+            pane_id="%42",
+            display_name=registered_name,
+            ready=False,
+        )
+        await asyncio.sleep(0)
+        assert not spawn_task.done()
+        assert await transport.activate(reserved["peer_id"], websocket)
+        spawned = await spawn_task
+        registered = await registry.get_peer(reserved["peer_id"])
+
+        assert spawned.status_code == 200, spawned.text
+        assert registered is not None
+        assert registered.display_name != existing_name
+        assert spawned.json()["peer_id"] == registered.peer_id
+        assert spawned.json()["display_name"] == registered.display_name
+        assert spawned.json()["registration_state"] == "registered"
+        monkeypatch.setattr(
+            msg_router,
+            "send_ask",
+            MessageRouter.send_ask.__get__(msg_router, MessageRouter),
+        )
+        asked = await client.post("/ask", json={
+            "from_peer": "alice",
+            "to_peer": spawned.json()["peer_id"],
+            "text": "ready?",
+        })
+        assert asked.status_code == 200, asked.text
+        websocket.send_json.assert_awaited()
+
+    async def test_hook_spawn_timeout_cleans_up_unregistered_pane(
+        self, env, monkeypatch, tmp_path,
+    ):
+        client, registry, _, _ = env
+        pane_id = "%43"
+        spawned_panes: set[str] = set()
+        spawn_impl = Mock(return_value=SpawnResult(
+            display_name="worker",
+            tmux_session="default:worker",
+            pane_id=pane_id,
+            message=None,
+        ))
+        service = SpawnService(
+            spawn=SpawnSettings(
+                commands={"claude-code": "claude"},
+                allowed_paths=[str(tmp_path)],
+            ),
+            spawned_pane_ids=spawned_panes,
+            spawn_impl=spawn_impl,
+            warmup_impl=AsyncMock(),
+        )
+        kill = Mock(return_value=True)
+        forget = Mock()
+        monkeypatch.setattr(spawn, "_spawn_service", lambda: service)
+        monkeypatch.setattr(spawn, "_SPAWN_REGISTRATION_TIMEOUT_SECONDS", 0)
+        monkeypatch.setattr(spawn, "record_spawn_ownership", Mock())
+        monkeypatch.setattr("repowire.daemon.spawn_service.record_spawn_ownership", Mock())
+        monkeypatch.setattr("repowire.daemon.spawn_service.kill_pane", kill)
+        monkeypatch.setattr(
+            "repowire.daemon.spawn_service.forget_spawn_ownership_verified",
+            forget,
+        )
+        monkeypatch.setattr(
+            "repowire.daemon.spawn_service.capture_spawn_registration_diagnostics",
+            AsyncMock(return_value={}),
+        )
+
+        response = await client.post("/spawn", json={
+            "path": str(tmp_path),
+            "backend": "claude-code",
+        })
+
+        assert response.status_code == 504, response.text
+        detail = response.json()["detail"]
+        assert detail["error"] == "spawn_registration_timeout"
+        assert detail["pane_id"] == pane_id
+        assert detail["timeout_seconds"] == 0
+        assert detail["cleanup"] == {
+            "pane_killed": True,
+            "ownership_removed": True,
+        }
+        kill.assert_called_once_with(pane_id)
+        forget.assert_called_once_with(pane_id)
+        assert pane_id not in spawned_panes
+        assert await registry.get_peer(detail["peer_id"]) is None
+        assert detail["peer_id"] in registry._retired
+
+    async def test_hook_spawn_timeout_preserves_ownership_when_fence_write_fails(
+        self, env, monkeypatch, tmp_path,
+    ):
+        client, registry, _, _ = env
+        pane_id = "%46"
+        spawned_panes: set[str] = set()
+        service = SpawnService(
+            spawn=SpawnSettings(
+                commands={"claude-code": "claude"},
+                allowed_paths=[str(tmp_path)],
+            ),
+            spawned_pane_ids=spawned_panes,
+            spawn_impl=Mock(return_value=SpawnResult(
+                display_name="worker",
+                tmux_session="default:worker",
+                pane_id=pane_id,
+                message=None,
+            )),
+            warmup_impl=AsyncMock(),
+        )
+        forget = Mock()
+        monkeypatch.setattr(spawn, "_spawn_service", lambda: service)
+        monkeypatch.setattr(spawn, "_SPAWN_REGISTRATION_TIMEOUT_SECONDS", 0)
+        monkeypatch.setattr(spawn, "record_spawn_ownership", Mock())
+        monkeypatch.setattr(
+            "repowire.daemon.spawn_service.record_spawn_ownership",
+            Mock(),
+        )
+        monkeypatch.setattr(
+            "repowire.daemon.spawn_service.kill_pane",
+            Mock(return_value=True),
+        )
+        monkeypatch.setattr(
+            "repowire.daemon.spawn_service.forget_spawn_ownership_verified",
+            forget,
+        )
+        monkeypatch.setattr(
+            "repowire.daemon.spawn_service.capture_spawn_registration_diagnostics",
+            AsyncMock(return_value={"pane_id": pane_id}),
+        )
+        monkeypatch.setattr(
+            registry,
+            "tombstone_registration",
+            AsyncMock(side_effect=RuntimeError("state database unavailable")),
+        )
+
+        response = await client.post("/spawn", json={
+            "path": str(tmp_path),
+            "backend": "claude-code",
+        })
+
+        assert response.status_code == 500, response.text
+        detail = response.json()["detail"]
+        assert detail["error"] == "spawn_cleanup_failed"
+        assert detail["cleanup"] == {
+            "pane_killed": True,
+            "ownership_removed": False,
+            "finalization_error": "RuntimeError: state database unavailable",
+        }
+        assert pane_id in spawned_panes
+        forget.assert_not_called()
+        assert await registry.get_peer(detail["peer_id"]) is not None
+
+    async def test_hook_spawn_timeout_preserves_ownership_when_pane_kill_fails(
+        self, env, monkeypatch, tmp_path,
+    ):
+        client, registry, _, _ = env
+        pane_id = "%44"
+        spawned_panes: set[str] = set()
+        spawn_impl = Mock(return_value=SpawnResult(
+            display_name="worker",
+            tmux_session="default:worker",
+            pane_id=pane_id,
+            message=None,
+        ))
+        service = SpawnService(
+            spawn=SpawnSettings(
+                commands={"claude-code": "claude"},
+                allowed_paths=[str(tmp_path)],
+            ),
+            spawned_pane_ids=spawned_panes,
+            spawn_impl=spawn_impl,
+            warmup_impl=AsyncMock(),
+        )
+        forget = Mock()
+        monkeypatch.setattr(spawn, "_spawn_service", lambda: service)
+        monkeypatch.setattr(spawn, "_SPAWN_REGISTRATION_TIMEOUT_SECONDS", 0)
+        monkeypatch.setattr(spawn, "record_spawn_ownership", Mock())
+        monkeypatch.setattr("repowire.daemon.spawn_service.record_spawn_ownership", Mock())
+        monkeypatch.setattr(
+            "repowire.daemon.spawn_service.kill_pane",
+            Mock(return_value=False),
+        )
+        monkeypatch.setattr(
+            "repowire.daemon.spawn_service.forget_spawn_ownership_verified",
+            forget,
+        )
+        monkeypatch.setattr(
+            "repowire.daemon.spawn_service.capture_spawn_registration_diagnostics",
+            AsyncMock(return_value={}),
+        )
+
+        response = await client.post("/spawn", json={
+            "path": str(tmp_path),
+            "backend": "claude-code",
+        })
+
+        assert response.status_code == 500, response.text
+        detail = response.json()["detail"]
+        assert detail["error"] == "spawn_cleanup_failed"
+        assert detail["cleanup"] == {
+            "pane_killed": False,
+            "ownership_removed": False,
+        }
+        assert pane_id in spawned_panes
+        assert spawn_impl.call_count == 1
+        forget.assert_not_called()
+        assert await registry.get_peer(detail["peer_id"]) is not None
+
+    async def test_hook_spawn_timeout_retires_registration_racing_cleanup(
+        self, env, monkeypatch, tmp_path,
+    ):
+        client, registry, _, _ = env
+        pane_id = "%45"
+        captured: dict[str, str] = {}
+        late_registration: list[asyncio.Task] = []
+
+        def spawn_impl(config):
+            assert config.peer_id is not None
+            captured["peer_id"] = config.peer_id
+            return SpawnResult(
+                display_name="worker",
+                tmux_session="default:worker",
+                pane_id=pane_id,
+                message=None,
+            )
+
+        async def register_late():
+            try:
+                await registry.allocate_and_register(
+                    circle="default",
+                    backend=AgentType.CLAUDE_CODE,
+                    path=str(tmp_path),
+                    pane_id=pane_id,
+                    peer_id=captured["peer_id"],
+                    agent_pid=os.getpid(),
+                )
+            except PeerRetiredError:
+                pass
+
+        def kill_pane(_pane_id):
+            late_registration.append(asyncio.create_task(register_late()))
+            return True
+
+        service = SpawnService(
+            spawn=SpawnSettings(
+                commands={"claude-code": "claude"},
+                allowed_paths=[str(tmp_path)],
+            ),
+            spawned_pane_ids=set(),
+            spawn_impl=spawn_impl,
+            warmup_impl=AsyncMock(),
+        )
+        monkeypatch.setattr(spawn, "_spawn_service", lambda: service)
+        monkeypatch.setattr(spawn, "_SPAWN_REGISTRATION_TIMEOUT_SECONDS", 0)
+        monkeypatch.setattr(spawn, "record_spawn_ownership", Mock())
+        monkeypatch.setattr("repowire.daemon.spawn_service.record_spawn_ownership", Mock())
+        monkeypatch.setattr("repowire.daemon.spawn_service.kill_pane", kill_pane)
+        monkeypatch.setattr(
+            "repowire.daemon.spawn_service.forget_spawn_ownership_verified",
+            Mock(),
+        )
+        monkeypatch.setattr(
+            "repowire.daemon.spawn_service.capture_spawn_registration_diagnostics",
+            AsyncMock(return_value={}),
+        )
+
+        response = await client.post("/spawn", json={
+            "path": str(tmp_path),
+            "backend": "claude-code",
+        })
+        await asyncio.gather(*late_registration)
+
+        assert response.status_code == 504, response.text
+        peer_id = response.json()["detail"]["peer_id"]
+        assert await registry.get_peer(peer_id) is None
+        assert peer_id in registry._retired
+        assert peer_id in registry._registration_tombstones
+
     async def test_returns_correlation_id(self, env):
         client, _, _, _ = env
         await _register_peer(client, "alice")

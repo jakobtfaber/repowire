@@ -49,13 +49,19 @@ repowire peer new ~/projects/project-b --backend codex --profile fast
 
 From an agent, use the `spawn_peer` MCP tool when the path is allowed.
 
-Verify registration:
+Successful spawn calls for hook-backed agents return only after registration.
+The response includes the canonical display name and peer id, so an orchestrator
+can address the worker immediately. To inspect the registered peer:
 
 ```bash
 repowire peer list
 ```
 
-The new peer appears after its runtime starts and registers. Codex may register after its first interaction; spawn seed messages are used to trigger that first turn.
+Codex may register only after its first interaction; spawn seed messages trigger
+that first turn. If registration does not complete within 45 seconds, spawn
+fails and removes the unregistered pane. When pane removal or durable cleanup
+fails, Repowire preserves the remaining ownership proof and reports
+`spawn_cleanup_failed` instead of claiming cleanup succeeded.
 
 Restart a resumable peer:
 
@@ -83,7 +89,11 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 ## Troubleshooting
 
 - Spawn is refused: check `daemon.spawn.allowed_paths` and backend command configuration.
-- Spawned Codex peer is not visible yet: send or confirm the seed prompt so Codex fires `SessionStart`.
+- Spawn reports `spawn_registration_timeout`: confirm the seed prompt reached
+  the worker and that Codex fires `SessionStart`; the timed-out pane was removed.
+- Spawn reports `spawn_cleanup_failed`: inspect the returned peer and pane;
+  Repowire preserved the remaining ownership proof because cleanup could not
+  be confirmed.
 - Restart fails before killing the pane: inspect the session binding and backend resume support.
 - Kill is refused for an external pane: rehook/link the pane or retire it manually; destructive pane control requires proof.
 

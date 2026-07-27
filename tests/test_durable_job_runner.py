@@ -29,6 +29,7 @@ from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.routes import work as work_routes
 from repowire.daemon.session_control import SessionControlService
 from repowire.daemon.spawn_service import (
+    SpawnAttemptError,
     SpawnRegistrationResult,
     SpawnService,
     SpawnServiceResult,
@@ -2078,7 +2079,7 @@ async def test_spawn_service_registration_retry_captures_both_attempts_and_clean
     forget_spawn_ownership = Mock()
     monkeypatch.setattr("repowire.daemon.spawn_service.kill_pane", kill_pane)
     monkeypatch.setattr(
-        "repowire.daemon.spawn_service.forget_spawn_ownership",
+        "repowire.daemon.spawn_service.forget_spawn_ownership_verified",
         forget_spawn_ownership,
     )
 
@@ -2088,9 +2089,10 @@ async def test_spawn_service_registration_retry_captures_both_attempts_and_clean
     async def warmup(*_args, **_kwargs):
         return None
 
+    spawned_pane_ids: set[str] = set()
     service = SpawnService(
         spawn=cfg.daemon.spawn,
-        spawned_pane_ids=set(),
+        spawned_pane_ids=spawned_pane_ids,
         background_tasks=set(),
         spawn_impl=spawn_impl,
         warmup_impl=warmup,
@@ -2106,10 +2108,97 @@ async def test_spawn_service_registration_retry_captures_both_attempts_and_clean
     assert result.resolved_peer is None
     assert [item["attempt"] for item in result.registration_attempts] == [1, 2]
     assert [item["pane_id"] for item in result.registration_attempts] == ["%701", "%702"]
+    assert [item["cleanup"] for item in result.registration_attempts] == [
+        {"pane_killed": True, "ownership_removed": True},
+        {"pane_killed": True, "ownership_removed": True},
+    ]
     assert kill_pane.call_args_list[0].args == ("%701",)
     assert kill_pane.call_args_list[1].args == ("%702",)
     assert forget_spawn_ownership.call_args_list[0].args == ("%701",)
     assert forget_spawn_ownership.call_args_list[1].args == ("%702",)
+    assert spawned_pane_ids == set()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("failure_stage", "failure_message"),
+    [
+        ("fence", "simulated interruption before durable fence"),
+        ("ownership", "verified durable ownership deletion failed"),
+    ],
+)
+async def test_spawn_service_preserves_ownership_when_kill_finalization_fails(
+    tmp_path, monkeypatch, failure_stage, failure_message
+):
+    """Neither fence nor durable-delete failure can erase the remaining proof."""
+    cfg = Config()
+    cfg.daemon.spawn.commands[AgentType.CODEX] = "codex"
+    cfg.daemon.spawn.allowed_paths = [str(tmp_path)]
+    pane_id = "%703"
+    spawned_pane_ids: set[str] = set()
+    forget = Mock(
+        side_effect=RuntimeError(failure_message)
+        if failure_stage == "ownership"
+        else None
+    )
+    monkeypatch.setattr(
+        "repowire.daemon.spawn_service.record_spawn_ownership",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        "repowire.daemon.spawn_service.capture_spawn_registration_diagnostics",
+        AsyncMock(return_value={"pane_id": pane_id}),
+    )
+    monkeypatch.setattr(
+        "repowire.daemon.spawn_service.kill_pane",
+        Mock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "repowire.daemon.spawn_service.forget_spawn_ownership_verified",
+        forget,
+    )
+
+    service = SpawnService(
+        spawn=cfg.daemon.spawn,
+        spawned_pane_ids=spawned_pane_ids,
+        background_tasks=set(),
+        spawn_impl=Mock(return_value=SimpleNamespace(
+            display_name="worker",
+            tmux_session="default:worker",
+            pane_id=pane_id,
+            message=None,
+        )),
+        warmup_impl=AsyncMock(),
+    )
+
+    async def never_registered(_spawn_result):
+        return None
+
+    async def interrupted_before_fence(_spawn_result):
+        assert pane_id in spawned_pane_ids
+        forget.assert_not_called()
+        if failure_stage == "fence":
+            raise RuntimeError(failure_message)
+
+    with pytest.raises(SpawnAttemptError) as raised:
+        await service.spawn_registered(
+            path=str(tmp_path),
+            backend=AgentType.CODEX,
+            await_peer=never_registered,
+            attempts=1,
+            on_killed=interrupted_before_fence,
+        )
+
+    assert pane_id in spawned_pane_ids
+    if failure_stage == "fence":
+        forget.assert_not_called()
+    else:
+        forget.assert_called_once_with(pane_id)
+    assert raised.value.registration_attempts[-1]["cleanup"] == {
+        "pane_killed": True,
+        "ownership_removed": False,
+        "finalization_error": f"RuntimeError: {failure_message}",
+    }
 
 
 @pytest.mark.anyio

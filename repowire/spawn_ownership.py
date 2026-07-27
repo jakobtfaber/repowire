@@ -131,6 +131,26 @@ def forget_spawn_ownership(pane_id: str) -> None:
         _save_records(records)
 
 
+def forget_spawn_ownership_verified(pane_id: str) -> None:
+    """Remove durable ownership or raise when deletion cannot be proven.
+
+    Timeout cleanup uses this fail-closed variant before discarding its
+    in-memory ownership proof. Other lifecycle cleanup keeps the historical
+    best-effort helper above.
+    """
+
+    if not pane_id:
+        return
+    records = _load_records_strict()
+    if records.pop(pane_id, None) is None:
+        return
+    _save_records(records)
+    if pane_id in _load_records_strict():
+        raise RuntimeError(
+            f"Durable spawn ownership still contains pane {pane_id} after deletion"
+        )
+
+
 def get_spawn_ownership(pane_id: str) -> SpawnOwnershipRecord | None:
     """Return the durable ownership record for ``pane_id``, if present."""
 
@@ -406,6 +426,47 @@ def _load_records() -> dict[str, SpawnOwnershipRecord]:
             continue
         if record.pane_id == pane_id:
             records[pane_id] = record
+    return records
+
+
+def _load_records_strict() -> dict[str, SpawnOwnershipRecord]:
+    """Load ownership records without treating corruption as an empty store."""
+    try:
+        raw = OWNERSHIP_PATH.read_text()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot read durable spawn ownership at {OWNERSHIP_PATH}: {exc}"
+        ) from exc
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Malformed durable spawn ownership at {OWNERSHIP_PATH}: {exc}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"Malformed durable spawn ownership at {OWNERSHIP_PATH}: expected object"
+        )
+    records: dict[str, SpawnOwnershipRecord] = {}
+    for pane_id, payload in data.items():
+        if not isinstance(pane_id, str) or not isinstance(payload, dict):
+            raise RuntimeError(
+                f"Malformed durable spawn ownership at {OWNERSHIP_PATH}: invalid record"
+            )
+        try:
+            record = SpawnOwnershipRecord(**payload)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Malformed durable spawn ownership at {OWNERSHIP_PATH}: {exc}"
+            ) from exc
+        if record.pane_id != pane_id:
+            raise RuntimeError(
+                f"Malformed durable spawn ownership at {OWNERSHIP_PATH}: "
+                f"pane key {pane_id} does not match record {record.pane_id}"
+            )
+        records[pane_id] = record
     return records
 
 

@@ -23,7 +23,7 @@ from repowire.daemon.session_resume import (
     ResumeUnavailableError,
     resume_target,
 )
-from repowire.daemon.spawn_service import SpawnService
+from repowire.daemon.spawn_service import SpawnAttemptError, SpawnService, SpawnServiceResult
 from repowire.hooks.utils import clear_pane_runtime_state, read_pane_runtime_metadata
 from repowire.hooks.ws_hook_supervisor import maybe_respawn, reconcile_spawn_ws_hook
 from repowire.installers.post_spawn import post_spawn_warmup
@@ -58,6 +58,7 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 #   restart. Tmux pane ids are session-lifetime unique within a server, so this
 #   set is only safe for the current tmux server's lifetime.
 _SPAWNED_PANE_IDS: set[str] = set()
+_SPAWN_REGISTRATION_TIMEOUT_SECONDS = 45.0
 
 
 def forget_spawned_pane(pane_id: str) -> None:
@@ -347,6 +348,220 @@ async def spawn(
     caller = await _resolve_caller(get_peer_registry(), request.from_peer)
     owner_peer_id = caller.peer_id if caller is not None else None
     resolved_path = str(Path(request.path).expanduser().resolve())
+    backend_profile = agent_backend_for(backend)
+    peer_id: str | None = None
+    warnings: list[str] = []
+    if backend_profile.self_registers_on_spawn:
+        registry = get_peer_registry()
+        peer_id, reserved_display_name = await registry.allocate_and_register(
+            circle=request.circle,
+            backend=backend,
+            path=resolved_path,
+            metadata={"spawn_registration": "reserved"},
+            machine=socket.gethostname(),
+            role=request.role,
+            initial_status=PeerStatus.OFFLINE,
+        )
+
+        async def await_registered_peer(result: SpawnServiceResult) -> Peer | None:
+            pane_id = result.pane_id
+            if not pane_id:
+                return None
+
+            async def resolve() -> Peer | None:
+                peer = await registry.get_peer_by_pane(pane_id)
+                if (
+                    peer is not None
+                    and peer.peer_id == peer_id
+                    and peer.status != PeerStatus.OFFLINE
+                    and registry.is_transport_connected(peer.peer_id)
+                ):
+                    return peer
+                return None
+
+            async def poll() -> Peer:
+                while True:
+                    peer = await resolve()
+                    if peer is not None:
+                        return peer
+                    await asyncio.sleep(0.25)
+
+            try:
+                return await asyncio.wait_for(
+                    poll(),
+                    timeout=_SPAWN_REGISTRATION_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                # Close the cancellation boundary: registration may have landed
+                # while wait_for was cancelling the poll task.
+                return await resolve()
+
+        def record_reserved_ownership(result: SpawnServiceResult) -> None:
+            if result.pane_id:
+                record_spawn_ownership(
+                    pane_id=result.pane_id,
+                    path=resolved_path,
+                    backend=backend,
+                    circle=request.circle,
+                    role=request.role,
+                    display_name=reserved_display_name,
+                    tmux_session=result.tmux_session,
+                    peer_id=peer_id,
+                    owner_peer_id=owner_peer_id,
+                )
+
+        async def fence_killed_spawn(result: SpawnServiceResult) -> None:
+            """Persist cancellation before releasing either ownership proof."""
+            await registry.tombstone_registration(peer_id)
+            await registry.mark_offline(
+                peer_id,
+                reason="spawn_registration_timeout",
+                source="spawn_route",
+                detail="Repowire killed an unregistered spawned pane.",
+                context={"pane_id": result.pane_id},
+                terminal=True,
+            )
+            await registry.unregister_peer(peer_id)
+
+        try:
+            registration = await service.spawn_registered(
+                path=request.path,
+                backend=backend,
+                profile=request.profile,
+                circle=request.circle,
+                message=request.message,
+                role=request.role,
+                peer_id=peer_id,
+                owner_peer_id=owner_peer_id,
+                await_peer=await_registered_peer,
+                attempts=1,
+                on_spawned=record_reserved_ownership,
+                on_killed=fence_killed_spawn,
+            )
+        except SpawnAttemptError as exc:
+            cleanup = (
+                exc.registration_attempts[-1].get("cleanup", {})
+                if exc.registration_attempts
+                else {}
+            )
+            if (
+                cleanup.get("pane_killed") is True
+                and cleanup.get("ownership_removed") is False
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "error": "spawn_cleanup_failed",
+                        "hint": (
+                            "The spawned pane was removed, but Repowire could not "
+                            "durably finalize registration cancellation. Spawn "
+                            "ownership was preserved for safe follow-up cleanup."
+                        ),
+                        "pane_id": exc.registration_attempts[-1].get("pane_id"),
+                        "peer_id": peer_id,
+                        "display_name": reserved_display_name,
+                        "timeout_seconds": _SPAWN_REGISTRATION_TIMEOUT_SECONDS,
+                        "cleanup": cleanup,
+                        "registration_attempts": exc.registration_attempts,
+                    },
+                ) from exc
+            await registry.unregister_peer(peer_id)
+            if isinstance(exc.original, HTTPException):
+                raise exc.original
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "spawn_failed",
+                    "message": str(exc.original),
+                    "type": type(exc.original).__name__,
+                    "attempt": exc.attempt,
+                    "registration_attempts": exc.registration_attempts,
+                },
+            ) from exc
+
+        result = registration.spawn_result
+        peer = registration.resolved_peer
+        if result is None:
+            await registry.unregister_peer(peer_id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "spawn_failed",
+                    "message": "Spawn completed without a result.",
+                    "peer_id": peer_id,
+                },
+            )
+        cleanup = (
+            registration.registration_attempts[-1].get("cleanup", {})
+            if registration.registration_attempts
+            else {}
+        )
+        pane_killed = cleanup.get("pane_killed") is True
+        if peer is None and not pane_killed and result.pane_id:
+            late_peer = await registry.get_peer_by_pane(result.pane_id)
+            if (
+                late_peer is not None
+                and late_peer.peer_id == peer_id
+                and late_peer.status != PeerStatus.OFFLINE
+                and registry.is_transport_connected(late_peer.peer_id)
+            ):
+                peer = late_peer
+
+        if peer is None and pane_killed:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail={
+                    "error": "spawn_registration_timeout",
+                    "hint": (
+                        "The spawned pane did not register through its hook within "
+                        f"{_SPAWN_REGISTRATION_TIMEOUT_SECONDS:g} seconds. Repowire "
+                        "killed the pane and removed its spawn ownership."
+                    ),
+                    "pane_id": result.pane_id if result is not None else None,
+                    "peer_id": peer_id,
+                    "timeout_seconds": _SPAWN_REGISTRATION_TIMEOUT_SECONDS,
+                    "cleanup": cleanup,
+                    "registration_attempts": registration.registration_attempts,
+                },
+            )
+        if peer is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "spawn_cleanup_failed",
+                    "hint": (
+                        "The spawned pane did not register and Repowire could not "
+                        "confirm that tmux removed it. Spawn ownership was preserved "
+                        "for safe follow-up cleanup."
+                    ),
+                    "pane_id": result.pane_id,
+                    "peer_id": peer_id,
+                    "display_name": reserved_display_name,
+                    "timeout_seconds": _SPAWN_REGISTRATION_TIMEOUT_SECONDS,
+                    "cleanup": cleanup,
+                    "registration_attempts": registration.registration_attempts,
+                },
+            )
+        if result.pane_id:
+            record_spawn_ownership(
+                pane_id=result.pane_id,
+                path=resolved_path,
+                backend=backend,
+                circle=request.circle,
+                role=request.role,
+                display_name=peer.display_name,
+                tmux_session=result.tmux_session,
+                peer_id=peer.peer_id,
+                owner_peer_id=owner_peer_id,
+            )
+        return SpawnResponse(
+            display_name=peer.display_name,
+            tmux_session=result.tmux_session,
+            peer_id=peer.peer_id,
+            registration_state="registered",
+            warnings=warnings,
+        )
+
     result = service.spawn(
         path=request.path,
         backend=backend,
@@ -356,12 +571,9 @@ async def spawn(
         role=request.role,
         owner_peer_id=owner_peer_id,
     )
-    backend_profile = agent_backend_for(backend)
-    peer_id: str | None = None
     display_name = result.display_name
     registration_state = "pending_hook"
-    warnings: list[str] = []
-    if result.pane_id and not backend_profile.self_registers_on_spawn:
+    if result.pane_id:
         peer_id, display_name = await get_peer_registry().allocate_and_register(
             circle=request.circle,
             backend=backend,

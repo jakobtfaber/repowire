@@ -40,6 +40,7 @@ class ConnectionInfo:
     websocket: WebSocket
     pane_id: str | None = None
     display_name: str | None = None
+    ready: bool = True
     connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -62,6 +63,8 @@ class WebSocketTransport:
         websocket: WebSocket,
         pane_id: str | None = None,
         display_name: str | None = None,
+        *,
+        ready: bool = True,
     ) -> None:
         """Register WebSocket connection.
 
@@ -77,8 +80,19 @@ class WebSocketTransport:
                 websocket=websocket,
                 pane_id=pane_id,
                 display_name=display_name,
+                ready=ready,
             )
             logger.info(f"Registered connection for {session_id}")
+
+    async def activate(self, session_id: str, websocket: WebSocket) -> bool:
+        """Publish an attached socket for routing after its handshake completes."""
+        async with self._lock:
+            connection = self._connections.get(session_id)
+            if connection is None or connection.websocket is not websocket:
+                return False
+            connection.ready = True
+            logger.info(f"Activated connection for {session_id}")
+            return True
 
     async def disconnect(self, session_id: str, websocket: WebSocket | None = None) -> bool:
         """Unregister WebSocket connection.
@@ -115,7 +129,7 @@ class WebSocketTransport:
         async with self._lock:
             conn = self._connections.get(session_id)
 
-        if not conn:
+        if not conn or not conn.ready:
             raise TransportError(f"No connection for session {session_id}")
 
         try:
@@ -161,11 +175,16 @@ class WebSocketTransport:
 
     def is_connected(self, session_id: str) -> bool:
         """Check if session has active connection."""
-        return session_id in self._connections
+        connection = self._connections.get(session_id)
+        return connection is not None and connection.ready
 
     def get_all_sessions(self) -> list[str]:
         """Get all connected session IDs."""
-        return list(self._connections.keys())
+        return [
+            session_id
+            for session_id, connection in self._connections.items()
+            if connection.ready
+        ]
 
     def get_connection_pane_id(self, session_id: str) -> str | None:
         """Return the pane currently bound to a WebSocket session, if known."""

@@ -217,6 +217,13 @@ class PeerRegistry:
         self._retired: dict[str, datetime] = {}
         self._load_retired()
 
+        # Short-lived, non-reclaimable cancellation fence for peer ids whose
+        # spawned pane was conclusively killed before registration completed.
+        # Unlike normal retirement, a live agent_pid cannot override this:
+        # SessionStart may already be in flight when tmux confirms the kill.
+        self._registration_tombstones: dict[str, datetime] = {}
+        self._load_registration_tombstones()
+
         # Consecutive honest pane_alive=false pongs per connected peer.
         self._pane_unsafe_strikes: dict[str, int] = {}
 
@@ -271,6 +278,37 @@ class PeerRegistry:
                     "DELETE FROM retired_peers WHERE peer_id = ?",
                     (peer_id,),
                 )
+
+    def _load_registration_tombstones(self) -> None:
+        """Restore unexpired cancelled-spawn fences after daemon restart."""
+        if self._state_db is None:
+            return
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=self._REGISTRATION_TOMBSTONE_TTL_SECONDS
+        )
+        for peer_id, raw_at in self._state_db.load_registration_tombstones().items():
+            try:
+                at = datetime.fromisoformat(raw_at)
+            except (TypeError, ValueError):
+                self._state_db.delete_registration_tombstone(peer_id)
+                continue
+            if at > cutoff:
+                self._registration_tombstones[peer_id] = at
+            else:
+                self._state_db.delete_registration_tombstone(peer_id)
+
+    def _registration_tombstone_active(self, peer_id: str) -> bool:
+        """Return whether a cancelled-spawn fence is active; prune expiry."""
+        tombstoned_at = self._registration_tombstones.get(peer_id)
+        if tombstoned_at is None:
+            return False
+        age = (datetime.now(timezone.utc) - tombstoned_at).total_seconds()
+        if age <= self._REGISTRATION_TOMBSTONE_TTL_SECONDS:
+            return True
+        self._registration_tombstones.pop(peer_id, None)
+        if self._state_db is not None:
+            self._state_db.delete_registration_tombstone(peer_id)
+        return False
 
     # ------------------------------------------------------------------
     # Mapping persistence
@@ -1076,6 +1114,12 @@ class PeerRegistry:
         pane_hook_sync_intent: tuple[str, str, str] | None = None
 
         async with self._lock:
+            if peer_id and self._registration_tombstone_active(peer_id):
+                raise PeerRetiredError(
+                    f"peer_id {peer_id} registration was cancelled after "
+                    "its spawned pane was removed"
+                )
+
             # Retirement guard: a claim naming a terminally-offlined peer_id is
             # an orphan ws-hook reconnect unless it proves a live agent. Checked
             # against _retired (not _peers) so it also covers ids already
@@ -1582,6 +1626,23 @@ class PeerRegistry:
     # ------------------------------------------------------------------
     # Unregister
     # ------------------------------------------------------------------
+
+    async def tombstone_registration(self, peer_id: str) -> None:
+        """Block late registration for a conclusively killed spawned peer."""
+        async with self._lock:
+            at = datetime.now(timezone.utc)
+            self._registration_tombstones[peer_id] = at
+            if self._state_db is not None:
+                self._state_db.save_registration_tombstone(peer_id, at.isoformat())
+
+    async def is_registration_tombstoned(self, peer_id: str) -> bool:
+        """Return whether spawn cancellation still fences this peer id."""
+        async with self._lock:
+            return self._registration_tombstone_active(peer_id)
+
+    def is_transport_connected(self, peer_id: str) -> bool:
+        """Return whether the peer completed its inbound transport handshake."""
+        return bool(self._transport and self._transport.is_connected(peer_id))
 
     async def unregister_peer(self, identifier: str, circle: str | None = None) -> bool:
         """Unregister a peer from the mesh (removes from both _peers and _mappings).
@@ -2646,10 +2707,12 @@ class PeerRegistry:
             self._prune_delivery_traces()
             self._prune_spawn_ownership()
             self._prune_retired()
+            self._prune_registration_tombstones()
             self._save_events()
             self._persist_mappings()
 
     _RETIRED_TTL_SECONDS = 72 * 3600
+    _REGISTRATION_TOMBSTONE_TTL_SECONDS = 5 * 60
 
     def _prune_retired(self) -> None:
         """Drop retirement records old enough that any orphan is long gone."""
@@ -2667,6 +2730,22 @@ class PeerRegistry:
                     "DELETE FROM retired_peers WHERE peer_id = ?",
                     [(peer_id,) for peer_id in expired],
                 )
+
+    def _prune_registration_tombstones(self) -> None:
+        """Drop cancelled-spawn fences after any in-flight hook is long gone."""
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=self._REGISTRATION_TOMBSTONE_TTL_SECONDS
+        )
+        expired = [
+            peer_id
+            for peer_id, at in self._registration_tombstones.items()
+            if at <= cutoff
+        ]
+        for peer_id in expired:
+            self._registration_tombstones.pop(peer_id, None)
+        if self._state_db is not None:
+            for peer_id in expired:
+                self._state_db.delete_registration_tombstone(peer_id)
 
     def _prune_spawn_ownership(self) -> None:
         """Drop spawn-ownership records pointing at dead tmux panes. Best-effort.

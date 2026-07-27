@@ -1,6 +1,7 @@
 """Tests for PeerRegistry session mapping persistence and pruning."""
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -8,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from repowire.config.models import AgentType
-from repowire.daemon.peer_registry import PeerRegistry
+from repowire.daemon.peer_registry import PeerRegistry, PeerRetiredError
 from repowire.daemon.state import StateDatabase
 from repowire.protocol.peers import PeerRole, PeerStatus
 
@@ -40,6 +41,38 @@ def _make_sqlite_registry(tmp_path: Path, mappings: dict | None = None) -> PeerR
 
 def _ts(hours_ago: float) -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_spawn_fence_survives_daemon_restart(tmp_path):
+    """A still-live late hook cannot reclaim a cancelled spawn after restart."""
+    state_path = tmp_path / "state.db"
+    peer_id = "repow-default-cancelled"
+    first_db = StateDatabase(state_path)
+    first = PeerRegistry(
+        config=__import__("repowire.config.models", fromlist=["Config"]).Config(),
+        message_router=MagicMock(),
+        persistence_path=tmp_path / "sessions.json",
+        state_db=first_db,
+    )
+    await first.tombstone_registration(peer_id)
+    first_db.close()
+
+    restarted = PeerRegistry(
+        config=__import__("repowire.config.models", fromlist=["Config"]).Config(),
+        message_router=MagicMock(),
+        persistence_path=tmp_path / "sessions.json",
+        state_db=StateDatabase(state_path),
+    )
+
+    with pytest.raises(PeerRetiredError, match="registration was cancelled"):
+        await restarted.allocate_and_register(
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path=str(tmp_path),
+            peer_id=peer_id,
+            agent_pid=os.getpid(),
+        )
 
 
 def test_prune_removes_old_mappings(tmp_path):

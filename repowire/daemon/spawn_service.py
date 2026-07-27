@@ -21,7 +21,10 @@ from repowire.daemon.spawn_diagnostics import capture_spawn_registration_diagnos
 from repowire.installers.post_spawn import post_spawn_warmup
 from repowire.protocol.peers import PeerRole
 from repowire.spawn import SpawnConfig, SpawnResult, kill_pane, spawn_peer
-from repowire.spawn_ownership import forget_spawn_ownership, record_spawn_ownership
+from repowire.spawn_ownership import (
+    forget_spawn_ownership_verified,
+    record_spawn_ownership,
+)
 
 
 @dataclass(frozen=True)
@@ -219,6 +222,7 @@ class SpawnService:
         resume_plan: AgentResumePlan | None = None,
         attempts: int = 2,
         on_spawned: Callable[[SpawnServiceResult], None] | None = None,
+        on_killed: Callable[[SpawnServiceResult], Awaitable[None]] | None = None,
     ) -> SpawnRegistrationResult:
         """Spawn and wait for the peer to self-register, retrying timed-out panes."""
         registration_attempts: list[dict[str, Any]] = []
@@ -259,8 +263,30 @@ class SpawnService:
             diagnostics["attempt"] = attempt
             registration_attempts.append(diagnostics)
             if spawn_result.pane_id:
-                kill_pane(spawn_result.pane_id)
-                forget_spawn_ownership(spawn_result.pane_id)
+                pane_killed = kill_pane(spawn_result.pane_id)
+                cleanup: dict[str, Any] = {
+                    "pane_killed": pane_killed,
+                    "ownership_removed": False,
+                }
+                diagnostics["cleanup"] = cleanup
+                if pane_killed:
+                    try:
+                        if on_killed is not None:
+                            await on_killed(spawn_result)
+                        forget_spawn_ownership_verified(spawn_result.pane_id)
+                    except Exception as exc:
+                        cleanup["finalization_error"] = (
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                        raise SpawnAttemptError(
+                            exc,
+                            attempt=attempt,
+                            registration_attempts=registration_attempts,
+                        ) from exc
+                    self._spawned_pane_ids.discard(spawn_result.pane_id)
+                    cleanup["ownership_removed"] = True
+                else:
+                    break
 
         return SpawnRegistrationResult(
             spawn_result=spawn_result,

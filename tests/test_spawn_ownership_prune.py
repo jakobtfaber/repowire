@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from repowire.config.models import AgentType
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 from repowire.spawn_ownership import (
@@ -12,6 +14,7 @@ from repowire.spawn_ownership import (
     TmuxPaneEvidence,
     _load_records,
     backfill_ownership_peer_id,
+    forget_spawn_ownership_verified,
     prune_dead_ownership,
     record_spawn_ownership,
 )
@@ -35,6 +38,40 @@ def _record(pane_id: str, *, peer_id: str | None = None) -> None:
         peer_id=peer_id,
         machine="localhost",
     )
+
+
+def test_verified_forget_rejects_malformed_store(monkeypatch, tmp_path: Path) -> None:
+    _seed(monkeypatch, tmp_path)
+    ownership_path = tmp_path / "ownership.json"
+    ownership_path.write_text("{not-json")
+
+    with pytest.raises(RuntimeError, match="Malformed durable spawn ownership"):
+        forget_spawn_ownership_verified("%1")
+
+    assert ownership_path.read_text() == "{not-json"
+
+
+def test_verified_forget_rejects_unreadable_store(monkeypatch, tmp_path: Path) -> None:
+    _seed(monkeypatch, tmp_path)
+    (tmp_path / "ownership.json").mkdir()
+
+    with pytest.raises(RuntimeError, match="Cannot read durable spawn ownership"):
+        forget_spawn_ownership_verified("%1")
+
+
+def test_verified_forget_preserves_record_when_save_fails(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _seed(monkeypatch, tmp_path)
+    _record("%1")
+
+    with patch(
+        "repowire.spawn_ownership._save_records",
+        side_effect=OSError("disk full"),
+    ), pytest.raises(OSError, match="disk full"):
+        forget_spawn_ownership_verified("%1")
+
+    assert "%1" in _load_records()
 
 
 def test_prune_drops_dead_pane_records(monkeypatch, tmp_path: Path) -> None:

@@ -604,6 +604,71 @@ class TestMcpSpawnPeerReturn:
         monkeypatch.setattr("repowire.mcp.server._get_my_peer_identifier", caller)
 
     @pytest.mark.asyncio
+    @patch("repowire.mcp.server._ensure_registered", new_callable=AsyncMock)
+    @patch("repowire.mcp.server._get_my_identity", new_callable=AsyncMock)
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_spawned_canonical_peer_id_is_immediately_askable(
+        self,
+        mock_request: AsyncMock,
+        mock_identity: AsyncMock,
+        mock_register: AsyncMock,
+    ) -> None:
+        """The canonical spawn identity should route directly without peer lookup."""
+        mock_identity.return_value = ("orchestrator", "prod", "orchestrator")
+        mock_request.side_effect = [
+            {
+                "ok": True,
+                "display_name": "alpha-svc-2",
+                "tmux_session": "prod:alpha-svc-2",
+                "peer_id": "repow-prod-alpha1234",
+                "registration_state": "registered",
+            },
+            {"correlation_id": "ask-123"},
+        ]
+
+        from repowire.mcp.server import create_mcp_server
+
+        mcp = create_mcp_server()
+        spawn_tool = mcp._tool_manager._tools["spawn_peer"]
+        ask_tool = mcp._tool_manager._tools["ask"]
+
+        spawn_result = await spawn_tool.fn(
+            path="/tmp/alpha-svc", backend="codex", circle="prod",
+        )
+        correlation_id = await ask_tool.fn(
+            peer_name="repow-prod-alpha1234",
+            query="Review the change.",
+            circle="prod",
+        )
+
+        assert "alpha-svc-2" in spawn_result
+        assert "repow-prod-alpha1234" in spawn_result
+        assert correlation_id == "ask-123"
+        assert [awaited.args for awaited in mock_request.await_args_list] == [
+            (
+                "POST", "/spawn", {
+                    "path": "/tmp/alpha-svc",
+                    "circle": "prod",
+                    "from_peer": "repow-test-caller",
+                    "backend": "codex",
+                },
+            ),
+            (
+                "POST", "/ask", {
+                    "from_peer": "orchestrator",
+                    "to_peer": "repow-prod-alpha1234",
+                    "text": "Review the change.",
+                    "circle": "prod",
+                },
+            ),
+        ]
+        assert [awaited.kwargs for awaited in mock_register.await_args_list] == [
+            {"strict": True},
+            {"strict": True},
+        ]
+        assert mock_identity.await_count == 2
+
+    @pytest.mark.asyncio
     @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
     async def test_spawn_peer_returns_display_name_and_tmux_session(
         self, mock_request: AsyncMock,
