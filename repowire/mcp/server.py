@@ -1407,9 +1407,15 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
         daemon.spawn.profiles args for that backend. `command` is retained as a
         one-release compatibility alias for older callers.
 
-        Hook-backed runtimes self-register into the mesh via SessionStart within
-        a few seconds. Antigravity is pre-registered as a CLI-polling fallback
-        peer because `agy` plugin hook firing is still pending upstream.
+        Hook-backed runtimes get a bounded 45-second window to self-register
+        via SessionStart. A successful response returns the daemon's canonical
+        display_name and peer_id; that peer is immediately addressable by
+        either value. If registration times out, the daemon removes the pane
+        and provisional peer before returning an error. If pane removal or
+        durable cleanup cannot be confirmed, the error says so and preserves
+        the remaining ownership proof for safe follow-up cleanup.
+        Antigravity is pre-registered as a CLI-polling fallback peer because
+        `agy` plugin hook firing is still pending upstream.
 
         The circle maps to the tmux session name and cannot be reassigned after
         spawn. If omitted, Repowire uses the caller's current circle.
@@ -1435,7 +1441,8 @@ def create_mcp_server(*, streamable_http_path: str = "/mcp") -> FastMCP:
                      needs it (or the default warmup) to register promptly.
 
         Returns:
-            Spawn confirmation with display_name and tmux_session
+            Spawn confirmation with canonical display_name, peer_id, and
+            tmux_session; the returned identity is immediately addressable.
         """
         _ensure_http_admin_tool_allowed("spawn_peer")
         await _ensure_registered(strict=True)

@@ -206,7 +206,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             websocket,
             pane_id=pane_id,
             display_name=assigned_name,
+            ready=False,
         )
+
+        # A spawn cancellation can land after registry allocation but while the
+        # socket is being attached. Re-check after transport registration so a
+        # cancelled peer cannot briefly become connected.
+        if await peer_registry.is_registration_tombstoned(session_id):
+            await transport.disconnect(session_id, websocket)
+            await peer_registry.unregister_peer(session_id)
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "registration_cancelled",
+                    "error": "Peer registration was cancelled",
+                }
+            )
+            await websocket.close(code=4004, reason="Registration cancelled")
+            logger.info(
+                "WebSocket connect cancelled after transport registration (%s)",
+                session_id,
+            )
+            return
 
         # Send connect response with daemon-assigned name
         await websocket.send_json({
@@ -214,6 +235,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "session_id": session_id,
             "display_name": assigned_name,
         })
+        if not await transport.activate(session_id, websocket):
+            await websocket.close(code=4004, reason="Registration cancelled")
+            logger.info(
+                "WebSocket activation cancelled after handshake (%s)",
+                session_id,
+            )
+            return
         logger.info(f"WebSocket connected: {assigned_name}@{circle} ({session_id}, {backend})")
         asyncio.create_task(
             _flush_queued_notifies(session_id, state),

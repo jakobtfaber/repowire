@@ -94,6 +94,80 @@ class TestWebSocketConnect:
 
         cleanup_deps()
 
+    async def test_tombstone_after_transport_connect_fails_closed(
+        self, tmp_path, monkeypatch
+    ):
+        """Cancellation during socket attachment never publishes connected."""
+        app = _make_app(tmp_path)
+        registry = get_peer_registry()
+        transport = registry._transport
+        events = []
+        original_connect = transport.connect
+        original_disconnect = transport.disconnect
+        original_is_tombstoned = registry.is_registration_tombstoned
+        original_unregister = registry.unregister_peer
+
+        async def tracked_connect(session_id, websocket, **kwargs):
+            await original_connect(session_id, websocket, **kwargs)
+            events.append(("connected_transport", session_id, websocket))
+            await registry.tombstone_registration(session_id)
+
+        async def tracked_is_tombstoned(session_id):
+            active = await original_is_tombstoned(session_id)
+            events.append(("checked_tombstone", session_id, active))
+            return active
+
+        async def tracked_disconnect(session_id, websocket=None):
+            events.append(
+                (
+                    "disconnected_transport",
+                    session_id,
+                    websocket,
+                    websocket is transport.current_websocket(session_id),
+                )
+            )
+            return await original_disconnect(session_id, websocket)
+
+        async def tracked_unregister(session_id, circle=None):
+            events.append(("unregistered", session_id))
+            return await original_unregister(session_id, circle)
+
+        monkeypatch.setattr(transport, "connect", tracked_connect)
+        monkeypatch.setattr(transport, "disconnect", tracked_disconnect)
+        monkeypatch.setattr(
+            registry,
+            "is_registration_tombstoned",
+            tracked_is_tombstoned,
+        )
+        monkeypatch.setattr(registry, "unregister_peer", tracked_unregister)
+
+        async with AsyncClient(
+            transport=ASGIWebSocketTransport(app), base_url="http://test"
+        ) as client, aconnect_ws("/ws", client) as ws:
+            await ws.send_json({
+                "type": "connect",
+                "display_name": "cancelledpeer",
+                "circle": "default",
+                "backend": "claude-code",
+                "path": "/tmp/cancelled",
+            })
+            resp = json.loads(await ws.receive_text())
+
+        assert resp["type"] == "error"
+        assert resp["code"] == "registration_cancelled"
+        peer_id = events[0][1]
+        assert [event[0] for event in events[:4]] == [
+            "connected_transport",
+            "checked_tombstone",
+            "disconnected_transport",
+            "unregistered",
+        ]
+        assert events[2][1:4] == (peer_id, events[0][2], True)
+        assert events[1][2] is True
+        assert not transport.is_connected(peer_id)
+        assert await registry.get_peer(peer_id) is None
+        cleanup_deps()
+
     async def test_retired_peer_id_claim_without_agent_pid_is_rejected(self, tmp_path):
         """An orphan ws-hook reconnecting a terminally-offlined peer is refused."""
         app = _make_app(tmp_path)

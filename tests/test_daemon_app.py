@@ -1,5 +1,6 @@
 """Tests for daemon app factory and CORS configuration."""
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -9,7 +10,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from repowire.config.models import Config, DaemonConfig
-from repowire.daemon.deps import cleanup_deps, init_deps
+from repowire.daemon.deps import cleanup_deps, get_peer_registry, init_deps
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.peer_registry import PeerRegistry
 from repowire.daemon.query_tracker import QueryTracker
@@ -136,13 +137,33 @@ class TestSpawnConfig:
             spawn_routes, "post_spawn_warmup", new_callable=AsyncMock,
         ):
             async with AsyncClient(transport=t, base_url="http://test") as c:
-                r = await c.post(
+                spawn_task = asyncio.create_task(c.post(
                     "/spawn",
                     json={"path": str(tmp_path), "backend": "codex", "profile": "fast"},
+                ))
+                while not mock_spawn.called:
+                    await asyncio.sleep(0)
+                spawn_cfg = mock_spawn.call_args.args[0]
+                assert spawn_cfg.peer_id is not None
+                registered = await c.post("/peers", json={
+                    "name": tmp_path.name,
+                    "path": str(tmp_path),
+                    "circle": "default",
+                    "backend": "codex",
+                    "pane_id": "%42",
+                    "peer_id": spawn_cfg.peer_id,
+                })
+                assert registered.status_code == 200, registered.text
+                registry = get_peer_registry()
+                await registry._transport.connect(
+                    spawn_cfg.peer_id,
+                    AsyncMock(),
+                    pane_id="%42",
+                    display_name=registered.json()["display_name"],
                 )
+                r = await spawn_task
 
         assert r.status_code == 200
-        spawn_cfg = mock_spawn.call_args.args[0]
         assert spawn_cfg.command == (
             "codex --dangerously-bypass-approvals-and-sandbox --model gpt-5-mini"
         )
@@ -166,11 +187,13 @@ class TestSpawnConfig:
                 pane_id="%42",
                 message="start",
             ),
-        ), patch.object(
+        ) as mock_spawn, patch.object(
             spawn_routes, "post_spawn_warmup", new_callable=AsyncMock,
         ), patch(
             "repowire.daemon.spawn_service.record_spawn_ownership",
-        ) as mock_ownership:
+        ) as mock_ownership, patch.object(
+            spawn_routes, "record_spawn_ownership",
+        ) as mock_route_ownership:
             async with AsyncClient(transport=t, base_url="http://test") as c:
                 owner = await c.post(
                     "/peers",
@@ -182,17 +205,39 @@ class TestSpawnConfig:
                     },
                 )
                 owner_id = owner.json()["peer_id"]
-                response = await c.post(
+                spawn_task = asyncio.create_task(c.post(
                     "/spawn",
                     json={
                         "path": str(tmp_path),
                         "backend": "codex",
                         "from_peer": owner_id,
                     },
+                ))
+                while not mock_spawn.called:
+                    await asyncio.sleep(0)
+                spawn_cfg = mock_spawn.call_args.args[0]
+                assert spawn_cfg.peer_id is not None
+                registered = await c.post("/peers", json={
+                    "name": tmp_path.name,
+                    "path": str(tmp_path),
+                    "circle": "default",
+                    "backend": "codex",
+                    "pane_id": "%42",
+                    "peer_id": spawn_cfg.peer_id,
+                })
+                assert registered.status_code == 200, registered.text
+                registry = get_peer_registry()
+                await registry._transport.connect(
+                    spawn_cfg.peer_id,
+                    AsyncMock(),
+                    pane_id="%42",
+                    display_name=registered.json()["display_name"],
                 )
+                response = await spawn_task
 
         assert response.status_code == 200, response.text
         assert mock_ownership.call_args.kwargs["owner_peer_id"] == owner_id
+        assert mock_route_ownership.call_args.kwargs["owner_peer_id"] == owner_id
         cleanup_deps()
 
     async def test_spawn_antigravity_pre_registers_cli_fallback_peer(self, tmp_path):

@@ -36,7 +36,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
         tables = {
             row[0]
             for row in db.conn.execute(
@@ -57,6 +57,7 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
         assert "calendar_entries" in tables
         assert "operations" in tables
         assert "delivery_traces" in tables
+        assert "registration_tombstones" in tables
     finally:
         db.close()
 
@@ -69,9 +70,27 @@ def test_state_database_migration_idempotent_and_pragmas(tmp_path: Path) -> None
                 "SELECT version FROM schema_migrations",
             ).fetchall()
         }
-        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+        assert versions == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
     finally:
         db2.close()
+
+
+def test_registration_tombstone_survives_database_reopen(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    tombstoned_at = "2026-07-26T12:34:56.000000+00:00"
+    db = StateDatabase(db_path)
+    db.save_registration_tombstone("repow-cancelled", tombstoned_at)
+    db.close()
+
+    reopened = StateDatabase(db_path)
+    try:
+        assert reopened.load_registration_tombstones() == {
+            "repow-cancelled": tombstoned_at,
+        }
+        reopened.delete_registration_tombstone("repow-cancelled")
+        assert reopened.load_registration_tombstones() == {}
+    finally:
+        reopened.close()
 
 
 def test_sqlite_operation_store_records_lifecycle(tmp_path: Path) -> None:

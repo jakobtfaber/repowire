@@ -316,7 +316,21 @@ spawn_peer(path: str, backend: str, profile: str | None = None, circle: str | No
 
 Spawn a new agent session in a project directory. `backend` must have a launch profile in `daemon.spawn.commands` in `~/.repowire/config.yaml`; spawn is off by default until you configure at least one backend and one allowed path. Pass `profile` to append args from `daemon.spawn.profiles.<backend>.<profile>` for model/profile selection. `circle` maps to the tmux session name and cannot be reassigned after spawn. If `circle` is omitted, the MCP tool uses the caller's current circle; pass `circle="default"` explicitly to target the `default` tmux session. `command` remains accepted as a deprecated compatibility selector for one release and bypasses profile resolution.
 
-Hook-backed runtimes self-register via `SessionStart` within a few seconds. Antigravity is the exception while `agy` hook firing is pending upstream: daemon spawn pre-registers it as a CLI-polling peer and returns `registration_state=cli_fallback` plus a warning. The `message` seeds first-turn context. Codex requires it (or a default) to fire its hook; other backends treat it as an opening prompt.
+For hook-backed runtimes, `spawn_peer` waits up to 45 seconds for `SessionStart`
+registration. A successful call returns the daemon-assigned `peer_id`, canonical
+display name, and `registration_state=registered`; the returned identity can be
+passed immediately to `ask` or `notify_peer` without first calling `list_peers`.
+If registration times out and pane removal succeeds, Repowire removes the
+provisional peer and spawn ownership, then returns a
+`spawn_registration_timeout` error instead of exposing a provisional address.
+If pane removal or durable cleanup cannot be confirmed, Repowire returns
+`spawn_cleanup_failed` and preserves the remaining ownership proof for safe
+follow-up cleanup. Antigravity is
+the exception while `agy` hook firing is pending upstream: daemon spawn
+pre-registers it as a CLI-polling peer and returns
+`registration_state=cli_fallback` plus a warning. The `message` seeds first-turn
+context. Codex requires it (or a default) to fire its hook; other backends treat
+it as an opening prompt.
 
 ### `kill_peer`
 
