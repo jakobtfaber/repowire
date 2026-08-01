@@ -15,7 +15,7 @@ from mcp.server.fastmcp import FastMCP
 
 from repowire.agent_backends import detect_mcp_backend, detect_mcp_backend_confident
 from repowire.agent_types import AgentType
-from repowire.config.models import DEFAULT_DAEMON_URL
+from repowire.config.models import DEFAULT_DAEMON_URL, load_config
 from repowire.hooks._tmux import get_pane_id, get_tmux_info
 from repowire.hooks.utils import (
     get_display_name,
@@ -226,9 +226,10 @@ async def daemon_request(
     try:
         client = _get_http_client()
         url = f"{DAEMON_URL}{path}"
-        headers = None
-        if _http_mcp_auth_token:
-            headers = {"Authorization": f"Bearer {_http_mcp_auth_token}"}
+        auth_token = _http_mcp_auth_token or os.environ.get("REPOWIRE_AUTH_TOKEN")
+        if not auth_token:
+            auth_token = load_config().daemon.auth_token
+        headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else None
         if method == "GET":
             resp = await client.get(url, params=params, headers=headers)
         elif method == "DELETE":
