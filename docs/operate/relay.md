@@ -16,6 +16,8 @@ Then use `https://repowire.io/dashboard` for remote dashboard access.
 
 The relay landing page accepts the relay key from setup and redirects to the dashboard when the matching daemon is connected. Missing, invalid, or disconnected keys return to the landing page with an inline error.
 
+Daemons sharing one relay credential form a federated peer namespace. Discovery is request-driven rather than polled: a peer listing or an unresolved send queries the other live daemons. Tracked asks remain owned by the originating daemon while the recipient daemon retains the inbound copy, so replies and `wait_on_ack` resolve on the original agent even when the recipient runs on another machine.
+
 ## Self-hosted relay
 
 Self-hosting runs the same relay server under your own deployment and points the daemon at your relay URL.

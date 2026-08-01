@@ -25,6 +25,7 @@ class AppState(Protocol):
     schedule_store: Any
     scheduler: Any
     work_store: Any
+    relay_client: Any
 
 
 # Global state - initialized by lifespan

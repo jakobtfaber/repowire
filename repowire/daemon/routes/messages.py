@@ -17,6 +17,7 @@ from repowire.daemon.ask_service import AskService, AskServiceError, OpenAskComm
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.peer_delivery import peer_delivery_from_state
+from repowire.daemon.relay_client import RelayRequestError
 from repowire.daemon.routes._shared import OkResponse
 from repowire.protocol.messages import AttachmentRef
 from repowire.protocol.peers import PeerStatus, TurnState
@@ -67,6 +68,7 @@ class NotifyRequest(BaseModel):
     )
     bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
     circle: str | None = Field(None, description="Circle to scope target peer lookup")
+    federated: bool = Field(default=False, exclude=True)
 
 
 class NotifyResponse(BaseModel):
@@ -118,6 +120,7 @@ class BroadcastRequest(BaseModel):
     text: str = Field(..., description="Broadcast text")
     exclude: list[str] = Field(default_factory=list, description="Peers to exclude")
     bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
+    federated: bool = Field(default=False, exclude=True)
 
 
 class BroadcastResponse(BaseModel):
@@ -303,6 +306,56 @@ async def notify_peer(
     await peer_registry.lazy_repair()
 
     try:
+        local_target = await peer_registry.get_peer(request.to_peer, circle=request.circle)
+    except ValueError as e:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "status": "ambiguous_peer",
+                "delivery_state": "failed",
+                "delivered": False,
+                "queued": False,
+                "reason": "ambiguous_peer",
+                "detail": str(e),
+                "from_peer_name": request.from_peer,
+                "to_peer_name": request.to_peer,
+            },
+        )
+    relay = getattr(state, "relay_client", None)
+    if local_target is None and not request.federated and relay is not None:
+        try:
+            remote = await relay.find_remote_peer(request.to_peer, circle=request.circle)
+            if remote is not None:
+                from_obj = await peer_registry.get_peer(request.from_peer)
+                body = request.model_dump(exclude_none=True)
+                body.update(
+                    {
+                        "from_peer": from_obj.display_name if from_obj else request.from_peer,
+                        "to_peer": remote["peer_id"],
+                        "circle": remote.get("circle"),
+                        "bypass_circle": True,
+                        "federated": True,
+                    }
+                )
+                result = await relay.request(
+                    remote["metadata"]["federation_daemon_id"],
+                    "POST",
+                    "/notify",
+                    body=body,
+                )
+                return NotifyResponse(**result)
+        except RelayRequestError as e:
+            return JSONResponse(status_code=e.status_code, content=e.body)
+        except ValueError as e:
+            return JSONResponse(status_code=409, content={"ok": False, "detail": str(e)})
+        except (ConnectionError, TimeoutError) as e:
+            return JSONResponse(
+                status_code=503,
+                content={"ok": False, "detail": f"Federated delivery failed: {e}"},
+            )
+
+    try:
         peer_delivery = peer_delivery_from_state(
             config=state.config,
             registry=peer_registry,
@@ -446,6 +499,25 @@ async def broadcast_message(
         exclude=request.exclude,
         bypass_circle=request.bypass_circle,
     )
+
+    relay = getattr(state, "relay_client", None)
+    if not request.federated and relay is not None and relay.connected:
+        body = request.model_dump(exclude_none=True)
+        body["federated"] = True
+        daemon_ids = await relay.remote_daemon_ids()
+        results = await asyncio.gather(
+            *(
+                relay.request(daemon_id, "POST", "/broadcast", body=body)
+                for daemon_id in daemon_ids
+            ),
+            return_exceptions=True,
+        )
+        for daemon_id, result in zip(daemon_ids, results, strict=True):
+            if isinstance(result, Exception):
+                failed.append({"peer": daemon_id, "error": str(result)})
+                continue
+            sent_to.extend(result.get("sent_to", []))
+            failed.extend(result.get("failed", []))
 
     return BroadcastResponse(sent_to=sent_to, failed=failed)
 

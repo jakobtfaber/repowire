@@ -483,7 +483,11 @@ def create_app(
         relay_client: RelayClient | None = None
         if cfg.relay.enabled and cfg.relay.api_key:
             local_url = f"http://{cfg.daemon.host}:{cfg.daemon.port}"
-            relay_client = RelayClient(config=cfg.relay, local_base_url=local_url)
+            relay_client = RelayClient(
+                config=cfg.relay,
+                local_base_url=local_url,
+                daemon_auth_token=cfg.daemon.auth_token,
+            )
             await relay_client.start()
             app.state.relay_client = relay_client
             logger.info("Relay client connected to %s", cfg.relay.url)

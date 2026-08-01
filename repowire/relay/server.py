@@ -378,6 +378,7 @@ async def _handle_http_response(msg: dict[str, Any]) -> None:
 
 
 _MSG_HANDLERS: dict[str, Any] = {
+    "relay_request": _handle_targeted_forward,
     "relay_query": _handle_targeted_forward,
     "relay_notify": _handle_targeted_forward,
     "relay_broadcast": _handle_relay_broadcast,

@@ -7,6 +7,9 @@ hours) while /health still reported relay as up. See repowire-blr.
 from __future__ import annotations
 
 import asyncio
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from repowire.config.relay import RelayConfig
 from repowire.daemon import relay_client as relay_client_mod
@@ -170,6 +173,96 @@ class TestConnectArgs:
         # First clean close backed off before reconnecting (not a no-delay spin).
         assert sleeps, "clean close must sleep before reconnecting"
         assert sleeps[0] >= _INITIAL_BACKOFF
+
+
+class TestFederationRPC:
+    async def test_request_round_trip(self):
+        client = _client()
+        sent: list[dict] = []
+
+        class FakeWS:
+            close_code = None
+
+            async def send(self, raw):
+                sent.append(json.loads(raw))
+
+        client._ws = FakeWS()
+        task = asyncio.create_task(
+            client.request("remote", "GET", "/peers", params={"status": "online"})
+        )
+        await asyncio.sleep(0)
+        request = sent[0]
+        await client._handle_message(
+            {
+                "type": "relay_response",
+                "request_id": request["request_id"],
+                "status": 200,
+                "body": {"peers": [{"peer_id": "remote-peer"}]},
+            }
+        )
+
+        assert await task == {"peers": [{"peer_id": "remote-peer"}]}
+        assert request["target_daemon_id"] == "remote"
+
+    async def test_inbound_request_is_allowlisted_and_authenticated(self):
+        client = RelayClient(
+            config=RelayConfig(
+                enabled=True,
+                api_key="rw_testtesttesttesttesttest",
+                url="wss://relay.test",
+            ),
+            daemon_id="local",
+            daemon_auth_token="daemon-secret",
+        )
+        client._http = AsyncMock()
+        client._http.request.return_value = SimpleNamespace(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            json=lambda: {"ok": True},
+        )
+        client.send_message = AsyncMock()
+
+        await client._handle_message(
+            {
+                "type": "relay_request",
+                "source_daemon_id": "remote",
+                "request_id": "relay-1",
+                "method": "POST",
+                "path": "/notify",
+                "body": {"text": "hello"},
+            }
+        )
+        await asyncio.gather(*client._inbound_tasks)
+
+        assert client._http.request.await_args.kwargs["headers"] == {
+            "Authorization": "Bearer daemon-secret"
+        }
+        response = client.send_message.await_args.args[0]
+        assert response == {
+            "type": "relay_response",
+            "request_id": "relay-1",
+            "target_daemon_id": "remote",
+            "status": 200,
+            "body": {"ok": True},
+        }
+
+    async def test_inbound_request_rejects_non_federated_path(self):
+        client = _client()
+        client.send_message = AsyncMock()
+
+        await client._handle_message(
+            {
+                "type": "relay_request",
+                "source_daemon_id": "remote",
+                "request_id": "relay-2",
+                "method": "POST",
+                "path": "/spawn",
+            }
+        )
+        await asyncio.gather(*client._inbound_tasks)
+
+        response = client.send_message.await_args.args[0]
+        assert response["status"] == 403
 
 
 async def _noop_sleep(_seconds):
