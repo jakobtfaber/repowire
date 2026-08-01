@@ -306,6 +306,7 @@ async def list_peers(
             "orchestrator, human)."
         ),
     ),
+    federated: bool = Query(True, include_in_schema=False),
     _: str | None = Depends(require_auth),
 ) -> PeersResponse:
     """Get list of all registered peers, optionally filtered."""
@@ -354,7 +355,30 @@ async def list_peers(
             for p in peers
         )
     )
-    return PeersResponse(peers=list(infos))
+    result_infos = list(infos)
+    state = get_app_state()
+    relay = getattr(state, "relay_client", None)
+    if federated and relay is not None and relay.connected:
+        params: dict[str, str] = {}
+        if status:
+            params["status"] = status
+        if path:
+            params["path"] = path
+        if backend:
+            params["backend"] = backend.value
+        if circle is not None:
+            params["circle"] = circle
+        try:
+            remote = await relay.remote_peers(params)
+            known_ids = {peer.peer_id for peer in result_infos}
+            result_infos.extend(
+                PeerInfo.model_validate(peer)
+                for peer in remote
+                if peer.get("peer_id") not in known_ids
+            )
+        except Exception:
+            logger.warning("Federated peer discovery failed", exc_info=True)
+    return PeersResponse(peers=result_infos)
 
 
 @router.get("/peers/by-pane/{pane_id}", response_model=PeerInfo)

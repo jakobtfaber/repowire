@@ -95,6 +95,8 @@ class AskRequest(BaseModel):
             "the recipient answers via /answer (or ack); the answer is typed."
         ),
     )
+    correlation_id: str | None = Field(None, exclude=True)
+    origin_daemon_id: str | None = Field(None, exclude=True)
 
 
 class AskResponse(BaseModel):
@@ -456,6 +458,61 @@ async def open_ask(
     _: str | None = Depends(require_auth),
 ) -> AskResponse:
     """Open a non-blocking ask."""
+    peer_registry = get_peer_registry()
+    try:
+        local_target = await peer_registry.get_peer(request.to_peer, circle=request.circle)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    state = get_app_state()
+    relay = getattr(state, "relay_client", None)
+    if local_target is None and request.origin_daemon_id is None and relay is not None:
+        try:
+            remote = await relay.find_remote_peer(request.to_peer, circle=request.circle)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        if remote is not None:
+            target_daemon_id = remote["metadata"]["federation_daemon_id"]
+            from_obj = await _resolve_sender_for_target_name(
+                peer_registry, request.from_peer, remote.get("circle")
+            )
+            if from_obj is not None and not request.bypass_circle:
+                remote_role = remote.get("role", "agent")
+                if (
+                    not from_obj.bypasses_circles
+                    and remote_role not in ("service", "orchestrator", "human")
+                    and from_obj.circle != remote.get("circle")
+                ):
+                    raise HTTPException(status_code=403, detail="Circle boundary")
+            from_peer_id = from_obj.peer_id if from_obj else request.from_peer
+            from_peer_name = from_obj.display_name if from_obj else request.from_peer
+            cid = await state.ask_tracker.register(
+                from_peer_id=from_peer_id,
+                from_peer_name=from_peer_name,
+                to_peer_id=remote["peer_id"],
+                to_peer_name=remote.get("display_name") or remote.get("name") or request.to_peer,
+                text=request.text,
+                reply_to=request.reply_to,
+                question=request.question,
+            )
+            body = request.model_dump(exclude_none=True)
+            body.update(
+                {
+                    "from_peer": from_peer_name,
+                    "to_peer": remote["peer_id"],
+                    "circle": remote.get("circle"),
+                    "bypass_circle": True,
+                    "correlation_id": cid,
+                    "origin_daemon_id": relay.daemon_id,
+                }
+            )
+            try:
+                await relay.request(target_daemon_id, "POST", "/ask", body=body)
+            except Exception as e:
+                await state.ask_tracker.close(cid, reason="send_failed")
+                raise HTTPException(status_code=503, detail=str(e)) from e
+            if request.reply_to:
+                await state.ask_tracker.close(request.reply_to, reason="reply_to")
+            return AskResponse(correlation_id=cid)
     try:
         result = await _ask_service().open_ask(
             OpenAskCommand(
@@ -467,11 +524,25 @@ async def open_ask(
                 bypass_circle=request.bypass_circle,
                 circle=request.circle,
                 question=request.question,
+                correlation_id=request.correlation_id,
+                origin_daemon_id=request.origin_daemon_id,
             )
         )
     except AskServiceError as e:
         _raise_http(e)
     return AskResponse(correlation_id=result.correlation_id)
+
+
+async def _resolve_sender_for_target_name(
+    peer_registry: PeerRegistry, from_peer: str, target_circle: str | None,
+) -> Peer | None:
+    try:
+        return (
+            await peer_registry.get_peer(from_peer, circle=target_circle)
+            or await peer_registry.get_peer(from_peer)
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 class AskManyRequest(BaseModel):

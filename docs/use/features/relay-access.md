@@ -26,6 +26,8 @@ repowire serve --relay
 
 The daemon opens an outbound WebSocket to `wss://repowire.io/ws/relay`. An API key is generated on first run and written to `~/.repowire/config.yaml` under `relay.api_key`.
 
+To join multiple machines to one mesh, configure the same relay URL and API key on each machine. `list_peers` then includes live peers from every connected daemon, and `ask`, `ack`, `answer`, and `notify_peer` route to the daemon that owns the addressed peer. Display names that collide across machines remain ambiguous; address those peers by `peer_id`.
+
 Open:
 
 ```text

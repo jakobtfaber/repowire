@@ -42,6 +42,8 @@ class OpenAskCommand:
     bypass_circle: bool = False
     circle: str | None = None
     question: Question | None = None
+    correlation_id: str | None = None
+    origin_daemon_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,8 @@ class AskService:
                 from_repowire_session_id=from_repowire_session_id,
                 to_repowire_session_id=to_repowire_session_id,
                 question=command.question,
+                correlation_id=command.correlation_id,
+                origin_daemon_id=command.origin_daemon_id,
             )
         except QuiescedError as e:
             raise AskServiceError(
@@ -277,6 +281,44 @@ class AskService:
                 422,
                 f"Ask {command.correlation_id} is not a structured question; use /ack.",
             )
+        if existing.origin_daemon_id:
+            relay = getattr(state, "relay_client", None)
+            if relay is None or not relay.connected:
+                raise AskServiceError(503, "Origin daemon is not reachable through the relay")
+            body: dict[str, Any] = {
+                "correlation_id": command.correlation_id,
+                "outcome": command.outcome,
+            }
+            if command.option_id is not None:
+                body["option_id"] = command.option_id
+            if command.text is not None:
+                body["text"] = command.text
+            if command.message is not None:
+                body["message"] = command.message
+            if command.attachments:
+                body["attachments"] = dump_attachments(command.attachments)
+            try:
+                await relay.request(existing.origin_daemon_id, "POST", "/answer", body=body)
+            except Exception as e:
+                raise AskServiceError(503, f"Federated answer delivery failed: {e}") from e
+            answer = Answer(
+                option_id=command.option_id,
+                text=command.text,
+                outcome=command.outcome,
+                message=command.message,
+            )
+            try:
+                await ask_tracker.answer(command.correlation_id, answer)
+            except (ask_tracker.AlreadyAnsweredError, ValueError) as e:
+                raise AskServiceError(410, str(e)) from e
+            self._emit_ack_event(
+                ask=existing,
+                reason="answered",
+                delivered=True,
+                has_message=bool(command.text or command.message),
+                has_attachments=bool(command.attachments),
+            )
+            return
         answer = Answer(
             option_id=command.option_id,
             text=command.text,
@@ -371,6 +413,36 @@ class AskService:
                 ),
             )
         if existing.closed:
+            return
+
+        if existing.origin_daemon_id:
+            relay = getattr(state, "relay_client", None)
+            if relay is None or not relay.connected:
+                raise AskServiceError(503, "Origin daemon is not reachable through the relay")
+            body: dict[str, Any] = {"correlation_id": command.correlation_id}
+            if command.message is not None:
+                body["message"] = command.message
+            if command.attachments:
+                body["attachments"] = dump_attachments(command.attachments)
+            try:
+                await relay.request(existing.origin_daemon_id, "POST", "/ack", body=body)
+            except Exception as e:
+                raise AskServiceError(503, f"Federated ack delivery failed: {e}") from e
+            if command.message or command.attachments:
+                await ask_tracker.capture_reply(
+                    command.correlation_id,
+                    command.message or "",
+                    attachments=dump_attachments(command.attachments) or None,
+                )
+            reason = "ack_with_msg" if (command.message or command.attachments) else "ack"
+            await ask_tracker.close(command.correlation_id, reason=reason)
+            self._emit_ack_event(
+                ask=existing,
+                reason=reason,
+                delivered=True,
+                has_message=bool(command.message),
+                has_attachments=bool(command.attachments),
+            )
             return
 
         if existing.reply_delivery == "pull" and (command.message or command.attachments):

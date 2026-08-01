@@ -121,6 +121,7 @@ class Ask:
     # is the typed resolution. A plain ask leaves both None and behaves as today.
     question: Question | None = None
     answer: Answer | None = None
+    origin_daemon_id: str | None = None
 
 
 class AskTracker:
@@ -193,6 +194,7 @@ class AskTracker:
         parent_id: str | None = None,
         question: Question | None = None,
         reply_delivery: str = "push",
+        origin_daemon_id: str | None = None,
     ) -> str:
         """Register a new open ask. Returns the correlation_id.
 
@@ -230,6 +232,7 @@ class AskTracker:
                 parent_id=parent_id,
                 question=question,
                 reply_delivery=reply_delivery,
+                origin_daemon_id=origin_daemon_id,
             )
             logger.debug("Registered ask %s: %s -> %s", cid, from_peer_name, to_peer_name)
             return cid
