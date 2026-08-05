@@ -1,13 +1,13 @@
 # First ask
 
-Open two agents in separate tmux windows. Claude Code registers on session start; Codex registers after its first interaction.
+Open two agents in separate tmux windows. `rwclaude` registers on session start; Codex registers after its first interaction.
 
 ```bash
 # window 1
-cd ~/projects/project-a && claude
+cd ~/projects/project-a && rwclaude
 
 # window 2
-cd ~/projects/project-b && codex
+cd ~/projects/project-b && rwcodex
 ```
 
 Send a short warmup prompt in `project-b`, then verify both peers:

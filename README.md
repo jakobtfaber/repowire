@@ -40,21 +40,23 @@ repowire setup
 
 The installer detects `uv`, `pipx`, and `pip` in that order.
 
-**2. Open your normal agent CLIs.**
+**2. Open the agents you want on the mesh.**
 
-Use the tools directly; Repowire hooks into them after setup.
+Claude Code and Codex are intentionally opt-in through the `rwclaude` and
+`rwcodex` launchers. Plain `claude`, plain `codex`, and their Desktop tasks
+stay outside the mesh.
 
 ```bash
 # tmux window 1
-cd ~/projects/project-a && claude
+cd ~/projects/project-a && rwclaude
 
 # tmux window 2
-cd ~/projects/project-b && codex
+cd ~/projects/project-b && rwcodex
 ```
 
 **3. Check that both peers appeared.**
 
-Claude Code registers on session start. Codex registers after its first interaction, so send a short warmup prompt in `project-b`, then run:
+The `rwclaude` session registers on session start. Codex registers after its first interaction, so send a short warmup prompt in `project-b`, then run:
 
 ```bash
 repowire peer list
@@ -122,8 +124,8 @@ Transport notes:
 
 | Agent runtime | Connection path |
 | --- | --- |
-| Claude Code | Hooks + MCP; optional experimental channel/ACP transport |
-| Codex | Hooks + MCP |
+| Claude Code | Opt-in `rwclaude` hooks + MCP; optional experimental channel/ACP transport |
+| Codex | Opt-in `rwcodex` launcher with hooks + MCP |
 | Gemini CLI | Hooks + MCP through normalized `BeforeAgent` / `AfterAgent` events |
 | Antigravity CLI (`agy`) | Plugin install verified; hook firing and MCP pending upstream verification |
 | OpenCode | Plugin + WebSocket |
@@ -243,8 +245,8 @@ daemon:
     allow_dangerous_tools: false
   spawn:
     commands:
-      claude-code: "claude --dangerously-skip-permissions"
-      codex: "codex --dangerously-bypass-approvals-and-sandbox"
+      claude-code: "rwclaude --dangerously-skip-permissions"
+      codex: "rwcodex --dangerously-bypass-approvals-and-sandbox"
       gemini: "gemini --yolo"
     profiles:
       codex:

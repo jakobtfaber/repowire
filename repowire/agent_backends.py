@@ -220,7 +220,7 @@ class ClaudeCodeBackend(AgentBackend):
     agent_type = AgentType.CLAUDE_CODE
     display_name = "Claude Code"
     cli_names = ("claude",)
-    default_command = "claude --dangerously-skip-permissions"
+    default_command = "rwclaude --dangerously-skip-permissions"
     supports_resume = True
     resume_strategy = "claude_resume"
     resume_flag = "--resume"
@@ -328,7 +328,9 @@ class CodexBackend(AgentBackend):
     agent_type = AgentType.CODEX
     display_name = "Codex"
     cli_names = ("codex",)
-    default_command = "codex --dangerously-bypass-approvals-and-sandbox"
+    default_command = (
+        "rwcodex --dangerously-bypass-approvals-and-sandbox"
+    )
     supports_resume = True
     resume_strategy = "codex_resume"
     resume_subcommand = "resume"
@@ -355,27 +357,24 @@ class CodexBackend(AgentBackend):
         return ".codex/" in env.get("PATH", "")
 
     def install(self, options: BackendInstallOptions | None = None) -> list[BackendInstallMessage]:
-        from repowire.installers.codex import install_hooks, install_mcp
+        from repowire.installers.codex import (
+            install_opt_in,
+        )
 
         messages: list[BackendInstallMessage] = []
         try:
-            changed = install_hooks()
+            changed = install_opt_in()
             messages.append(
                 BackendInstallMessage(
-                    "success", "Codex hooks installed (pre-trusted in hooks.state)"
+                    "success", "Codex opt-in integration installed"
                 )
             )
             if changed:
                 messages.append(
-                    BackendInstallMessage("info", "hooks.json updated for codex")
+                    BackendInstallMessage("info", "Codex integration updated")
                 )
         except Exception as e:
             messages.append(BackendInstallMessage("error", f"Failed to install Codex hooks: {e}"))
-        try:
-            install_mcp()
-            messages.append(BackendInstallMessage("success", "Codex MCP server configured"))
-        except Exception as e:
-            messages.append(BackendInstallMessage("error", f"Failed to configure Codex MCP: {e}"))
         return messages
 
     def list_mcp_servers(self, peer):

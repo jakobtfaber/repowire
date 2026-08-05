@@ -52,6 +52,8 @@ acp-probe = [
 
 [project.scripts]
 repowire = "repowire.cli:main"
+rwcodex = "repowire.codex_launcher:main"
+rwclaude = "repowire.claude_launcher:main"
 
 [build-system]
 requires = ["hatchling"]

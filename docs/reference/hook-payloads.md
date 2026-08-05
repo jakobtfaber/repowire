@@ -40,11 +40,10 @@ watcher covers that case.
 
 Codex has no SessionEnd hook event (its hook set is SessionStart /
 UserPromptSubmit / Stop plus tool, compact, and subagent events), so codex
-quit deregistration rides entirely on the agent-pid watcher. Repowire
-pre-trusts its codex hook entries in `[hooks.state]` when `repowire setup`
-writes `hooks.json` — codex silently skips untrusted hooks, so without the
-pre-trust every setup run would disable the codex transport until the user
-re-trusts in the TUI.
+quit deregistration rides entirely on the agent-pid watcher. Repowire writes
+the Codex lifecycle hooks to global `config.toml`, but each handler returns immediately unless the launching
+process has `REPOWIRE_CODEX_OPT_IN=1`. The `rwcodex` launcher sets it; plain
+Codex CLI and Desktop sessions do not.
 
 ## Default delivery path
 

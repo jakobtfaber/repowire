@@ -9,11 +9,14 @@ def test_claude_status_uses_configured_transport_hook_check() -> None:
     with patch(
         "repowire.installers.claude_code.check_configured_hooks_installed",
         return_value=True,
-    ) as check:
+    ) as check, patch(
+        "repowire.installers.claude_code.check_mcp_installed",
+        return_value=True,
+    ):
         result = CliRunner().invoke(main, ["claude", "status"])
 
     assert result.exit_code == 0
-    assert "Hooks are installed." in result.output
+    assert "Opt-in hooks and MCP config are installed." in result.output
     check.assert_called_once_with()
 
 

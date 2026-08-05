@@ -1,10 +1,14 @@
 # Claude Code
 
-`repowire setup` configures Claude Code automatically. This page explains what was wired and what to check when it didn't.
+`repowire setup` configures an explicit Claude Code opt-in. Start a connected
+session with `rwclaude`; plain `claude` sessions stay outside Repowire.
 
 ## What gets installed
 
-Hooks land in `~/.claude/settings.json`. The normal Repowire MCP server is added by the Claude CLI. In experimental channel mode, the channel server entry is written to `~/.claude.json`.
+Dormant hooks land in `~/.claude/settings.json`. The Repowire MCP server is
+written to `~/.repowire/claude-mcp.json` and loaded only by `rwclaude`. In
+experimental channel mode, the development-channel registration is written to
+`~/.claude.json`; only Repowire-managed launches pass the flag that activates it.
 
 ### Hooks
 
@@ -25,10 +29,16 @@ different installation from an inherited shell `PATH`.
 
 ### MCP server
 
-The normal Repowire MCP server is added as `repowire`. It runs the same
+The opt-in Repowire MCP server is added as `repowire`. It runs the same
 absolute console entrypoint with `mcp` over stdio and provides the stable tool
 surface: `ask`, `ack`, `notify_peer`, `broadcast`, peer listing, schedules, and
-related commands.
+related commands. The packaged `rwclaude` launcher sets
+`REPOWIRE_CLAUDE_OPT_IN=1` and passes the opt-in MCP configuration with
+`--mcp-config`; ordinary Claude sessions do neither.
+
+Setup removes the legacy user-scoped `repowire` MCP entry. An explicitly
+project-scoped `.mcp.json` remains project-owned; remove such an older entry
+with `claude mcp remove -s project repowire` from that project if present.
 
 ## Plugins and skills
 

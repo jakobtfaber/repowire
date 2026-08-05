@@ -31,33 +31,34 @@ def _retarget(tmp_path, monkeypatch, *, config=None):
     claude_json = tmp_path / ".claude.json"
     monkeypatch.setattr(cc_mod, "CLAUDE_SETTINGS", settings)
     monkeypatch.setattr(cc_mod, "CLAUDE_JSON", claude_json)
+    monkeypatch.setattr(cc_mod, "CLAUDE_MCP_CONFIG", tmp_path / "claude-mcp.json")
 
     cfg = config or RealConfig()
     monkeypatch.setattr(cc_mod, "load_config", lambda: cfg)
     return settings, claude_json
 
 
-def test_backend_install_pins_claude_mcp_to_active_entrypoint(monkeypatch):
+def test_backend_install_pins_claude_mcp_to_active_entrypoint(tmp_path, monkeypatch):
     executable = "/uv/tools/repowire/bin/repowire"
-    calls = []
+    config_path = tmp_path / "claude-mcp.json"
     monkeypatch.setattr(cc_mod, "install_hooks", lambda channel_mode=False: True)
+    monkeypatch.setattr(cc_mod, "CLAUDE_MCP_CONFIG", config_path)
     monkeypatch.setattr(
         cc_mod, "repowire_console_entrypoint", lambda: executable
     )
     monkeypatch.setattr(
         "subprocess.run",
-        lambda command, **kwargs: calls.append((command, kwargs)),
+        lambda command, **kwargs: None,
     )
-
     agent_backend_for(AgentType.CLAUDE_CODE).install()
+    server = json.loads(config_path.read_text())["mcpServers"]["repowire"]
+    assert server["command"] == executable
 
-    add_command = next(command for command, _ in calls if command[:3] == ["claude", "mcp", "add"])
-    assert add_command[-3:] == ["--", executable, "mcp"]
 
-
-def test_install_mcp_replaces_entry_with_active_entrypoint(monkeypatch):
+def test_install_mcp_replaces_global_entry_with_opt_in_config(tmp_path, monkeypatch):
     executable = "/uv/tools/repowire/bin/repowire"
     calls = []
+    _retarget(tmp_path, monkeypatch)
     monkeypatch.setattr(cc_mod, "repowire_console_entrypoint", lambda: executable)
     monkeypatch.setattr(
         cc_mod.subprocess,
@@ -71,8 +72,30 @@ def test_install_mcp_replaces_entry_with_active_entrypoint(monkeypatch):
         "claude", "mcp", "remove", "-s", "user", "repowire",
     ]
     assert calls[0][1] == {"capture_output": True}
-    assert calls[1][0][-3:] == ["--", executable, "mcp"]
-    assert calls[1][1] == {"check": True}
+    assert len(calls) == 1
+    server = json.loads(cc_mod.CLAUDE_MCP_CONFIG.read_text())["mcpServers"]["repowire"]
+    assert server == {
+        "type": "stdio",
+        "command": executable,
+        "args": ["mcp"],
+        "env": {"REPOWIRE_BACKEND": "claude-code"},
+    }
+    assert cc_mod.check_mcp_installed() is True
+
+
+def test_install_mcp_writes_config_when_claude_cli_is_missing(tmp_path, monkeypatch):
+    _retarget(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        cc_mod, "repowire_console_entrypoint", lambda: "/tools/repowire"
+    )
+    monkeypatch.setattr(
+        cc_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+
+    assert cc_mod.install_mcp() is True
+    assert cc_mod.check_mcp_installed() is True
 
 
 def _read(path: Path) -> dict:

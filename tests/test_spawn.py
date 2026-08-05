@@ -312,7 +312,7 @@ class TestSpawnPeer:
             start_directory="/tmp/test",
         )
         mock_pane.send_keys.assert_called_once_with(
-            "claude --dangerously-skip-permissions", enter=True,
+            "rwclaude --dangerously-skip-permissions", enter=True,
         )
 
     @patch("repowire.spawn._get_or_create_session")
@@ -339,7 +339,7 @@ class TestSpawnPeer:
         assert result.tmux_session == "dev:test"
         mock_session.new_window.assert_not_called()
         mock_pane.send_keys.assert_called_once_with(
-            "claude --dangerously-skip-permissions",
+            "rwclaude --dangerously-skip-permissions",
             enter=True,
         )
 
@@ -351,7 +351,7 @@ class TestSpawnPeer:
             (
                 AgentType.CODEX,
                 "",
-                "codex --dangerously-bypass-approvals-and-sandbox",
+                "rwcodex --dangerously-bypass-approvals-and-sandbox",
             ),
         ],
     )

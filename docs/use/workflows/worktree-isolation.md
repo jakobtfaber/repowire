@@ -19,7 +19,7 @@ Two new directories, one branch each. Now open one agent in each:
 
 ```bash
 cd ../project-feat-a && claude
-cd ../project-feat-b && codex
+cd ../project-feat-b && rwcodex
 ```
 
 Both register as peers (different display names, separate paths). Address them by name.

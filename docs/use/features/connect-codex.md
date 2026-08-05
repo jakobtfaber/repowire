@@ -1,13 +1,13 @@
 # Codex
 
-OpenAI's Codex CLI. Hooks and the MCP server are wired into `~/.codex/`.
+OpenAI's Codex CLI. Repowire is opt-in: start a connected session with
+`rwcodex`. Plain `codex` and Codex Desktop sessions remain outside the mesh.
 
 ## What gets installed
 
 | File | What goes there |
 | --- | --- |
-| `~/.codex/hooks.json` | Hook entries for `SessionStart`, `UserPromptSubmit`, and `Stop` |
-| `~/.codex/config.toml` | `[features] hooks = true` flag and a `[mcp_servers.repowire]` section |
+| `~/.codex/config.toml` | Dormant lifecycle hooks, the hooks feature flag, and a disabled `[mcp_servers.repowire]` section |
 
 The MCP entry points at the `repowire` binary from the Python environment
 running setup:
@@ -16,10 +16,17 @@ running setup:
 [mcp_servers.repowire]
 command = "/absolute/path/to/active/environment/bin/repowire"
 args = ["mcp"]
+enabled = false
 env = { REPOWIRE_BACKEND = "codex" }
 ```
 
-Hooks use the same absolute entrypoint. This prevents an inherited shell
+`rwcodex` sets `REPOWIRE_CODEX_OPT_IN=1` and supplies
+`-c mcp_servers.repowire.enabled=true` for that process only. This keeps both
+the lifecycle hooks and MCP tools dormant in ordinary sessions.
+
+Hooks use the same absolute entrypoint and the existing inline TOML hook
+representation, avoiding Codex's warning about loading hooks from two formats.
+This prevents an inherited shell
 `PATH` from selecting a different Repowire installation.
 
 ## The hooks feature flag
@@ -59,7 +66,7 @@ Codex can also drop the background WebSocket hook while the TUI pane remains ali
 repowire status
 ```
 
-To confirm hooks fire, open a Codex session, type one message, and watch `repowire peer list`. The peer should appear within a few seconds of the first user message — not at session open.
+To confirm hooks fire, run `rwcodex`, type one message, and watch `repowire peer list`. The peer should appear within a few seconds of the first user message — not at session open.
 
 ## Troubleshooting
 
