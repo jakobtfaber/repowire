@@ -11,6 +11,7 @@ from repowire.installers.runtime import repowire_console_entrypoint
 
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 CLAUDE_JSON = Path.home() / ".claude.json"
+CLAUDE_MCP_CONFIG = Path.home() / ".repowire" / "claude-mcp.json"
 
 HOOK_EVENTS = [
     "Stop", "StopFailure", "SessionStart", "SessionEnd",
@@ -27,29 +28,61 @@ HOOK_MANIFEST_TIMEOUT_SECONDS = 2
 
 
 def install_mcp() -> bool:
-    """Replace Claude's Repowire MCP entry with this Python environment."""
+    """Write the opt-in MCP config and remove the legacy user-scoped entry."""
     executable = repowire_console_entrypoint()
-    subprocess.run(
-        ["claude", "mcp", "remove", "-s", "user", "repowire"],
-        capture_output=True,
-    )
-    subprocess.run(
-        [
-            "claude",
-            "mcp",
-            "add",
-            "-s",
-            "user",
-            "repowire",
-            "-e",
-            "REPOWIRE_BACKEND=claude-code",
-            "--",
-            executable,
-            "mcp",
-        ],
-        check=True,
-    )
+    desired = {
+        "mcpServers": {
+            "repowire": {
+                "type": "stdio",
+                "command": executable,
+                "args": ["mcp"],
+                "env": {"REPOWIRE_BACKEND": "claude-code"},
+            }
+        }
+    }
+    before = CLAUDE_MCP_CONFIG.read_text() if CLAUDE_MCP_CONFIG.exists() else None
+    content = json.dumps(desired, indent=2) + "\n"
+    changed = before != content
+    if changed:
+        CLAUDE_MCP_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        CLAUDE_MCP_CONFIG.write_text(content)
+    try:
+        subprocess.run(
+            ["claude", "mcp", "remove", "-s", "user", "repowire"],
+            capture_output=True,
+        )
+    except OSError:
+        pass
+    return changed
+
+
+def uninstall_mcp() -> bool:
+    try:
+        subprocess.run(
+            ["claude", "mcp", "remove", "-s", "user", "repowire"],
+            capture_output=True,
+        )
+    except OSError:
+        pass
+    if not CLAUDE_MCP_CONFIG.exists():
+        return False
+    CLAUDE_MCP_CONFIG.unlink()
     return True
+
+
+def check_mcp_installed() -> bool:
+    if not CLAUDE_MCP_CONFIG.exists():
+        return False
+    try:
+        server = json.loads(CLAUDE_MCP_CONFIG.read_text())["mcpServers"]["repowire"]
+        return server == {
+            "type": "stdio",
+            "command": repowire_console_entrypoint(),
+            "args": ["mcp"],
+            "env": {"REPOWIRE_BACKEND": "claude-code"},
+        }
+    except (KeyError, TypeError, OSError, json.JSONDecodeError, RuntimeError):
+        return False
 
 
 def _load_claude_settings() -> dict:

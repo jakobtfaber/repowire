@@ -249,6 +249,7 @@ class TestRuntimes:
                  "repowire.installers.claude_code.check_configured_hooks_installed",
                  return_value=True,
              ), \
+             patch("repowire.installers.claude_code.check_mcp_installed", return_value=True), \
              patch("repowire.installers.claude_code.check_channel_installed", return_value=False), \
              patch("repowire.installers.claude_code.get_claude_version", return_value=(2, 1, 80)):
             r = check_runtimes()
@@ -263,6 +264,7 @@ class TestRuntimes:
                  "repowire.installers.claude_code.check_configured_hooks_installed",
                  return_value=True,
              ), \
+             patch("repowire.installers.claude_code.check_mcp_installed", return_value=True), \
              patch(
                  "repowire.installers.claude_code.check_channel_installed",
                  return_value=True,

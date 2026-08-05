@@ -219,20 +219,30 @@ def _check_claude_code() -> CheckResult:
     from repowire.installers.claude_code import (
         check_channel_installed,
         check_configured_hooks_installed,
+        check_mcp_installed,
         get_claude_version,
     )
 
     version = get_claude_version()
     ver_str = ".".join(str(x) for x in version) if version else "unknown"
 
-    if not check_configured_hooks_installed():
+    hooks_ok = check_configured_hooks_installed()
+    mcp_ok = check_mcp_installed()
+    if not hooks_ok or not mcp_ok:
+        missing = []
+        if not hooks_ok:
+            missing.append("hooks")
+        if not mcp_ok:
+            missing.append("MCP")
         return CheckResult(
             "claude-code",
             Status.FAIL,
-            f"v{ver_str} — hooks not installed (run `repowire setup`)",
+            f"v{ver_str} — missing: {', '.join(missing)} (run `repowire setup`)",
         )
     channel = " + channel" if check_channel_installed() else ""
-    return CheckResult("claude-code", Status.OK, f"v{ver_str} — hooks{channel} installed")
+    return CheckResult(
+        "claude-code", Status.OK, f"v{ver_str} — opt-in hooks + MCP{channel} installed"
+    )
 
 
 def _check_codex() -> CheckResult:

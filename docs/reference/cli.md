@@ -8,7 +8,7 @@ The `repowire` command is a thin wrapper around setup, the daemon, and the bot p
 repowire setup [--relay] [--experimental-channels] [--http-mcp] [--update-checks|--no-update-checks] [--no-service] [--non-interactive]
 ```
 
-One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service.
+One-time install. Detects every supported agent runtime present (Claude Code, Codex, Gemini CLI, OpenCode), wires the appropriate Repowire transport for each, and installs the daemon as a user service. Codex hooks are dormant and its MCP server is disabled by default; use `rwcodex` to enable both for one process. Plain Codex CLI and Desktop sessions remain outside Repowire.
 
 For Codex, setup pre-approves the bounded MCP tool set needed to identify the
 current peer, exchange tracked asks and acknowledgements, spawn peers, and clean

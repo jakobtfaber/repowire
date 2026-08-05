@@ -11,7 +11,7 @@ Open both projects in tmux windows:
 cd ~/projects/project-a && claude
 
 # window 2
-cd ~/projects/project-b && codex
+cd ~/projects/project-b && rwcodex
 ```
 
 Both auto-register on `SessionStart`. They land in the same circle (shared tmux session) and can address each other by display name.

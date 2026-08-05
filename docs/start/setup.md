@@ -10,7 +10,7 @@ This is the one-time install step. It runs from your shell, not from inside an a
 
 For every agent runtime it finds, it wires the appropriate Repowire transport. Auto-detection covers Claude Code, Codex, Gemini CLI, OpenCode, and Pi. Then it installs the local daemon as a user service (launchd on macOS, systemd on Linux).
 
-When setup finishes, the daemon is listening on `127.0.0.1:8377`. Open a new agent session in any directory and it will register itself.
+When setup finishes, the daemon is listening on `127.0.0.1:8377`. Claude Code and Codex are explicit exceptions to automatic registration: start them with `rwclaude` or `rwcodex`. Plain CLI and Desktop sessions remain outside the mesh.
 
 `repowire setup` owns Repowire's transport and routing layer. It does not install third-party skills or Claude Code marketplace plugins; those can be installed separately if you want reusable agent behaviors on top of the mesh.
 

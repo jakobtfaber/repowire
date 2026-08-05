@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -15,6 +16,7 @@ from repowire.installers.runtime import repowire_console_entrypoint
 CODEX_HOME = Path.home() / ".codex"
 HOOKS_PATH = CODEX_HOME / "hooks.json"
 CONFIG_PATH = CODEX_HOME / "config.toml"
+PROFILE_CONFIG_PATH = CODEX_HOME / "repowire.config.toml"
 
 # NOTE: codex has no SessionEnd hook event (hooks/src/events/ upstream:
 # session_start, stop, user_prompt_submit, tool/compact/subagent events).
@@ -83,6 +85,195 @@ def _repowire_hooks() -> dict[str, dict]:
             f"{executable} hook prompt --backend=codex"
         ),
     }
+
+
+def _profile_config() -> str:
+    executable = shlex.quote(repowire_console_entrypoint())
+    return (
+        '[[hooks.SessionStart]]\n'
+        'matcher = "startup|resume|clear"\n\n'
+        '[[hooks.SessionStart.hooks]]\n'
+        'type = "command"\n'
+        f'command = "{executable} hook session --backend=codex"\n\n'
+        '[[hooks.UserPromptSubmit]]\n\n'
+        '[[hooks.UserPromptSubmit.hooks]]\n'
+        'type = "command"\n'
+        f'command = "{executable} hook prompt --backend=codex"\n\n'
+        '[[hooks.Stop]]\n\n'
+        '[[hooks.Stop.hooks]]\n'
+        'type = "command"\n'
+        f'command = "{executable} hook stop --backend=codex"\n'
+    )
+
+
+_HOOK_GROUP = re.compile(r"^\[\[hooks\.[^.\]]+\]\]$")
+
+
+def _remove_inline_repowire_hooks(content: str) -> str:
+    lines = content.splitlines(keepends=True)
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        if not _HOOK_GROUP.match(lines[index].strip()):
+            output.append(lines[index])
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines):
+            stripped = lines[end].strip()
+            if _HOOK_GROUP.match(stripped):
+                break
+            if stripped.startswith("[") and not stripped.startswith("[[hooks."):
+                break
+            end += 1
+        group = lines[index:end]
+        handler_starts = [
+            offset
+            for offset, line in enumerate(group)
+            if line.strip().startswith("[[hooks.")
+            and line.strip().endswith(".hooks]]")
+        ]
+        if not handler_starts:
+            output.extend(group)
+            index = end
+            continue
+        kept_handlers: list[str] = []
+        for position, start in enumerate(handler_starts):
+            stop = (
+                handler_starts[position + 1]
+                if position + 1 < len(handler_starts)
+                else len(group)
+            )
+            handler = group[start:stop]
+            if not any(
+                "repowire" in line and " hook " in line for line in handler
+            ):
+                kept_handlers.extend(handler)
+        if kept_handlers:
+            output.extend(group[:handler_starts[0]])
+            output.extend(kept_handlers)
+        index = end
+    return "".join(output)
+
+
+def install_profile_hooks() -> bool:
+    changed = uninstall_hooks()
+    CODEX_HOME.mkdir(parents=True, exist_ok=True)
+    current = PROFILE_CONFIG_PATH.read_text() if PROFILE_CONFIG_PATH.exists() else ""
+    without_hooks = _remove_inline_repowire_hooks(current).rstrip()
+    desired = f"{without_hooks}\n\n" if without_hooks else ""
+    desired += _profile_config()
+    if current != desired:
+        tomllib.loads(desired)
+        PROFILE_CONFIG_PATH.write_text(desired)
+        changed = True
+    if CONFIG_PATH.exists():
+        before = CONFIG_PATH.read_text()
+        after = _remove_inline_repowire_hooks(before)
+        if after != before:
+            CONFIG_PATH.write_text(after)
+            changed = True
+    return changed
+
+
+def uninstall_profile_hooks() -> bool:
+    if not PROFILE_CONFIG_PATH.exists():
+        return False
+    before = PROFILE_CONFIG_PATH.read_text()
+    after = _remove_inline_repowire_hooks(before).strip()
+    if after == before.strip():
+        return False
+    if after:
+        tomllib.loads(after)
+        PROFILE_CONFIG_PATH.write_text(after + "\n")
+    else:
+        PROFILE_CONFIG_PATH.unlink()
+    return True
+
+
+def check_profile_hooks_installed() -> bool:
+    if not PROFILE_CONFIG_PATH.exists():
+        return False
+    try:
+        hooks = tomllib.loads(PROFILE_CONFIG_PATH.read_text()).get("hooks", {})
+    except tomllib.TOMLDecodeError:
+        return False
+    expected = _repowire_hooks()
+    for event, entry in expected.items():
+        entries = hooks.get(event, [])
+        if not any(
+            candidate.get("matcher") == entry.get("matcher")
+            and candidate.get("hooks") == entry.get("hooks")
+            for candidate in entries
+        ):
+            return False
+    return not any(
+        _is_repowire_hook(entry)
+        for entries in _load_hooks().get("hooks", {}).values()
+        for entry in entries
+    )
+
+
+def install_opt_in() -> bool:
+    """Install dormant global Codex integration and remove the obsolete profile."""
+    changed = uninstall_profile_hooks()
+    if uninstall_mcp(PROFILE_CONFIG_PATH):
+        changed = True
+    if CONFIG_PATH.exists():
+        before = CONFIG_PATH.read_text()
+        after = _remove_inline_repowire_hooks(before)
+        if after != before:
+            CONFIG_PATH.write_text(after)
+            changed = True
+    if install_inline_hooks():
+        changed = True
+    install_mcp()
+    return changed
+
+
+def install_inline_hooks() -> bool:
+    changed = uninstall_hooks()
+    if HOOKS_PATH.exists() and _load_hooks() == {}:
+        HOOKS_PATH.unlink()
+        changed = True
+    CODEX_HOME.mkdir(parents=True, exist_ok=True)
+    current = CONFIG_PATH.read_text() if CONFIG_PATH.exists() else ""
+    without_hooks = _remove_inline_repowire_hooks(current).rstrip()
+    desired = f"{without_hooks}\n\n" if without_hooks else ""
+    desired += _profile_config()
+    if desired != current:
+        tomllib.loads(desired)
+        CONFIG_PATH.write_text(desired)
+        changed = True
+    parsed = tomllib.loads(CONFIG_PATH.read_text())
+    content = CONFIG_PATH.read_text()
+    for event, expected in _repowire_hooks().items():
+        for group_index, entry in enumerate(parsed.get("hooks", {}).get(event, [])):
+            if entry.get("hooks") != expected.get("hooks"):
+                continue
+            command = entry["hooks"][0]["command"]
+            key = f"{CONFIG_PATH}:{_EVENT_LABELS[event]}:{group_index}:0"
+            content = _upsert_hook_state(
+                content,
+                key,
+                trusted_hash_for(event, command, entry.get("matcher")),
+            )
+            break
+    if content != CONFIG_PATH.read_text():
+        CONFIG_PATH.write_text(content)
+        changed = True
+    return changed
+
+
+def uninstall_inline_hooks() -> bool:
+    if not CONFIG_PATH.exists():
+        return False
+    before = CONFIG_PATH.read_text()
+    after = _remove_inline_repowire_hooks(before)
+    if after == before:
+        return False
+    CONFIG_PATH.write_text(after)
+    return True
 
 
 def trusted_hash_for(event: str, command: str, matcher: str | None) -> str:
@@ -323,20 +514,38 @@ def uninstall_hooks() -> bool:
         return False
 
     removed = False
+    index_maps: dict[str, dict[tuple[int, int], tuple[int, int] | None]] = {}
     for event in HOOK_EVENTS:
         entries = hooks.get(event, [])
-        filtered = [e for e in entries if not _is_repowire_hook(e)]
-        if len(filtered) < len(entries):
-            removed = True
-            if filtered:
-                hooks[event] = filtered
-            else:
-                del hooks[event]
+        filtered: list[dict] = []
+        event_map: dict[tuple[int, int], tuple[int, int] | None] = {}
+        for old_group, entry in enumerate(entries):
+            kept_handlers: list[dict] = []
+            for old_handler, handler in enumerate(entry.get("hooks", [])):
+                if _is_repowire_handler(handler):
+                    event_map[(old_group, old_handler)] = None
+                    removed = True
+                    continue
+                event_map[(old_group, old_handler)] = (
+                    len(filtered),
+                    len(kept_handlers),
+                )
+                kept_handlers.append(handler)
+            if kept_handlers:
+                kept_entry = dict(entry)
+                kept_entry["hooks"] = kept_handlers
+                filtered.append(kept_entry)
+        index_maps[event] = event_map
+        if filtered:
+            hooks[event] = filtered
+        else:
+            hooks.pop(event, None)
 
     if not hooks:
         data.pop("hooks", None)
 
     if removed:
+        _reindex_trusted_hashes(index_maps)
         _save_hooks(data)
     return removed
 
@@ -634,14 +843,15 @@ def _preflight_repowire_mcp_shape(content: str) -> bool:
     return True
 
 
-def install_mcp() -> bool:
-    """Add repowire MCP server to ~/.codex/config.toml.
+def install_mcp(config_path: Path | None = None) -> bool:
+    """Add repowire MCP server to a Codex config file.
 
     Appends the [mcp_servers.repowire] section. Preserves existing content.
     Also enables the hooks feature flag (required for hooks to fire).
     """
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
-    content = CONFIG_PATH.read_text() if CONFIG_PATH.exists() else ""
+    config_path = config_path or CONFIG_PATH
+    content = config_path.read_text() if config_path.exists() else ""
     has_repowire = _preflight_repowire_mcp_shape(content)
     content = _enable_hooks_feature(content)
 
@@ -650,16 +860,39 @@ def install_mcp() -> bool:
         "\n[mcp_servers.repowire]\n"
         f"command = {json.dumps(executable)}\n"
         'args = ["mcp"]\n'
+        "enabled = false\n"
         f"{_MCP_ENV_LINE}\n"
     )
 
     if has_repowire:
         updated = _ensure_repowire_mcp_backend_env(content, executable)
+        if updated and not updated.endswith("\n"):
+            updated += "\n"
+        lines = updated.splitlines(keepends=True)
+        output: list[str] = []
+        in_root = False
+        wrote_enabled = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                if in_root and not wrote_enabled:
+                    output.append("enabled = false\n")
+                in_root = stripped == "[mcp_servers.repowire]"
+                wrote_enabled = False
+            if in_root and stripped.partition("=")[0].strip() == "enabled":
+                if not wrote_enabled:
+                    output.append("enabled = false\n")
+                    wrote_enabled = True
+                continue
+            output.append(line)
+        if in_root and not wrote_enabled:
+            output.append("enabled = false\n")
+        updated = "".join(output)
     else:
         updated = content.rstrip() + "\n" + section
     updated = _ensure_repowire_mcp_tool_approvals(updated)
     tomllib.loads(updated)
-    CONFIG_PATH.write_text(updated)
+    config_path.write_text(updated)
 
     return True
 
@@ -671,12 +904,13 @@ def _is_repowire_mcp_section(header: str) -> bool:
     )
 
 
-def uninstall_mcp() -> bool:
+def uninstall_mcp(config_path: Path | None = None) -> bool:
     """Remove the Repowire MCP server and its nested configuration."""
-    if not CONFIG_PATH.exists():
+    config_path = config_path or CONFIG_PATH
+    if not config_path.exists():
         return False
 
-    content = CONFIG_PATH.read_text()
+    content = config_path.read_text()
     if not _preflight_repowire_mcp_shape(content):
         return False
 
@@ -694,7 +928,12 @@ def uninstall_mcp() -> bool:
 
     updated = "".join(new_lines).strip() + "\n" if new_lines else ""
     tomllib.loads(updated)
-    CONFIG_PATH.write_text(updated)
+    if updated.strip():
+        config_path.write_text(updated)
+    elif config_path == CONFIG_PATH:
+        config_path.write_text("")
+    else:
+        config_path.unlink()
     return True
 
 
@@ -702,19 +941,43 @@ def check_hooks_installed() -> bool:
     """Check if repowire hooks are configured in Codex."""
     data = _load_hooks()
     hooks = data.get("hooks", {})
-    return "Stop" in hooks or "SessionStart" in hooks
-
-
-def check_mcp_installed() -> bool:
-    """Check if repowire MCP server is configured in Codex."""
+    try:
+        expected_hooks = _repowire_hooks()
+    except RuntimeError:
+        return False
+    json_installed = all(
+        any(candidate == expected for candidate in hooks.get(event, []))
+        for event, expected in expected_hooks.items()
+    )
+    if json_installed:
+        return True
     if not CONFIG_PATH.exists():
+        return False
+    try:
+        inline = tomllib.loads(CONFIG_PATH.read_text()).get("hooks", {})
+    except tomllib.TOMLDecodeError:
+        return False
+    return all(
+        any(
+            candidate.get("matcher") == expected.get("matcher")
+            and candidate.get("hooks") == expected.get("hooks")
+            for candidate in inline.get(event, [])
+        )
+        for event, expected in expected_hooks.items()
+    )
+
+
+def check_mcp_installed(config_path: Path | None = None) -> bool:
+    """Check if repowire MCP server is configured in Codex."""
+    config_path = config_path or CONFIG_PATH
+    if not config_path.exists():
         return False
     try:
         expected = repowire_console_entrypoint()
     except RuntimeError:
         return False
     in_section = False
-    for line in CONFIG_PATH.read_text().splitlines():
+    for line in config_path.read_text().splitlines():
         stripped = line.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
             in_section = stripped == "[mcp_servers.repowire]"

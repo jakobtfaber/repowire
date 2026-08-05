@@ -53,13 +53,13 @@ Open two agents in tmux windows:
 
 ```bash
 # window 1
-cd ~/projects/project-a && claude
+cd ~/projects/project-a && rwclaude
 
 # window 2
-cd ~/projects/project-b && codex
+cd ~/projects/project-b && rwcodex
 ```
 
-Claude Code registers on session start. Codex registers after its first interaction, so send a short warmup prompt in `project-b`, then confirm both peers with `repowire peer list`. In `project-a`:
+The `rwclaude` session registers on session start. Codex registers after its first interaction, so send a short warmup prompt in `project-b`, then confirm both peers with `repowire peer list`. In `project-a`:
 
 > Ask project-b what API endpoints they expose.
 

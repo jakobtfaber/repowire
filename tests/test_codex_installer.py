@@ -23,6 +23,9 @@ def _retarget(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_mod, "CODEX_HOME", home)
     monkeypatch.setattr(codex_mod, "HOOKS_PATH", home / "hooks.json")
     monkeypatch.setattr(codex_mod, "CONFIG_PATH", home / "config.toml")
+    monkeypatch.setattr(
+        codex_mod, "PROFILE_CONFIG_PATH", home / "repowire.config.toml"
+    )
     return home
 
 
@@ -570,6 +573,126 @@ def test_check_mcp_installed_accepts_absolute_command_with_comment(
 # -- install_hooks / hooks.json + trust hashes -------------------------------
 
 
+def test_install_profile_hooks_migrates_global_hooks(tmp_path, monkeypatch):
+    import json
+
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    codex_mod.HOOKS_PATH.write_text(json.dumps({
+        "hooks": {
+            "Stop": [
+                {"hooks": [{"type": "command", "command": "user-hook"}]},
+                {"hooks": [{
+                    "type": "command",
+                    "command": "repowire hook stop --backend=codex",
+                }]},
+            ]
+        }
+    }))
+    codex_mod.CONFIG_PATH.write_text(
+        'model = "gpt-5"\n\n'
+        '[[hooks.Stop]]\n\n'
+        '[[hooks.Stop.hooks]]\n'
+        'type = "command"\n'
+        'command = "repowire hook stop --backend=codex"\n\n'
+        '[[hooks.Stop]]\n\n'
+        '[[hooks.Stop.hooks]]\n'
+        'type = "command"\n'
+        'command = "user-inline-hook"\n'
+    )
+
+    assert codex_mod.install_profile_hooks() is True
+    hooks = json.loads(codex_mod.HOOKS_PATH.read_text())["hooks"]
+    assert hooks["Stop"] == [
+        {"hooks": [{"type": "command", "command": "user-hook"}]}
+    ]
+    base = codex_mod.CONFIG_PATH.read_text()
+    assert "repowire hook" not in base
+    assert "user-inline-hook" in base
+    profile = codex_mod.PROFILE_CONFIG_PATH.read_text()
+    assert "repowire hook session --backend=codex" in profile
+    assert "repowire hook prompt --backend=codex" in profile
+    assert "repowire hook stop --backend=codex" in profile
+    assert tomllib.loads(profile)["hooks"]["SessionStart"][0]["matcher"] == (
+        "startup|resume|clear"
+    )
+
+
+def test_install_profile_hooks_is_idempotent(tmp_path, monkeypatch):
+    _retarget(tmp_path, monkeypatch)
+    assert codex_mod.install_profile_hooks() is True
+    assert codex_mod.install_profile_hooks() is False
+    assert codex_mod.check_profile_hooks_installed() is True
+
+
+def test_install_and_uninstall_profile_hooks_preserve_user_settings(
+    tmp_path, monkeypatch,
+):
+    _retarget(tmp_path, monkeypatch)
+    codex_mod.install_profile_hooks()
+    codex_mod.PROFILE_CONFIG_PATH.write_text(
+        'model = "custom"\n\n' + codex_mod.PROFILE_CONFIG_PATH.read_text()
+    )
+    assert codex_mod.install_profile_hooks() is False
+    assert 'model = "custom"' in codex_mod.PROFILE_CONFIG_PATH.read_text()
+    assert codex_mod.uninstall_profile_hooks() is True
+    assert codex_mod.PROFILE_CONFIG_PATH.exists()
+    assert codex_mod.PROFILE_CONFIG_PATH.read_text() == 'model = "custom"\n'
+
+
+def test_profile_migration_preserves_adjacent_other_hook_event(
+    tmp_path, monkeypatch,
+):
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    codex_mod.CONFIG_PATH.write_text(
+        '[[hooks.Stop]]\n'
+        '[[hooks.Stop.hooks]]\n'
+        'type = "command"\n'
+        'command = "repowire hook stop --backend=codex"\n\n'
+        '[[hooks.PreToolUse]]\n'
+        'matcher = "exec"\n'
+        '[[hooks.PreToolUse.hooks]]\n'
+        'type = "command"\n'
+        'command = "user-pre-tool"\n'
+    )
+    codex_mod.install_profile_hooks()
+    content = codex_mod.CONFIG_PATH.read_text()
+    assert "repowire hook" not in content
+    assert "[[hooks.PreToolUse]]" in content
+    assert "user-pre-tool" in content
+
+
+def test_uninstall_global_hooks_preserves_mixed_user_handler(
+    tmp_path, monkeypatch,
+):
+    import json
+
+    home = _retarget(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    codex_mod.HOOKS_PATH.write_text(json.dumps({
+        "hooks": {
+            "Stop": [{"hooks": [
+                {"type": "command", "command": "repowire hook stop --backend=codex"},
+                {"type": "command", "command": "user-handler"},
+            ]}],
+        }
+    }))
+    assert codex_mod.uninstall_hooks() is True
+    handlers = json.loads(codex_mod.HOOKS_PATH.read_text())["hooks"]["Stop"][0][
+        "hooks"
+    ]
+    assert handlers == [{"type": "command", "command": "user-handler"}]
+
+
+def test_profile_mcp_is_not_visible_in_base_config(tmp_path, monkeypatch):
+    _retarget(tmp_path, monkeypatch)
+    codex_mod.install_profile_hooks()
+    codex_mod.install_mcp(codex_mod.PROFILE_CONFIG_PATH)
+    assert codex_mod.check_mcp_installed(codex_mod.PROFILE_CONFIG_PATH) is True
+    assert codex_mod.check_mcp_installed() is False
+
+
 def test_install_hooks_does_not_register_session_end(tmp_path, monkeypatch):
     """Codex has no SessionEnd hook event — an entry would be silently inert.
     Quit deregistration for codex rides on the ws-hook agent-pid watcher."""
@@ -873,3 +996,55 @@ def test_uninstall_hooks_round_trips(tmp_path, monkeypatch):
     assert codex_mod.uninstall_hooks() is True
     data = json.loads(codex_mod.HOOKS_PATH.read_text())
     assert data.get("hooks", {}) == {}
+
+
+def test_install_opt_in_migrates_profile_to_dormant_global_config(
+    tmp_path, monkeypatch,
+):
+    _retarget(tmp_path, monkeypatch)
+    codex_mod.PROFILE_CONFIG_PATH.parent.mkdir(parents=True)
+    codex_mod.PROFILE_CONFIG_PATH.write_text(
+        codex_mod._profile_config()
+        + "\n[mcp_servers.repowire]\ncommand = \"repowire\"\nargs = [\"mcp\"]\n"
+    )
+
+    assert codex_mod.install_opt_in() is True
+    assert codex_mod.check_hooks_installed() is True
+    assert codex_mod.check_mcp_installed() is True
+    assert not codex_mod.PROFILE_CONFIG_PATH.exists()
+    parsed = tomllib.loads(codex_mod.CONFIG_PATH.read_text())
+    assert parsed["mcp_servers"]["repowire"]["enabled"] is False
+
+
+def test_install_opt_in_preserves_user_handler_in_mixed_inline_group(
+    tmp_path, monkeypatch,
+):
+    _retarget(tmp_path, monkeypatch)
+    codex_mod.CONFIG_PATH.parent.mkdir(parents=True)
+    codex_mod.CONFIG_PATH.write_text(
+        "[[hooks.Stop]]\n\n"
+        "[[hooks.Stop.hooks]]\n"
+        'type = "command"\ncommand = "repowire hook stop --backend=codex"\n\n'
+        "[[hooks.Stop.hooks]]\n"
+        'type = "command"\ncommand = "user-handler"\n'
+    )
+
+    codex_mod.install_opt_in()
+
+    content = codex_mod.CONFIG_PATH.read_text()
+    assert 'command = "repowire hook stop' not in content
+    assert 'command = "user-handler"' in content
+
+
+def test_install_mcp_forces_existing_server_disabled(tmp_path, monkeypatch):
+    _retarget(tmp_path, monkeypatch)
+    codex_mod.CONFIG_PATH.parent.mkdir(parents=True)
+    codex_mod.CONFIG_PATH.write_text(
+        "[mcp_servers.repowire]\n"
+        'command = "repowire"\nargs = ["mcp"]\nenabled = true\n'
+    )
+
+    codex_mod.install_mcp()
+
+    parsed = tomllib.loads(codex_mod.CONFIG_PATH.read_text())
+    assert parsed["mcp_servers"]["repowire"]["enabled"] is False

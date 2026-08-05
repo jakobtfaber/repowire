@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import secrets
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -546,9 +547,11 @@ def uninstall(yes: bool) -> None:
 
 def _uninstall_claude_code() -> None:
     """Uninstall Claude Code components."""
-    import subprocess
-
-    from repowire.installers.claude_code import uninstall_channel, uninstall_hooks
+    from repowire.installers.claude_code import (
+        uninstall_channel,
+        uninstall_hooks,
+        uninstall_mcp,
+    )
 
     # Remove hooks
     try:
@@ -567,14 +570,10 @@ def _uninstall_claude_code() -> None:
         pass
 
     # Remove MCP server
-    result = subprocess.run(
-        ["claude", "mcp", "remove", "repowire"],
-        capture_output=True,
-    )
-    if result.returncode == 0:
-        console.print("[green]✓[/] MCP server removed from Claude")
+    if uninstall_mcp():
+        console.print("[green]✓[/] Claude opt-in MCP config removed")
     else:
-        console.print("[dim]MCP server was not registered[/]")
+        console.print("[dim]Claude opt-in MCP config not installed[/]")
 
 
 def _uninstall_opencode() -> None:
@@ -592,10 +591,19 @@ def _uninstall_opencode() -> None:
 
 def _uninstall_codex() -> None:
     """Uninstall Codex components."""
-    from repowire.installers.codex import uninstall_hooks, uninstall_mcp
+    from repowire.installers.codex import (
+        PROFILE_CONFIG_PATH,
+        uninstall_hooks,
+        uninstall_inline_hooks,
+        uninstall_mcp,
+        uninstall_profile_hooks,
+    )
 
     try:
-        if uninstall_hooks():
+        removed_global = uninstall_hooks()
+        removed_inline = uninstall_inline_hooks()
+        removed_profile = uninstall_profile_hooks()
+        if removed_global or removed_inline or removed_profile:
             console.print("[green]✓[/] Codex hooks removed")
         else:
             console.print("[dim]Codex hooks not installed[/]")
@@ -605,6 +613,8 @@ def _uninstall_codex() -> None:
     try:
         if uninstall_mcp():
             console.print("[green]✓[/] Codex MCP config removed")
+        if uninstall_mcp(PROFILE_CONFIG_PATH):
+            console.print("[green]✓[/] Codex profile MCP config removed")
     except Exception:
         pass
 
@@ -765,7 +775,9 @@ def status() -> None:
         console.print("  [dim]✗[/] opencode (not detected)")
 
     if shutil.which("codex") or (Path.home() / ".codex").exists():
-        from repowire.installers.codex import check_hooks_installed as check_codex_hooks
+        from repowire.installers.codex import (
+            check_hooks_installed as check_codex_hooks,
+        )
 
         if check_codex_hooks():
             console.print("  [green]✓[/] codex (hooks installed)")
@@ -1071,7 +1083,46 @@ def _install_detected_backends(
         )
         agents_setup.append(backend_type.value)
         if backend.default_command is not None:
-            config.daemon.spawn.commands.setdefault(backend_type, backend.default_command)
+            current = config.daemon.spawn.commands.get(backend_type)
+            migrated_command = None
+            if current:
+                try:
+                    current_argv = shlex.split(current)
+                except ValueError:
+                    current_argv = []
+                launcher = {
+                    AgentType.CLAUDE_CODE: "rwclaude",
+                    AgentType.CODEX: "rwcodex",
+                }.get(backend_type)
+                expected = {
+                    AgentType.CLAUDE_CODE: "claude",
+                    AgentType.CODEX: "codex",
+                }.get(backend_type)
+                if launcher and expected:
+                    for index, token in enumerate(current_argv):
+                        if Path(token).name == expected:
+                            migrated = current_argv.copy()
+                            migrated[index] = launcher
+                            migrated_command = shlex.join(migrated)
+                            break
+            legacy_codex = (
+                backend_type is AgentType.CODEX
+                and current in {
+                    "codex --dangerously-bypass-approvals-and-sandbox",
+                    "codex --profile repowire --dangerously-bypass-approvals-and-sandbox",
+                    "env REPOWIRE_CODEX_OPT_IN=1 codex -c "
+                    "mcp_servers.repowire.enabled=true "
+                    "--dangerously-bypass-approvals-and-sandbox",
+                }
+            )
+            legacy_claude = (
+                backend_type is AgentType.CLAUDE_CODE
+                and current == "claude --dangerously-skip-permissions"
+            )
+            if migrated_command is not None:
+                config.daemon.spawn.commands[backend_type] = migrated_command
+            elif current is None or legacy_codex or legacy_claude:
+                config.daemon.spawn.commands[backend_type] = backend.default_command
     return agents_setup
 
 
@@ -1097,12 +1148,13 @@ def claude() -> None:
 @claude.command(name="install")
 def claude_install() -> None:
     """Install Repowire hooks into Claude Code."""
-    from repowire.installers.claude_code import install_hooks
+    from repowire.installers.claude_code import install_hooks, install_mcp
 
     try:
         install_hooks()
-        console.print("[green]Hooks installed successfully![/]")
-        console.print("Claude Code will now notify Repowire when responses complete.")
+        install_mcp()
+        console.print("[green]Claude opt-in hooks and MCP config installed![/]")
+        console.print("Use rwclaude to join Repowire; plain claude stays outside.")
     except Exception as e:
         console.print(f"[red]Failed to install hooks: {e}[/]")
 
@@ -1110,11 +1162,12 @@ def claude_install() -> None:
 @claude.command(name="uninstall")
 def claude_uninstall() -> None:
     """Remove Repowire hooks from Claude Code."""
-    from repowire.installers.claude_code import uninstall_hooks
+    from repowire.installers.claude_code import uninstall_hooks, uninstall_mcp
 
     try:
         uninstall_hooks()
-        console.print("[green]Hooks uninstalled.[/]")
+        uninstall_mcp()
+        console.print("[green]Hooks and opt-in MCP config uninstalled.[/]")
     except Exception as e:
         console.print(f"[red]Failed to uninstall hooks: {e}[/]")
 
@@ -1122,12 +1175,15 @@ def claude_uninstall() -> None:
 @claude.command(name="status")
 def claude_status() -> None:
     """Check if hooks are installed."""
-    from repowire.installers.claude_code import check_configured_hooks_installed
+    from repowire.installers.claude_code import (
+        check_configured_hooks_installed,
+        check_mcp_installed,
+    )
 
-    if check_configured_hooks_installed():
-        console.print("[green]Hooks are installed.[/]")
+    if check_configured_hooks_installed() and check_mcp_installed():
+        console.print("[green]Opt-in hooks and MCP config are installed.[/]")
     else:
-        console.print("[yellow]Hooks are not installed.[/]")
+        console.print("[yellow]Claude opt-in hooks or MCP config are missing.[/]")
         console.print("Run 'repowire claude install' to set up.")
 
 
@@ -1207,11 +1263,12 @@ def codex() -> None:
 @codex.command(name="install")
 def codex_install() -> None:
     """Install Repowire hooks into Codex."""
-    from repowire.installers.codex import install_hooks, install_mcp
+    from repowire.installers.codex import (
+        install_opt_in,
+    )
 
     try:
-        install_hooks()
-        install_mcp()
+        install_opt_in()
         console.print("[green]Codex hooks and MCP server installed successfully![/]")
     except Exception as e:
         console.print(f"[red]Failed to install Codex components: {e}[/]")
@@ -1220,11 +1277,20 @@ def codex_install() -> None:
 @codex.command(name="uninstall")
 def codex_uninstall() -> None:
     """Remove Repowire hooks from Codex."""
-    from repowire.installers.codex import uninstall_hooks, uninstall_mcp
+    from repowire.installers.codex import (
+        PROFILE_CONFIG_PATH,
+        uninstall_hooks,
+        uninstall_inline_hooks,
+        uninstall_mcp,
+        uninstall_profile_hooks,
+    )
 
     try:
         uninstall_hooks()
+        uninstall_inline_hooks()
+        uninstall_profile_hooks()
         uninstall_mcp()
+        uninstall_mcp(PROFILE_CONFIG_PATH)
         console.print("[green]Codex hooks and MCP server uninstalled.[/]")
     except Exception as e:
         console.print(f"[red]Failed to uninstall Codex components: {e}[/]")
@@ -1233,7 +1299,10 @@ def codex_uninstall() -> None:
 @codex.command(name="status")
 def codex_status() -> None:
     """Check if Codex hooks are installed."""
-    from repowire.installers.codex import check_hooks_installed, check_mcp_installed
+    from repowire.installers.codex import (
+        check_hooks_installed,
+        check_mcp_installed,
+    )
 
     hooks_ok = check_hooks_installed()
     mcp_ok = check_mcp_installed()
@@ -1325,8 +1394,8 @@ _ORCHESTRATOR_RUNTIME_PREFERENCE = (
 # by approval prompts.
 _ORCHESTRATOR_RUNTIME_COMMANDS = {
     "pi": "pi",
-    "claude-code": "claude --dangerously-skip-permissions",
-    "codex": "codex --dangerously-bypass-approvals-and-sandbox",
+    "claude-code": "rwclaude --dangerously-skip-permissions",
+    "codex": "rwcodex --dangerously-bypass-approvals-and-sandbox",
     "gemini": "gemini --yolo",
     "opencode": "opencode",
 }
@@ -4505,11 +4574,24 @@ def hook() -> None:
     pass
 
 
+def _hook_transport_enabled(backend: str) -> bool:
+    import os
+
+    if backend == "codex":
+        return os.environ.get("REPOWIRE_CODEX_OPT_IN") == "1"
+    if backend == "claude-code":
+        return os.environ.get("REPOWIRE_CLAUDE_OPT_IN") == "1"
+    return True
+
+
 @hook.command(name="stop")
 @click.option("--backend", default="claude-code", help="Agent backend")
 def hook_stop(backend: str) -> None:
     """Handle Stop hook - capture response for pending queries."""
     import sys
+
+    if not _hook_transport_enabled(backend):
+        return
 
     from repowire.hooks.stop_handler import main as stop_main
 
@@ -4522,6 +4604,9 @@ def hook_session(backend: str) -> None:
     """Handle SessionStart/SessionEnd hooks - auto-register/unregister peers."""
     import sys
 
+    if not _hook_transport_enabled(backend):
+        return
+
     from repowire.hooks.session_handler import main as session_main
 
     sys.exit(session_main(backend=backend))
@@ -4533,6 +4618,9 @@ def hook_prompt(backend: str) -> None:
     """Handle UserPromptSubmit hook - mark peer as busy."""
     import sys
 
+    if not _hook_transport_enabled(backend):
+        return
+
     from repowire.hooks.prompt_handler import main as prompt_main
 
     sys.exit(prompt_main(backend=backend))
@@ -4542,6 +4630,9 @@ def hook_prompt(backend: str) -> None:
 def hook_notification() -> None:
     """Handle Notification hook - mark peer as online on idle."""
     import sys
+
+    if not _hook_transport_enabled("claude-code"):
+        return
 
     from repowire.hooks.notification_handler import main as notification_main
 
@@ -4553,6 +4644,9 @@ def hook_notification() -> None:
 def hook_pretooluse(backend: str) -> None:
     """Handle PreToolUse hook - remote tool approval when opted in."""
     import sys
+
+    if not _hook_transport_enabled(backend):
+        return
 
     from repowire.hooks.pretooluse_handler import main as pretooluse_main
 

@@ -22,8 +22,8 @@ daemon:
     allow_dangerous_tools: false
   spawn:
     commands:
-      claude-code: "claude --dangerously-skip-permissions"
-      codex: "codex --dangerously-bypass-approvals-and-sandbox"
+      claude-code: "rwclaude --dangerously-skip-permissions"
+      codex: "rwcodex --dangerously-bypass-approvals-and-sandbox"
       gemini: "gemini --yolo"
       opencode: "opencode"
       pi: "pi"
